@@ -1,0 +1,329 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thaum-painter.local/domain/file/manifest/schema-thaum-painter-file-v1.json",
+  "title": "Thaum Painter File V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "version",
+    "metadata",
+    "document",
+    "time_assets",
+    "saved_camera_defaults",
+    "import_export_bookkeeping"
+  ],
+  "properties": {
+    "kind": { "const": "thaum-painter-file" },
+    "version": { "const": 1 },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "document_id",
+        "title",
+        "description",
+        "tags",
+        "created_at",
+        "modified_at",
+        "authoring_origin"
+      ],
+      "properties": {
+        "document_id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "created_at": { "type": "string" },
+        "modified_at": { "type": "string" },
+        "authoring_origin": { "type": "string" }
+      }
+    },
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bounds", "module_order", "modules", "playback"],
+      "properties": {
+        "bounds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["min_x", "min_y", "min_z", "width", "height", "depth"],
+          "properties": {
+            "min_x": { "type": "integer" },
+            "min_y": { "type": "integer" },
+            "min_z": { "type": "integer" },
+            "width": { "type": "integer", "minimum": 1 },
+            "height": { "type": "integer", "minimum": 1 },
+            "depth": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "module_order": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "modules": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/module" }
+        },
+        "playback": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "frames_per_breath",
+            "loop_enabled",
+            "document_window_start_breath",
+            "document_window_end_breath"
+          ],
+          "properties": {
+            "frames_per_breath": { "type": "integer", "minimum": 1 },
+            "loop_enabled": { "type": "boolean" },
+            "document_window_start_breath": { "type": "integer", "minimum": 0 },
+            "document_window_end_breath": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "time_assets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["particle_effects"],
+      "properties": {
+        "particle_effects": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/particleEffect" }
+        }
+      }
+    },
+    "saved_camera_defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "orientation",
+        "focus_plane",
+        "viewport_scale",
+        "show_all_layers",
+        "center_target_in_view",
+        "pan_x",
+        "pan_y"
+      ],
+      "properties": {
+        "orientation": { "type": "string" },
+        "focus_plane": { "type": "integer" },
+        "viewport_scale": { "type": "number", "exclusiveMinimum": 0 },
+        "show_all_layers": { "type": "boolean" },
+        "center_target_in_view": { "type": "boolean" },
+        "pan_x": { "type": "number" },
+        "pan_y": { "type": "number" }
+      }
+    },
+    "import_export_bookkeeping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_import", "last_export"],
+      "properties": {
+        "source_import": { "type": ["object", "null"] },
+        "last_export": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["profile", "exported_at"],
+          "properties": {
+            "profile": { "type": "string" },
+            "exported_at": { "type": "string" }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "rgb": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["r", "g", "b"],
+      "properties": {
+        "r": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "g": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "b": { "type": "integer", "minimum": 0, "maximum": 255 }
+      }
+    },
+    "voxel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "z", "char", "rgb", "weight_index"],
+      "properties": {
+        "x": { "type": "integer" },
+        "y": { "type": "integer" },
+        "z": { "type": "integer" },
+        "char": { "type": "string", "minLength": 1 },
+        "rgb": { "$ref": "#/$defs/rgb" },
+        "weight_index": { "type": "integer" }
+      }
+    },
+    "breathWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_breath", "window_start_breath", "window_end_breath"],
+      "properties": {
+        "start_breath": { "type": "integer", "minimum": 0 },
+        "window_start_breath": { "type": "integer", "minimum": 0 },
+        "window_end_breath": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "rasterSegment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "start_breath", "end_breath", "voxels"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "start_breath": { "type": "integer", "minimum": 0 },
+        "end_breath": { "type": "integer", "minimum": 0 },
+        "voxels": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/voxel" }
+        }
+      }
+    },
+    "propertyBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "start_breath", "end_breath", "value"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "start_breath": { "type": "integer", "minimum": 0 },
+        "end_breath": { "type": "integer", "minimum": 0 },
+        "value": {}
+      }
+    },
+    "property": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "blocks"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1 },
+        "blocks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/propertyBlock" }
+        }
+      }
+    },
+    "group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "visible",
+        "locked",
+        "opacity",
+        "local_placement",
+        "timing",
+        "raster_segments",
+        "properties"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" },
+        "visible": { "type": "boolean" },
+        "locked": { "type": "boolean" },
+        "opacity": { "type": "number", "minimum": 0 },
+        "local_placement": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["x", "y", "z"],
+          "properties": {
+            "x": { "type": "integer" },
+            "y": { "type": "integer" },
+            "z": { "type": "integer" }
+          }
+        },
+        "timing": { "$ref": "#/$defs/breathWindow" },
+        "raster_segments": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/rasterSegment" }
+        },
+        "properties": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/property" }
+        }
+      }
+    },
+    "module": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "visible",
+        "locked",
+        "opacity",
+        "placement",
+        "group_order",
+        "groups"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" },
+        "visible": { "type": "boolean" },
+        "locked": { "type": "boolean" },
+        "opacity": { "type": "number", "minimum": 0 },
+        "placement": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["x", "y", "z"],
+          "properties": {
+            "x": { "type": "integer" },
+            "y": { "type": "integer" },
+            "z": { "type": "integer" }
+          }
+        },
+        "group_order": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "groups": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/group" }
+        }
+      }
+    },
+    "particleEffect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "name",
+        "spawn_breath",
+        "window_start",
+        "window_end",
+        "processed_breaths",
+        "is_complete",
+        "is_deleted",
+        "visual"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" },
+        "spawn_breath": { "type": "integer", "minimum": 0 },
+        "window_start": { "type": "integer", "minimum": 0 },
+        "window_end": { "type": "integer", "minimum": 0 },
+        "processed_breaths": { "type": "integer", "minimum": 0 },
+        "is_complete": { "type": "boolean" },
+        "is_deleted": { "type": "boolean" },
+        "visual": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["char", "display_color", "render_index", "weight_index"],
+          "properties": {
+            "char": { "type": "string", "minLength": 1 },
+            "display_color": { "type": "string" },
+            "render_index": { "type": "integer" },
+            "weight_index": { "type": "integer" }
+          }
+        }
+      }
+    }
+  }
+}

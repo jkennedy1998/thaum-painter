@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thaum-painter.local/domain/rendering/render-space/schema-render-space-v1.json",
+  "title": "Thaum Painter Render Space V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "version",
+    "source",
+    "camera",
+    "composition",
+    "cell_groups",
+    "data_lanes",
+    "derived"
+  ],
+  "properties": {
+    "kind": { "const": "thaum-painter-render-space" },
+    "version": { "const": 1 },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file_kind", "file_version", "document_id", "active_breath", "source_mode"],
+      "properties": {
+        "file_kind": { "const": "thaum-painter-file" },
+        "file_version": { "const": 1 },
+        "document_id": { "type": "string", "minLength": 1 },
+        "active_breath": { "type": "integer", "minimum": 0 },
+        "source_mode": { "type": "string", "minLength": 1 }
+      }
+    },
+    "camera": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["orientation", "focus_plane", "viewport_scale", "center_target_in_view", "target_world"],
+      "properties": {
+        "orientation": { "type": "string" },
+        "focus_plane": { "type": "integer" },
+        "viewport_scale": { "type": "number", "exclusiveMinimum": 0 },
+        "center_target_in_view": { "type": "boolean" },
+        "target_world": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["x", "y", "z"],
+          "properties": {
+            "x": { "type": "integer" },
+            "y": { "type": "integer" },
+            "z": { "type": "integer" }
+          }
+        }
+      }
+    },
+    "composition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["overlap_policy", "module_order"],
+      "properties": {
+        "overlap_policy": { "type": "string", "minLength": 1 },
+        "module_order": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "cell_groups": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/cellGroup" }
+    },
+    "data_lanes": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "breath": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "derived": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ignored_file_fields", "resolved_group_states"],
+      "properties": {
+        "ignored_file_fields": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "resolved_group_states": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["source_module_id", "source_group_id", "active_raster_segment_id", "active_move_block_id"],
+            "properties": {
+              "source_module_id": { "type": "string" },
+              "source_group_id": { "type": "string" },
+              "active_raster_segment_id": { "type": "string" },
+              "active_move_block_id": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "rgb": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["r", "g", "b"],
+      "properties": {
+        "r": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "g": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "b": { "type": "integer", "minimum": 0, "maximum": 255 }
+      }
+    },
+    "cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "z", "char", "rgb", "weight_index"],
+      "properties": {
+        "x": { "type": "integer" },
+        "y": { "type": "integer" },
+        "z": { "type": "integer" },
+        "char": { "type": "string", "minLength": 1 },
+        "rgb": { "$ref": "#/$defs/rgb" },
+        "weight_index": { "type": "integer" }
+      }
+    },
+    "cellGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "source_module_id",
+        "intake_kind",
+        "placement",
+        "visible",
+        "opacity",
+        "cells"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "source_module_id": { "type": "string", "minLength": 1 },
+        "intake_kind": { "type": "string", "minLength": 1 },
+        "placement": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["x", "y", "z"],
+          "properties": {
+            "x": { "type": "integer" },
+            "y": { "type": "integer" },
+            "z": { "type": "integer" }
+          }
+        },
+        "visible": { "type": "boolean" },
+        "opacity": { "type": "number", "minimum": 0 },
+        "cells": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/cell" }
+        }
+      }
+    }
+  }
+}
