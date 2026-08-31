@@ -242,7 +242,7 @@ fn require_string_array(value: &Value, name: &str) -> Result<Vec<String>> {
         .collect()
 }
 
-fn parse_grid_point(value: &Value) -> Result<GridPoint> {
+pub(crate) fn parse_grid_point(value: &Value) -> Result<GridPoint> {
     Ok(GridPoint {
         x: require_i64(value, "x")?,
         y: require_i64(value, "y")?,
