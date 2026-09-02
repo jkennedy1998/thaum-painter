@@ -303,6 +303,15 @@ impl SharedCellPatch {
             after: after.map(PersistedSharedPaintedCell::from_runtime),
         }
     }
+
+    /// Swaps the before/after values so applying this patch undoes the original.
+    pub fn inverse(&self) -> Self {
+        Self {
+            position: self.position.clone(),
+            before: self.after.clone(),
+            after: self.before.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -314,7 +323,21 @@ pub enum SharedDocumentAction {
         /// into the layer's first non-blank raster block.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         block_id: Option<String>,
+        /// Passive records paint content but are invisible to the undo/redo stacks:
+        /// history-squash baselines and undo/redo revert records. Keeping the log
+        /// all-forward-edits makes squash trivially safe (replay never references a
+        /// folded action) and matches the undo-as-operation multiplayer model.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        passive: bool,
+        /// For passive revert records: the action id this record undoes (undo) or
+        /// re-applies (redo). Replay uses it to move the action between the applied
+        /// and undone stacks so reload preserves undo depth.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reverts: Option<String>,
     },
+    /// Legacy undo/redo records from before undo became a revert record. Kept
+    /// replayable so existing action logs keep loading; new code writes only
+    /// `CellPatchSet` records.
     Undo,
     Redo,
 }
@@ -345,8 +368,49 @@ impl SharedDocumentActionRecord {
             layer_id: layer_id.into(),
             user_id: user_id.into(),
             created_at: created_at.into(),
-            action: SharedDocumentAction::CellPatchSet { patches, block_id },
+            action: SharedDocumentAction::CellPatchSet {
+                patches,
+                block_id,
+                passive: false,
+                reverts: None,
+            },
         }
+    }
+
+    /// Builds a passive undo/redo revert record whose replay moves `reverts`
+    /// between the applied and undone stacks (pop for undo, push-back for redo).
+    pub fn revert_patch_set(
+        action_id: impl Into<String>,
+        document_id: impl Into<String>,
+        layer_id: impl Into<String>,
+        user_id: impl Into<String>,
+        created_at: impl Into<String>,
+        patches: Vec<SharedCellPatch>,
+        block_id: Option<String>,
+        reverts: impl Into<String>,
+    ) -> Self {
+        Self {
+            action_id: action_id.into(),
+            document_id: document_id.into(),
+            layer_id: layer_id.into(),
+            user_id: user_id.into(),
+            created_at: created_at.into(),
+            action: SharedDocumentAction::CellPatchSet {
+                patches,
+                block_id,
+                passive: true,
+                reverts: Some(reverts.into()),
+            },
+        }
+    }
+
+    /// Marks this record passive: it paints content on replay but never enters the
+    /// undo/redo stacks. Used for undo/redo revert records and squash baselines.
+    pub fn as_passive(mut self) -> Self {
+        if let SharedDocumentAction::CellPatchSet { passive, .. } = &mut self.action {
+            *passive = true;
+        }
+        self
     }
 
     pub fn undo(
@@ -393,6 +457,17 @@ struct AppliedCellPatches {
     patches: Vec<SharedCellPatch>,
 }
 
+/// The inverse (undo) or re-application (redo) patches for one history action,
+/// resolved to the raster block the action landed on. The caller persists these
+/// as a passive `CellPatchSet` revert record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryRevertPatches {
+    pub block_id: String,
+    pub patches: Vec<SharedCellPatch>,
+    /// The history action this revert undoes (undo) or re-applies (redo).
+    pub action_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SharedDocumentRuntime {
     pub document: SharedDocumentFile,
@@ -406,6 +481,10 @@ pub struct SharedDocumentRuntime {
     /// The revision this runtime loaded (and last saved). Snapshots verify the
     /// on-disk revision still matches before overwriting.
     revision: u64,
+    /// Passive baseline records covering every action folded out of the saved log.
+    baseline: Vec<SharedDocumentActionRecord>,
+    /// How many entries of `actions` (the oldest ones) the baseline already covers.
+    squashed_through: usize,
 }
 
 impl SharedDocumentRuntime {
@@ -438,6 +517,8 @@ impl SharedDocumentRuntime {
             undone_action_ids_by_layer,
             patches_by_action_id: BTreeMap::new(),
             revision,
+            baseline: Vec::new(),
+            squashed_through: 0,
         }
     }
 
@@ -445,6 +526,12 @@ impl SharedDocumentRuntime {
     /// `load_document_file(..).revision` to detect another writer's changes.
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// Direct read access to one raster block's live canvas (test and debug use).
+    pub fn block_canvas(&self, layer_id: &str, block_id: &str) -> Option<&Canvas> {
+        self.block_canvases
+            .get(&(layer_id.to_string(), block_id.to_string()))
     }
 
     pub fn replay(document: SharedDocumentFile, actions: Vec<SharedDocumentActionRecord>) -> Self {
@@ -1182,55 +1269,69 @@ impl SharedDocumentRuntime {
     pub fn apply_action_record(&mut self, record: SharedDocumentActionRecord) {
         let layer_id = record.layer_id.clone();
         match &record.action {
-            SharedDocumentAction::CellPatchSet { patches, block_id } => {
+            SharedDocumentAction::CellPatchSet {
+                patches,
+                block_id,
+                passive,
+                reverts,
+            } => {
                 if !patches.is_empty() {
                     let target = match block_id {
                         Some(block_id) => Some((layer_id.clone(), block_id.clone())),
                         None => self.legacy_raster_block_target(&layer_id),
                     };
                     if let Some((target_layer_id, target_block_id)) = target {
-                        // Painting into a blank block turns it back into content.
-                        if let Some(layer) = self
-                            .document
-                            .layers
-                            .iter_mut()
-                            .find(|layer| layer.layer_id == target_layer_id)
-                        {
-                            if let Some(track) = layer
-                                .property_tracks
-                                .iter_mut()
-                                .find(|track| track.property_id == "raster")
-                            {
-                                if let Some(block) = track
-                                    .blocks
-                                    .iter_mut()
-                                    .find(|block| block.id == target_block_id)
-                                {
-                                    block.is_blank = false;
-                                }
-                            }
-                        }
+                        self.unblank_raster_block(&target_layer_id, &target_block_id);
                         let canvas = self
                             .block_canvases
                             .entry((target_layer_id.clone(), target_block_id.clone()))
                             .or_default();
                         apply_patches(canvas, patches, PatchDirection::After);
-                        self.applied_action_ids_by_layer
-                            .entry(layer_id.clone())
-                            .or_default()
-                            .push(record.action_id.clone());
-                        self.undone_action_ids_by_layer
-                            .entry(layer_id)
-                            .or_default()
-                            .clear();
-                        self.patches_by_action_id.insert(
-                            record.action_id.clone(),
-                            AppliedCellPatches {
-                                layer_id: target_layer_id,
-                                block_id: target_block_id,
-                                patches: patches.clone(),
-                            },
-                        );
+                        if !*passive {
+                            self.applied_action_ids_by_layer
+                                .entry(layer_id.clone())
+                                .or_default()
+                                .push(record.action_id.clone());
+                            self.undone_action_ids_by_layer
+                                .entry(layer_id)
+                                .or_default()
+                                .clear();
+                            self.patches_by_action_id.insert(
+                                record.action_id.clone(),
+                                AppliedCellPatches {
+                                    layer_id: target_layer_id,
+                                    block_id: target_block_id,
+                                    patches: patches.clone(),
+                                },
+                            );
+                        } else if let Some(reverted_id) = reverts {
+                            // Revert record on replay: undo reverts pop the action out
+                            // of the applied stack; redo reverts push it back in.
+                            let applied_stack = self
+                                .applied_action_ids_by_layer
+                                .entry(layer_id.clone())
+                                .or_default();
+                            if let Some(position) =
+                                applied_stack.iter().position(|id| id == reverted_id)
+                            {
+                                applied_stack.remove(position);
+                                self.undone_action_ids_by_layer
+                                    .entry(layer_id)
+                                    .or_default()
+                                    .push(reverted_id.clone());
+                            } else {
+                                let undone_stack = self
+                                    .undone_action_ids_by_layer
+                                    .entry(layer_id.clone())
+                                    .or_default();
+                                if let Some(position) =
+                                    undone_stack.iter().position(|id| id == reverted_id)
+                                {
+                                    undone_stack.remove(position);
+                                    applied_stack.push(reverted_id.clone());
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1276,6 +1377,157 @@ impl SharedDocumentRuntime {
             }
         }
         self.actions.push(record);
+    }
+
+    /// Paints patches onto a block canvas for live stroke preview WITHOUT creating
+    /// an action record or touching undo stacks. The committing record is appended
+    /// at stroke release; because patches are absolute (after-value sets), applying
+    /// the record again then is idempotent on already-staged content.
+    pub fn stage_canvas_patches(
+        &mut self,
+        layer_id: &str,
+        block_id: &str,
+        patches: &[SharedCellPatch],
+    ) {
+        if patches.is_empty() {
+            return;
+        }
+        self.unblank_raster_block(layer_id, block_id);
+        let canvas = self
+            .block_canvases
+            .entry((layer_id.to_string(), block_id.to_string()))
+            .or_default();
+        apply_patches(canvas, patches, PatchDirection::After);
+    }
+
+    fn unblank_raster_block(&mut self, layer_id: &str, block_id: &str) {
+        // Painting into a blank block turns it back into content.
+        if let Some(layer) = self
+            .document
+            .layers
+            .iter_mut()
+            .find(|layer| layer.layer_id == layer_id)
+        {
+            if let Some(track) = layer
+                .property_tracks
+                .iter_mut()
+                .find(|track| track.property_id == "raster")
+            {
+                if let Some(block) = track
+                    .blocks
+                    .iter_mut()
+                    .find(|block| block.id == block_id)
+                {
+                    block.is_blank = false;
+                }
+            }
+        }
+    }
+
+    /// Pops the layer's last applied action and reverts it on the canvas, returning
+    /// the inverse patches so the caller can persist the undo as a passive
+    /// `CellPatchSet` revert record. One undo = one whole committed stroke.
+    pub fn undo_top_action(&mut self, layer_id: &str) -> Option<HistoryRevertPatches> {
+        let action_id = self
+            .applied_action_ids_by_layer
+            .get_mut(layer_id)?
+            .pop()?;
+        let applied = self.patches_by_action_id.get(&action_id)?;
+        let canvas = self
+            .block_canvases
+            .entry((applied.layer_id.clone(), applied.block_id.clone()))
+            .or_default();
+        apply_patches(canvas, &applied.patches, PatchDirection::Before);
+        let revert = HistoryRevertPatches {
+            block_id: applied.block_id.clone(),
+            patches: applied
+                .patches
+                .iter()
+                .map(SharedCellPatch::inverse)
+                .collect(),
+            action_id: action_id.clone(),
+        };
+        self.undone_action_ids_by_layer
+            .entry(layer_id.to_string())
+            .or_default()
+            .push(action_id);
+        Some(revert)
+    }
+
+    /// Pops the layer's last undone action and re-applies it, returning the
+    /// re-application patches for a passive revert record.
+    pub fn redo_top_action(&mut self, layer_id: &str) -> Option<HistoryRevertPatches> {
+        let action_id = self
+            .undone_action_ids_by_layer
+            .get_mut(layer_id)?
+            .pop()?;
+        let applied = self.patches_by_action_id.get(&action_id)?;
+        let canvas = self
+            .block_canvases
+            .entry((applied.layer_id.clone(), applied.block_id.clone()))
+            .or_default();
+        apply_patches(canvas, &applied.patches, PatchDirection::After);
+        self.applied_action_ids_by_layer
+            .entry(layer_id.to_string())
+            .or_default()
+            .push(action_id.clone());
+        Some(HistoryRevertPatches {
+            block_id: applied.block_id.clone(),
+            patches: applied.patches.clone(),
+            action_id,
+        })
+    }
+
+    /// Appends an already-applied record to the in-memory history without applying
+    /// it again. Used for passive revert records produced by undo/redo.
+    pub fn push_history_record(&mut self, record: SharedDocumentActionRecord) {
+        self.actions.push(record);
+    }
+
+    /// Folds history older than the undo-depth window into passive baseline
+    /// records, so the saved action log stays bounded by content + `UNDO_HISTORY_DEPTH`
+    /// records. In-memory undo stacks are untouched, so the session can still undo
+    /// past the fold until the document is reloaded.
+    pub fn fold_history(&mut self) {
+        let len = self.actions.len();
+        if len - self.squashed_through <= UNDO_HISTORY_DEPTH {
+            return;
+        }
+        let new_cut = len - UNDO_HISTORY_DEPTH;
+        let head = self.actions[..new_cut].to_vec();
+        let replay = SharedDocumentRuntime::replay(self.document.clone(), head);
+        let mut baseline = Vec::new();
+        for ((layer_id, block_id), canvas) in &replay.block_canvases {
+            if canvas.is_empty() {
+                continue;
+            }
+            let patches: Vec<SharedCellPatch> = canvas
+                .iter()
+                .map(|(position, cell)| SharedCellPatch::new(*position, None, Some(cell)))
+                .collect();
+            baseline.push(
+                SharedDocumentActionRecord::cell_patch_set(
+                    format!("baseline-{layer_id}-{block_id}"),
+                    self.document.document_id.clone(),
+                    layer_id.clone(),
+                    "history-squash",
+                    "baseline",
+                    patches,
+                    Some(block_id.clone()),
+                )
+                .as_passive(),
+            );
+        }
+        self.baseline = baseline;
+        self.squashed_through = new_cut;
+    }
+
+    /// The records that belong in the saved log: squash baselines followed by every
+    /// record not yet folded.
+    pub fn actions_for_file(&self) -> Vec<SharedDocumentActionRecord> {
+        let mut records = self.baseline.clone();
+        records.extend(self.actions[self.squashed_through..].iter().cloned());
+        records
     }
 }
 
@@ -1469,7 +1721,11 @@ pub fn save_shared_document_snapshot(
     let mut document = runtime.document.clone();
     document.revision = next_revision;
     write_document_atomic(&paths.document_file_path, &document)?;
-    write_action_records_atomic(&paths.actions_file_path, &runtime.actions)?;
+    // Squash first so the saved log stays bounded: baselines + the last
+    // UNDO_HISTORY_DEPTH records, never the full session history.
+    runtime.fold_history();
+    let records = runtime.actions_for_file();
+    write_action_records_atomic(&paths.actions_file_path, &records)?;
 
     // Only commit the bump after both files are safely on disk, so a failed
     // write leaves the runtime retryable instead of permanently conflicting.
@@ -1763,6 +2019,208 @@ mod tests {
         assert_eq!(on_disk.revision, 2);
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn staged_stroke_patches_commit_idempotently_and_undo_as_one_stroke() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        let p = |x: i32, y: i32| CellPoint { x, y, z: 0 };
+        let cell = |c: char| PaintedCell {
+            graphic: thaum_renderer_domain::CellGraphic::Glyph(c),
+            color: PaintColor::flat_rgb(1, 2, 3),
+            weight_index: 0,
+        };
+
+        // Simulate a drag: chunks staged live, no records yet.
+        runtime.stage_canvas_patches(
+            "layer-1",
+            "block-1",
+            &[SharedCellPatch::new(p(1, 1), None, Some(&cell('A')))],
+        );
+        runtime.stage_canvas_patches(
+            "layer-1",
+            "block-1",
+            &[SharedCellPatch::new(p(2, 1), None, Some(&cell('B')))],
+        );
+        assert!(runtime.actions.is_empty());
+        assert_eq!(runtime.block_canvas("layer-1", "block-1").unwrap().len(), 2);
+
+        // Release: one record covering the whole stroke; applying it over the
+        // already-staged canvas must be idempotent.
+        let patches = vec![
+            SharedCellPatch::new(p(1, 1), None, Some(&cell('A'))),
+            SharedCellPatch::new(p(2, 1), None, Some(&cell('B'))),
+        ];
+        let record = SharedDocumentActionRecord::cell_patch_set(
+            "a1", "doc-1", "layer-1", "u1", "1", patches, Some("block-1".to_string()),
+        );
+        runtime.apply_action_record(record);
+        assert_eq!(runtime.block_canvas("layer-1", "block-1").unwrap().len(), 2);
+
+        // One undo reverts the entire stroke.
+        let revert = runtime.undo_top_action("layer-1").unwrap();
+        assert_eq!(revert.block_id, "block-1");
+        assert_eq!(revert.patches.len(), 2);
+        assert!(runtime
+            .block_canvas("layer-1", "block-1")
+            .unwrap()
+            .is_empty());
+        // Redo re-applies the same patches.
+        let redo = runtime.redo_top_action("layer-1").unwrap();
+        assert_eq!(redo.patches.len(), 2);
+        assert_eq!(runtime.block_canvas("layer-1", "block-1").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn passive_records_paint_content_without_entering_undo_stacks() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        let cell = PaintedCell {
+            graphic: thaum_renderer_domain::CellGraphic::Glyph('A'),
+            color: PaintColor::flat_rgb(1, 1, 1),
+            weight_index: 0,
+        };
+        runtime.apply_action_record(SharedDocumentActionRecord::cell_patch_set(
+            "a1",
+            "doc-1",
+            "layer-1",
+            "u1",
+            "1",
+            vec![SharedCellPatch::new(point(1, 1), None, Some(&cell))],
+            Some("block-1".to_string()),
+        ));
+        // A passive record (squash baseline or undo revert) paints but must not
+        // become an undo target.
+        runtime.apply_action_record(
+            SharedDocumentActionRecord::cell_patch_set(
+                "baseline-1",
+                "doc-1",
+                "layer-1",
+                "history-squash",
+                "baseline",
+                vec![SharedCellPatch::new(point(2, 1), None, Some(&cell))],
+                Some("block-1".to_string()),
+            )
+            .as_passive(),
+        );
+
+        assert_eq!(runtime.block_canvas("layer-1", "block-1").unwrap().len(), 2);
+        // Only the active record is undoable.
+        assert!(runtime.undo_top_action("layer-1").is_some());
+        assert!(runtime.undo_top_action("layer-1").is_none());
+    }
+
+    #[test]
+    fn undo_revert_records_replay_to_the_same_state_without_undo_depth_growth() {
+        let cell = |c: char| PaintedCell {
+            graphic: thaum_renderer_domain::CellGraphic::Glyph(c),
+            color: PaintColor::flat_rgb(1, 1, 1),
+            weight_index: 0,
+        };
+        let paint = |id: &str, pos: (i32, i32), c: char| {
+            SharedDocumentActionRecord::cell_patch_set(
+                id,
+                "doc-1",
+                "layer-1",
+                "u1",
+                "1",
+                vec![SharedCellPatch::new(
+                    point(pos.0, pos.1),
+                    None,
+                    Some(&cell(c)),
+                )],
+                Some("block-1".to_string()),
+            )
+        };
+
+        // In-session: paint A, paint B, undo B (revert record), undo A.
+        let mut session = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        session.apply_action_record(paint("a1", (1, 1), 'A'));
+        session.apply_action_record(paint("a2", (2, 1), 'B'));
+        let revert_b = session.undo_top_action("layer-1").unwrap();
+        session.push_history_record(SharedDocumentActionRecord::revert_patch_set(
+            "r1", "doc-1", "layer-1", "u1", "2", revert_b.patches, Some("block-1".to_string()),
+            revert_b.action_id,
+        ));
+        let revert_a = session.undo_top_action("layer-1").unwrap();
+        session.push_history_record(SharedDocumentActionRecord::revert_patch_set(
+            "r2", "doc-1", "layer-1", "u1", "3", revert_a.patches, Some("block-1".to_string()),
+            revert_a.action_id,
+        ));
+        assert!(session
+            .block_canvas("layer-1", "block-1")
+            .unwrap()
+            .is_empty());
+
+        // Reload: replaying the log must produce the identical state, and undo
+        // depth must not grow (passive records never enter the stacks).
+        let mut reloaded = SharedDocumentRuntime::replay(
+            SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1"),
+            session.actions.clone(),
+        );
+        assert!(reloaded
+            .block_canvas("layer-1", "block-1")
+            .unwrap()
+            .is_empty());
+        assert!(reloaded.undo_top_action("layer-1").is_none());
+
+        // Redoing both strokes still works in-session (undone stack intact).
+        assert!(session.redo_top_action("layer-1").is_some());
+        assert!(session.redo_top_action("layer-1").is_some());
+        assert_eq!(session.block_canvas("layer-1", "block-1").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn fold_history_bounds_the_saved_log_and_replay_matches_the_final_state() {
+        let cell = |c: char| PaintedCell {
+            graphic: thaum_renderer_domain::CellGraphic::Glyph(c),
+            color: PaintColor::flat_rgb(1, 1, 1),
+            weight_index: 0,
+        };
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        for index in 0..30 {
+            runtime.apply_action_record(SharedDocumentActionRecord::cell_patch_set(
+                format!("a{index}"),
+                "doc-1",
+                "layer-1",
+                "u1",
+                "1",
+                vec![SharedCellPatch::new(
+                    point(index, 1),
+                    None,
+                    Some(&cell('A')),
+                )],
+                Some("block-1".to_string()),
+            ));
+        }
+
+        runtime.fold_history();
+        let records = runtime.actions_for_file();
+        assert_eq!(records.len(), UNDO_HISTORY_DEPTH + 1); // 1 baseline + last 20
+        assert!(records[0].action_id.starts_with("baseline-"));
+
+        // Replaying the folded log reproduces the exact final state.
+        let mut reloaded = SharedDocumentRuntime::replay(
+            SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1"),
+            records,
+        );
+        assert_eq!(
+            reloaded.block_canvas("layer-1", "block-1").unwrap(),
+            runtime.block_canvas("layer-1", "block-1").unwrap()
+        );
+        // Undo depth after reload is bounded by the window.
+        let mut undo_count = 0;
+        while reloaded.undo_top_action("layer-1").is_some() {
+            undo_count += 1;
+        }
+        assert_eq!(undo_count, UNDO_HISTORY_DEPTH);
     }
 
     #[test]

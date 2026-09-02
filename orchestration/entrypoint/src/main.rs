@@ -1108,28 +1108,20 @@ fn sync_canvas_from_active_layer(
         .unwrap_or_default();
 }
 
-fn apply_image_edits_to_shared_document<I>(
+/// Stages one paint chunk onto the live canvases WITHOUT creating an action record.
+/// Strokes commit once at release (one undo per stroke); the runtime canvas is staged
+/// so per-frame compositing shows the work in progress.
+fn stage_image_edit_chunk(
     runtime: &mut SharedDocumentRuntime,
-    paths: &SharedDocumentPaths,
-    action_counter: &mut u64,
-    user_id: &str,
-    active_layer_id: &str,
     canvas: &mut Canvas,
     tool_state: &mut ToolState,
     selection: &mut PainterSelection,
-    positions: I,
+    positions: impl IntoIterator<Item = CellPoint>,
     hand: PaintHand,
     bounds: CanvasBounds,
-    current_breath: u32,
-) -> Result<()>
-where
-    I: IntoIterator<Item = CellPoint>,
-{
-    // Paint strokes land on the raster block covering the playhead breath. A breath in a
-    // gap between blocks has no canvas to land on, so the stroke is rejected.
-    let Some(block_id) = runtime.active_raster_block_id(active_layer_id, current_breath) else {
-        return Ok(());
-    };
+    layer_id: &str,
+    block_id: &str,
+) {
     let before = canvas.clone();
     let mut candidate = before.clone();
     for position in positions {
@@ -1137,53 +1129,45 @@ where
     }
     let patches = collect_canvas_patches(&before, &candidate);
     if patches.is_empty() {
-        return Ok(());
+        return;
     }
-    append_and_apply_shared_action(
-        runtime,
-        paths,
-        SharedDocumentActionRecord::cell_patch_set(
-            next_action_id(action_counter),
-            runtime.document.document_id.clone(),
-            active_layer_id,
-            user_id,
-            action_timestamp_string(),
-            patches,
-            Some(block_id),
-        ),
-    )?;
-    sync_canvas_from_active_layer(runtime, active_layer_id, current_breath, canvas);
-    Ok(())
+    runtime.stage_canvas_patches(layer_id, block_id, &patches);
+    // Adopt the candidate instead of re-cloning from the runtime: the staged
+    // canvas now holds exactly this content.
+    *canvas = candidate;
 }
 
-fn apply_image_edit_to_shared_document(
+/// Commits one finished stroke as a single `CellPatchSet` record — one undo per
+/// stroke. The runtime canvas already holds the staged content, so applying the
+/// record is idempotent; it only registers the undo bookkeeping.
+fn commit_staged_paint_stroke(
     runtime: &mut SharedDocumentRuntime,
     paths: &SharedDocumentPaths,
     action_counter: &mut u64,
     user_id: &str,
     active_layer_id: &str,
     canvas: &mut Canvas,
-    tool_state: &mut ToolState,
-    selection: &mut PainterSelection,
-    position: CellPoint,
-    hand: PaintHand,
-    bounds: CanvasBounds,
-    current_breath: u32,
+    stroke_start: Option<(Canvas, String)>,
 ) -> Result<()> {
-    apply_image_edits_to_shared_document(
-        runtime,
-        paths,
-        action_counter,
-        user_id,
+    let Some((start_canvas, block_id)) = stroke_start else {
+        return Ok(());
+    };
+    let patches = collect_canvas_patches(&start_canvas, canvas);
+    if patches.is_empty() {
+        return Ok(());
+    }
+    let record = SharedDocumentActionRecord::cell_patch_set(
+        next_action_id(action_counter),
+        runtime.document.document_id.clone(),
         active_layer_id,
-        canvas,
-        tool_state,
-        selection,
-        [position],
-        hand,
-        bounds,
-        current_breath,
-    )
+        user_id,
+        action_timestamp_string(),
+        patches,
+        Some(block_id),
+    );
+    append_action_record(&paths.actions_file_path, &record)?;
+    runtime.apply_action_record(record);
+    Ok(())
 }
 
 /// Mirrors a committed selection change into the document's selection channel and
@@ -1221,24 +1205,28 @@ fn apply_shared_history_action(
     undo: bool,
     current_breath: u32,
 ) -> Result<()> {
-    let action = if undo {
-        SharedDocumentActionRecord::undo(
-            next_action_id(action_counter),
-            runtime.document.document_id.clone(),
-            active_layer_id,
-            user_id,
-            action_timestamp_string(),
-        )
+    // Undo/redo are persisted as passive revert records (normal CellPatchSets that
+    // paint content but skip the undo stacks) — the all-forward-edits log keeps
+    // squash safe and matches the undo-as-operation multiplayer model.
+    let revert = if undo {
+        runtime.undo_top_action(active_layer_id)
     } else {
-        SharedDocumentActionRecord::redo(
+        runtime.redo_top_action(active_layer_id)
+    };
+    if let Some(revert) = revert {
+        let record = SharedDocumentActionRecord::revert_patch_set(
             next_action_id(action_counter),
             runtime.document.document_id.clone(),
             active_layer_id,
             user_id,
             action_timestamp_string(),
-        )
-    };
-    append_and_apply_shared_action(runtime, paths, action)?;
+            revert.patches,
+            Some(revert.block_id),
+            revert.action_id,
+        );
+        append_action_record(&paths.actions_file_path, &record)?;
+        runtime.push_history_record(record);
+    }
     sync_canvas_from_active_layer(runtime, active_layer_id, current_breath, canvas);
     Ok(())
 }
@@ -1673,6 +1661,10 @@ fn main() -> Result<()> {
     let mut right_pointer_was_down = false;
     let mut left_drag_position: Option<CellPoint> = None;
     let mut right_drag_position: Option<CellPoint> = None;
+    // Canvas snapshot + target block captured at stroke press; the release commits
+    // the whole drag as one record (one undo per stroke).
+    let mut left_stroke_start: Option<(Canvas, String)> = None;
+    let mut right_stroke_start: Option<(Canvas, String)> = None;
     let mut selection_stroke: Option<SelectionStroke> = None;
     let mut active_layer_id = resolved_active_layer_id(
         &shared_document,
@@ -1964,20 +1956,25 @@ fn main() -> Result<()> {
                         let target = tool_state.borrow().hand_state(PaintHand::Left).target;
                         let mut selection_state = selection.borrow_mut();
                         if target == PaintTarget::Image {
-                            apply_image_edit_to_shared_document(
-                                &mut shared_document,
-                                &shared_document_paths,
-                                &mut shared_action_counter,
-                                &session_user_id,
-                                &active_layer_id,
-                                &mut canvas,
-                                &mut tool_state.borrow_mut(),
-                                &mut selection_state,
-                                position,
-                                PaintHand::Left,
-                                bounds,
-                                timeline_state.borrow().current_breath,
-                            )?;
+                            // Paint strokes land on the raster block covering the playhead
+                            // breath; a breath in a gap has no canvas, so the stroke is rejected.
+                            let current_breath = timeline_state.borrow().current_breath;
+                            if let Some(block_id) = shared_document
+                                .active_raster_block_id(&active_layer_id, current_breath)
+                            {
+                                left_stroke_start = Some((canvas.clone(), block_id.clone()));
+                                stage_image_edit_chunk(
+                                    &mut shared_document,
+                                    &mut canvas,
+                                    &mut tool_state.borrow_mut(),
+                                    &mut selection_state,
+                                    [position],
+                                    PaintHand::Left,
+                                    bounds,
+                                    &active_layer_id,
+                                    &block_id,
+                                );
+                            }
                         } else {
                             tool_state.borrow_mut().apply_at_for_hand(
                                 &mut canvas,
@@ -2051,20 +2048,23 @@ fn main() -> Result<()> {
                         let target = tool_state.borrow().hand_state(PaintHand::Right).target;
                         let mut selection_state = selection.borrow_mut();
                         if target == PaintTarget::Image {
-                            apply_image_edit_to_shared_document(
-                                &mut shared_document,
-                                &shared_document_paths,
-                                &mut shared_action_counter,
-                                &session_user_id,
-                                &active_layer_id,
-                                &mut canvas,
-                                &mut tool_state.borrow_mut(),
-                                &mut selection_state,
-                                position,
-                                PaintHand::Right,
-                                bounds,
-                                timeline_state.borrow().current_breath,
-                            )?;
+                            let current_breath = timeline_state.borrow().current_breath;
+                            if let Some(block_id) = shared_document
+                                .active_raster_block_id(&active_layer_id, current_breath)
+                            {
+                                right_stroke_start = Some((canvas.clone(), block_id.clone()));
+                                stage_image_edit_chunk(
+                                    &mut shared_document,
+                                    &mut canvas,
+                                    &mut tool_state.borrow_mut(),
+                                    &mut selection_state,
+                                    [position],
+                                    PaintHand::Right,
+                                    bounds,
+                                    &active_layer_id,
+                                    &block_id,
+                                );
+                            }
                         } else {
                             tool_state.borrow_mut().apply_at_for_hand(
                                 &mut canvas,
@@ -2123,20 +2123,19 @@ fn main() -> Result<()> {
                             let target = tool_state.borrow().hand_state(PaintHand::Left).target;
                             let mut selection_state = selection.borrow_mut();
                             if target == PaintTarget::Image {
-                                apply_image_edits_to_shared_document(
-                                    &mut shared_document,
-                                    &shared_document_paths,
-                                    &mut shared_action_counter,
-                                    &session_user_id,
-                                    &active_layer_id,
-                                    &mut canvas,
-                                    &mut tool_state.borrow_mut(),
-                                    &mut selection_state,
-                                    stroke_positions,
-                                    PaintHand::Left,
-                                    bounds,
-                                    timeline_state.borrow().current_breath,
-                                )?;
+                                if let Some((_, block_id)) = left_stroke_start.as_ref() {
+                                    stage_image_edit_chunk(
+                                        &mut shared_document,
+                                        &mut canvas,
+                                        &mut tool_state.borrow_mut(),
+                                        &mut selection_state,
+                                        stroke_positions,
+                                        PaintHand::Left,
+                                        bounds,
+                                        &active_layer_id,
+                                        block_id,
+                                    );
+                                }
                             } else {
                                 for anchor in stroke_positions {
                                     tool_state.borrow_mut().apply_at_for_hand(
@@ -2188,20 +2187,19 @@ fn main() -> Result<()> {
                             let target = tool_state.borrow().hand_state(PaintHand::Right).target;
                             let mut selection_state = selection.borrow_mut();
                             if target == PaintTarget::Image {
-                                apply_image_edits_to_shared_document(
-                                    &mut shared_document,
-                                    &shared_document_paths,
-                                    &mut shared_action_counter,
-                                    &session_user_id,
-                                    &active_layer_id,
-                                    &mut canvas,
-                                    &mut tool_state.borrow_mut(),
-                                    &mut selection_state,
-                                    stroke_positions,
-                                    PaintHand::Right,
-                                    bounds,
-                                    timeline_state.borrow().current_breath,
-                                )?;
+                                if let Some((_, block_id)) = right_stroke_start.as_ref() {
+                                    stage_image_edit_chunk(
+                                        &mut shared_document,
+                                        &mut canvas,
+                                        &mut tool_state.borrow_mut(),
+                                        &mut selection_state,
+                                        stroke_positions,
+                                        PaintHand::Right,
+                                        bounds,
+                                        &active_layer_id,
+                                        block_id,
+                                    );
+                                }
                             } else {
                                 for anchor in stroke_positions {
                                     tool_state.borrow_mut().apply_at_for_hand(
@@ -2302,6 +2300,27 @@ fn main() -> Result<()> {
         if (left_pointer_was_down && !frame.input.pointer_down)
             || (right_pointer_was_down && !frame.input.right_pointer_down)
         {
+            // One committed action per stroke: the drag's staged patches become a
+            // single CellPatchSet record, written once on release (one undo per
+            // stroke). Hands that didn't paint are no-ops.
+            commit_staged_paint_stroke(
+                &mut shared_document,
+                &shared_document_paths,
+                &mut shared_action_counter,
+                &session_user_id,
+                &active_layer_id,
+                &mut canvas,
+                left_stroke_start.take(),
+            )?;
+            commit_staged_paint_stroke(
+                &mut shared_document,
+                &shared_document_paths,
+                &mut shared_action_counter,
+                &session_user_id,
+                &active_layer_id,
+                &mut canvas,
+                right_stroke_start.take(),
+            )?;
             apply_layers_panel_action(
                 layers_panel_state.borrow_mut().take_pending_action(),
                 &mut shared_document,
