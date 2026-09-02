@@ -282,3 +282,38 @@ mod tests {
         assert_eq!(render_space.data_lanes.breath(), Some(4));
     }
 }
+
+// --- live document composition ------------------------------------------------
+
+use crate::storage::SharedDocumentRuntime;
+use crate::Canvas;
+
+/// Renders `canvas`'s live-painted cells as one `CellGroup` in the renderer's
+/// real rotating 3D intake path, not as module chrome, so the painter canvas
+/// lives in scene space while the UI panels stay in the flat 2D layer.
+pub fn build_paint_canvas_cell_group(canvas: &Canvas) -> CellGroup {
+    let mut group = CellGroup::new(WorldPoint { x: 0, y: 0, z: 0 });
+    for (position, painted) in canvas {
+        group.insert(Cell {
+            position: *position,
+            graphic: painted.graphic.clone(),
+            color: painted.color.to_cell_color(),
+            weight: CellWeight::from_index_clamped(painted.weight_index as i32),
+            ..Cell::default()
+        });
+    }
+    group
+}
+
+/// One scene group per document layer, back-to-front in document order.
+pub fn build_document_layer_cell_groups(
+    runtime: &SharedDocumentRuntime,
+    current_breath: u32,
+) -> Vec<CellGroup> {
+    runtime
+        .layers()
+        .iter()
+        .filter_map(|layer| runtime.canvas_for_layer(&layer.layer_id, current_breath))
+        .map(build_paint_canvas_cell_group)
+        .collect()
+}

@@ -339,3 +339,102 @@ fn material_from_name(name: &str) -> Option<CellMaterialId> {
         _ => None,
     }
 }
+
+// --- session-state file IO and projection -----------------------------------
+
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use thaum_renderer_domain::{Camera, ModuleRegistry, UiPalette};
+
+/// The acting user for this session: the `THAUM_SESSION_USER_ID` override, else
+/// the OS user name, else a fixed local fallback.
+pub fn session_user_id() -> String {
+    env::var("THAUM_SESSION_USER_ID")
+        .or_else(|_| env::var("USER"))
+        .unwrap_or_else(|_| "local-user".to_string())
+}
+
+pub fn painter_session_state_path(artifacts_root: &Path, user_id: &str) -> PathBuf {
+    artifacts_root
+        .join("user-session-state")
+        .join(format!("{user_id}.json"))
+}
+
+pub fn load_painter_user_session_state(path: &Path) -> Result<Option<PainterUserSessionState>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(path).with_context(|| {
+        format!(
+            "failed to read painter user session state at {}",
+            path.display()
+        )
+    })?;
+    let state = serde_json::from_str(&text).with_context(|| {
+        format!(
+            "failed to parse painter user session state JSON at {}",
+            path.display()
+        )
+    })?;
+    Ok(Some(state))
+}
+
+pub fn save_painter_user_session_state(path: &Path, state: &PainterUserSessionState) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create painter user session state directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    let text = serde_json::to_string_pretty(state)
+        .context("failed to serialize painter user session state")?;
+    fs::write(path, text).with_context(|| {
+        format!(
+            "failed to write painter user session state at {}",
+            path.display()
+        )
+    })
+}
+
+fn path_to_string(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_user_session_state(
+    user_id: &str,
+    camera: Camera,
+    modules: &ModuleRegistry,
+    ui_palette: &UiPalette,
+    command_bar: &CommandBar,
+    current_document_root: Option<&Path>,
+    active_layer_id: Option<&str>,
+    drawing_space_wheel_mode: crate::DrawingSpaceWheelMode,
+    selection_mode: SelectionMode,
+    tool_state: &ToolState,
+) -> PainterUserSessionState {
+    PainterUserSessionState {
+        schema_version: 1,
+        app_id: "thaum-painter".to_string(),
+        user_id: user_id.to_string(),
+        workspace_id: "default-workspace".to_string(),
+        renderer: PersistedRendererUiSessionState::new(
+            camera,
+            modules.persisted_ui_state(),
+            ui_palette,
+        ),
+        painter: PersistedPainterUiState::from_runtime(
+            drawing_space_wheel_mode,
+            selection_mode,
+            command_bar,
+            current_document_root.map(path_to_string).as_deref(),
+            active_layer_id,
+            tool_state,
+        ),
+    }
+}
