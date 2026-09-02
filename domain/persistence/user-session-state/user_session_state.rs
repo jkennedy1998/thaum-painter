@@ -30,6 +30,11 @@ pub struct PersistedPainterUiState {
     pub current_document_root: Option<String>,
     #[serde(default)]
     pub active_layer_id: Option<String>,
+    /// Restored playhead breath. Boot clamps it to a breath the active layer's
+    /// raster track actually covers, so a restored playhead can never sit in a
+    /// raster gap where the layer renders nothing and strokes are rejected.
+    #[serde(default)]
+    pub current_breath: u32,
     pub tool_state: PersistedToolState,
 }
 
@@ -84,6 +89,7 @@ impl PersistedPainterUiState {
         command_bar: &CommandBar,
         current_document_root: Option<&str>,
         active_layer_id: Option<&str>,
+        current_breath: u32,
         tool_state: &ToolState,
     ) -> Self {
         Self {
@@ -92,6 +98,7 @@ impl PersistedPainterUiState {
             command_bar: command_bar.persisted_state(),
             current_document_root: current_document_root.map(str::to_string),
             active_layer_id: active_layer_id.map(str::to_string),
+            current_breath,
             tool_state: PersistedToolState::from_runtime(tool_state),
         }
     }
@@ -414,6 +421,7 @@ pub fn build_user_session_state(
     command_bar: &CommandBar,
     current_document_root: Option<&Path>,
     active_layer_id: Option<&str>,
+    current_breath: u32,
     drawing_space_wheel_mode: crate::DrawingSpaceWheelMode,
     selection_mode: SelectionMode,
     tool_state: &ToolState,
@@ -434,6 +442,7 @@ pub fn build_user_session_state(
             command_bar,
             current_document_root.map(path_to_string).as_deref(),
             active_layer_id,
+            current_breath,
             tool_state,
         ),
     }

@@ -667,6 +667,28 @@ impl SharedDocumentRuntime {
         self.block_canvases.get(&(layer_id.to_string(), block_id))
     }
 
+    /// The first breath the layer's raster track covers, preferring the earliest
+    /// block with content. Boot seeks the playhead here so it never rests in a gap
+    /// where the layer renders nothing and strokes are silently rejected.
+    pub fn first_breath_with_raster_block(&self, layer_id: &str) -> Option<u32> {
+        let layer = self
+            .document
+            .layers
+            .iter()
+            .find(|layer| layer.layer_id == layer_id)?;
+        let track = layer
+            .property_tracks
+            .iter()
+            .find(|track| track.property_id == "raster")?;
+        let first = track.blocks.iter().min_by_key(|block| block.start_breath)?;
+        let first_with_content = track
+            .blocks
+            .iter()
+            .filter(|block| !block.is_blank)
+            .min_by_key(|block| block.start_breath);
+        Some(first_with_content.unwrap_or(first).start_breath)
+    }
+
     pub fn layers(&self) -> &[SharedDocumentLayer] {
         &self.document.layers
     }
@@ -2739,6 +2761,34 @@ mod tests {
 
         assert!(!runtime.swap_property_blocks("layer-1", "raster", "block-1", "block-1"));
         assert!(!runtime.swap_property_blocks("layer-1", "raster", "block-1", "missing"));
+    }
+
+    #[test]
+    fn first_breath_with_raster_block_seeks_content_and_skips_leading_gaps() {
+        let document = SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
+        let mut runtime = SharedDocumentRuntime::new(document);
+        // Default: one block starting at breath 0.
+        assert_eq!(runtime.first_breath_with_raster_block("layer-1"), Some(0));
+
+        // Split at 8, blank the leading block so breaths 0..8 are a real gap
+        // (split alone preserves is_blank), then paint only into the later block:
+        // the seek lands on the first block with content, not the gap.
+        runtime.split_property_block("layer-1", "raster", "block-1", 8);
+        runtime.split_property_block("layer-1", "raster", "block-2", 16);
+        assert!(runtime.blank_property_block("layer-1", "raster", "block-1"));
+        runtime.apply_action_record(SharedDocumentActionRecord::cell_patch_set(
+            "a1",
+            "doc-1",
+            "layer-1",
+            "u1",
+            "1",
+            vec![SharedCellPatch::new(point(0, 0), None, Some(&cell('A')))],
+            Some("block-2".to_string()),
+        ));
+        assert_eq!(runtime.first_breath_with_raster_block("layer-1"), Some(8));
+
+        // Unknown layers have no raster track to seek.
+        assert_eq!(runtime.first_breath_with_raster_block("missing"), None);
     }
 
     #[test]

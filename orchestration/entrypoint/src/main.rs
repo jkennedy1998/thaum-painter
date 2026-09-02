@@ -801,6 +801,7 @@ fn build_user_session_state(
     command_bar: &CommandBar,
     current_document_root: Option<&Path>,
     active_layer_id: Option<&str>,
+    current_breath: u32,
     drawing_space_wheel_mode: DrawingSpaceWheelMode,
     selection_mode: SelectionMode,
     tool_state: &ToolState,
@@ -821,6 +822,7 @@ fn build_user_session_state(
             command_bar,
             current_document_root.map(path_to_string).as_deref(),
             active_layer_id,
+            current_breath,
             tool_state,
         ),
     }
@@ -1344,6 +1346,24 @@ fn main() -> Result<()> {
             .as_ref()
             .and_then(|session| session.painter.active_layer_id.as_deref()),
     );
+    // Seek the playhead to a breath the active layer's raster track actually covers:
+    // prefer the restored playhead, but if it (or the boot default of 0) sits in a
+    // raster gap, the layer would render nothing and every stroke would be silently
+    // rejected — exactly the "booted and could not draw" failure.
+    let restored_breath = persisted_session
+        .as_ref()
+        .map(|session| session.painter.current_breath)
+        .filter(|breath| {
+            shared_document
+                .active_raster_block_id(&active_layer_id, *breath)
+                .is_some()
+        });
+    let initial_breath = restored_breath.unwrap_or_else(|| {
+        shared_document
+            .first_breath_with_raster_block(&active_layer_id)
+            .unwrap_or(0)
+    });
+    timeline_state.borrow_mut().set_current_breath(initial_breath);
     let mut selected_property_id: Option<String> = None;
     let mut canvas = shared_document
         .canvas_for_layer(&active_layer_id, timeline_state.borrow().current_breath)
@@ -2027,6 +2047,7 @@ fn main() -> Result<()> {
             &command_bar,
             current_document_root.as_deref(),
             Some(&active_layer_id),
+            timeline_state.borrow().current_breath,
             *drawing_space_wheel_mode.borrow(),
             selection.borrow().mode(),
             &tool_state.borrow(),
