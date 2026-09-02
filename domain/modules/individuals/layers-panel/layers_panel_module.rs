@@ -12,6 +12,16 @@ pub enum LayerPropertyKind {
     Move,
 }
 
+/// Which content neighbor a blank property block merges into, mirroring
+/// `thaum_painter_domain::PropertyBlockMergeDirection` without coupling this module to
+/// canonical storage (see this encapsulation's "does not own"). The orchestration layer maps
+/// this onto the storage-owned enum when applying the action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeDirection {
+    Left,
+    Right,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PropertyTrackBlock {
     pub id: String,
@@ -57,6 +67,9 @@ pub enum LayersPanelAction {
     SetLayerTiming(String, u32, u32),
     SetPropertyBlockTiming(String, String, String, u32, u32),
     SplitPropertyBlock(String, String, String, u32),
+    BlankPropertyBlock(String, String, String),
+    MergeBlankPropertyBlock(String, String, String, MergeDirection),
+    SwapPropertyBlocks(String, String, String, String),
 }
 
 /// Shared state between `LayersPanelModule` and its orchestration caller. The module only ever
@@ -136,7 +149,13 @@ enum PanelRow {
     Property(usize),
 }
 
+/// The layer's own timeline bar (`bar_drag` below) is scaffolded to move/trim like a property
+/// block, but nothing yet starts that drag — clicking a layer row's timeline space just
+/// selects the layer (see `PanelRow::Layer` handling). Wiring an actual layer-bar drag is out
+/// of scope for the property-block click/drag parity pass that split this from
+/// `PropertyDragMode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 enum BarDragMode {
     Move,
     TrimStart,
@@ -174,15 +193,97 @@ struct PropertyBlockHit {
     is_blank: bool,
 }
 
+/// How a property-block press-drag reshapes the block, mirroring the old system's
+/// left/right-click raster drag modes (`resolve_groups_raster_drag_mode`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PropertyDragMode {
+    /// Left-click drag on the body: moves the whole block, keeping its length.
+    Move,
+    /// Left-click drag on the left edge: trims that edge, anchored at the other edge.
+    TrimStart,
+    /// Click-drag on the right edge (either button): trims that edge, anchored at the start.
+    TrimEnd,
+    /// Right-click drag on a single-breath block or the left edge: grows/shrinks from
+    /// whichever side the pointer moves toward, flipping freely through the block.
+    DynamicResize,
+    /// Right-click drag on the body (or a blank's center): previews swapping this block's
+    /// breath range with whatever other block the pointer is over, committed on release.
+    Swap,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PropertyBlockDrag {
     layer_id: String,
     property_id: String,
     block_id: String,
-    mode: BarDragMode,
+    mode: PropertyDragMode,
     orig_start: u32,
     orig_length: u32,
     anchor_breath: u32,
+    swap_target_block_id: Option<String>,
+}
+
+/// Resolves what a press-drag on `hit` should do, mirroring the old system's
+/// `resolve_groups_raster_drag_mode`: blanks only drag via a right-click swap on their
+/// center; content blocks move/trim on left-click and get dynamic-resize/swap behavior on
+/// right-click. Right-click on the right edge behaves the same as left-click (no dynamic
+/// flip-through on that side), matching the old system as authored.
+fn resolve_property_drag_mode(
+    hit: &PropertyBlockHit,
+    button: ModulePointerButton,
+) -> Option<PropertyDragMode> {
+    if hit.is_blank {
+        return if button == ModulePointerButton::Right && hit.mode == PropertyBlockHitMode::BlankCenter
+        {
+            Some(PropertyDragMode::Swap)
+        } else {
+            None
+        };
+    }
+    let is_right = button == ModulePointerButton::Right;
+    match hit.mode {
+        PropertyBlockHitMode::BodySingle => Some(if is_right {
+            PropertyDragMode::DynamicResize
+        } else {
+            PropertyDragMode::Move
+        }),
+        PropertyBlockHitMode::EdgeStart => Some(if is_right {
+            PropertyDragMode::DynamicResize
+        } else {
+            PropertyDragMode::TrimStart
+        }),
+        PropertyBlockHitMode::EdgeEnd => Some(PropertyDragMode::TrimEnd),
+        PropertyBlockHitMode::BodyMove => Some(if is_right {
+            PropertyDragMode::Swap
+        } else {
+            PropertyDragMode::Move
+        }),
+        PropertyBlockHitMode::BlankStart
+        | PropertyBlockHitMode::BlankEnd
+        | PropertyBlockHitMode::BlankCenter
+        | PropertyBlockHitMode::BlankSingle => None,
+    }
+}
+
+/// Which side a blank block should merge into on a right double-click, mirroring the old
+/// system's `getBlankCompactDirection`: the start/end caps always compact toward that side,
+/// a single-breath blank compacts left, and a blank's interior compacts toward whichever
+/// half of its span was clicked.
+fn blank_merge_direction(hit: &PropertyBlockHit, block: &PropertyTrackBlock) -> MergeDirection {
+    match hit.mode {
+        PropertyBlockHitMode::BlankStart => MergeDirection::Left,
+        PropertyBlockHitMode::BlankEnd => MergeDirection::Right,
+        PropertyBlockHitMode::BlankSingle => MergeDirection::Left,
+        _ => {
+            let end = block.start_breath + block.length_breaths.max(1) - 1;
+            let midpoint = (block.start_breath + end) / 2;
+            if hit.breath <= midpoint {
+                MergeDirection::Left
+            } else {
+                MergeDirection::Right
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -369,9 +470,13 @@ impl LayersPanelModule {
             .property_block_drag
             .as_ref()
             .map(|drag| {
-                drag.layer_id == property.layer_id
+                (drag.layer_id == property.layer_id
                     && drag.property_id == property.property_id
-                    && drag.block_id == block.id
+                    && drag.block_id == block.id)
+                    || (drag.mode == PropertyDragMode::Swap
+                        && drag.property_id == property.property_id
+                        && drag.layer_id == property.layer_id
+                        && drag.swap_target_block_id.as_deref() == Some(block.id.as_str()))
             })
             .unwrap_or(false);
 
@@ -403,6 +508,18 @@ impl LayersPanelModule {
         )
     }
 
+    fn find_property_block(&self, hit: &PropertyBlockHit) -> Option<PropertyTrackBlock> {
+        self.state
+            .borrow()
+            .property_rows
+            .iter()
+            .find(|property| {
+                property.layer_id == hit.layer_id && property.property_id == hit.property_id
+            })
+            .and_then(|property| property.blocks.iter().find(|block| block.id == hit.block_id))
+            .cloned()
+    }
+
     fn handle_property_block_click(
         &mut self,
         hit: PropertyBlockHit,
@@ -428,18 +545,38 @@ impl LayersPanelModule {
             at: now,
         });
 
-        if button == ModulePointerButton::Left && is_double_click && hit.mode == PropertyBlockHitMode::BodyMove {
-            self.state.borrow_mut().queue_action(LayersPanelAction::SplitPropertyBlock(
-                hit.layer_id,
-                hit.property_id,
-                hit.block_id,
-                hit.breath,
-            ));
+        if is_double_click {
             self.property_block_drag = None;
-            return;
-        }
-
-        if button != ModulePointerButton::Left {
+            if hit.is_blank {
+                if button == ModulePointerButton::Right {
+                    if let Some(block) = self.find_property_block(&hit) {
+                        let direction = blank_merge_direction(&hit, &block);
+                        self.state.borrow_mut().queue_action(LayersPanelAction::MergeBlankPropertyBlock(
+                            hit.layer_id,
+                            hit.property_id,
+                            hit.block_id,
+                            direction,
+                        ));
+                    }
+                }
+                return;
+            }
+            if button == ModulePointerButton::Left && hit.mode == PropertyBlockHitMode::BodyMove {
+                self.state.borrow_mut().queue_action(LayersPanelAction::SplitPropertyBlock(
+                    hit.layer_id,
+                    hit.property_id,
+                    hit.block_id,
+                    hit.breath,
+                ));
+                return;
+            }
+            if button == ModulePointerButton::Right {
+                self.state.borrow_mut().queue_action(LayersPanelAction::BlankPropertyBlock(
+                    hit.layer_id,
+                    hit.property_id,
+                    hit.block_id,
+                ));
+            }
             return;
         }
 
@@ -448,29 +585,21 @@ impl LayersPanelModule {
             hit.property_id.clone(),
         ));
 
-        let mode = match hit.mode {
-            PropertyBlockHitMode::EdgeStart => Some(BarDragMode::TrimStart),
-            PropertyBlockHitMode::EdgeEnd => Some(BarDragMode::TrimEnd),
-            PropertyBlockHitMode::BodyMove | PropertyBlockHitMode::BodySingle => Some(BarDragMode::Move),
-            PropertyBlockHitMode::BlankStart
-            | PropertyBlockHitMode::BlankEnd
-            | PropertyBlockHitMode::BlankCenter
-            | PropertyBlockHitMode::BlankSingle => None,
-        };
-        let Some(mode) = mode else {
+        if hit.is_blank
+            && button == ModulePointerButton::Left
+            && matches!(hit.mode, PropertyBlockHitMode::BlankCenter | PropertyBlockHitMode::BlankSingle)
+        {
+            self.state
+                .borrow_mut()
+                .queue_action(LayersPanelAction::SetCurrentBreath(hit.breath));
+            self.scrubbing_ruler = true;
+            return;
+        }
+
+        let Some(mode) = resolve_property_drag_mode(&hit, button) else {
             return;
         };
-        let state = self.state.borrow();
-        let block = state
-            .property_rows
-            .iter()
-            .find(|property| {
-                property.layer_id == hit.layer_id && property.property_id == hit.property_id
-            })
-            .and_then(|property| property.blocks.iter().find(|block| block.id == hit.block_id))
-            .cloned();
-        drop(state);
-        let Some(block) = block else {
+        let Some(block) = self.find_property_block(&hit) else {
             return;
         };
         self.property_block_drag = Some(PropertyBlockDrag {
@@ -481,6 +610,7 @@ impl LayersPanelModule {
             orig_start: block.start_breath,
             orig_length: block.length_breaths.max(1),
             anchor_breath: hit.breath,
+            swap_target_block_id: None,
         });
     }
 }
@@ -976,44 +1106,80 @@ impl Module for LayersPanelModule {
                         new_length,
                     ));
                 }
-                if let Some(drag) = &self.property_block_drag {
+                if self.property_block_drag.is_some() {
                     let local_x = x - self.rect.x0;
                     let current_breath = self.breath_at_x(local_x) as i64;
+                    let drag = self.property_block_drag.as_mut().unwrap();
                     let delta = current_breath - drag.anchor_breath as i64;
-                    let (new_start, new_length) = match drag.mode {
-                        BarDragMode::Move => {
-                            let new_start = (drag.orig_start as i64 + delta).max(0) as u32;
-                            (new_start, drag.orig_length)
-                        }
-                        BarDragMode::TrimStart => {
-                            let max_start = drag.orig_start + drag.orig_length - 1;
-                            let new_start =
-                                (drag.orig_start as i64 + delta).clamp(0, max_start as i64) as u32;
-                            let new_length = drag.orig_start + drag.orig_length - new_start;
-                            (new_start, new_length)
-                        }
-                        BarDragMode::TrimEnd => {
-                            let orig_end = drag.orig_start + drag.orig_length - 1;
-                            let new_end =
-                                (orig_end as i64 + delta).max(drag.orig_start as i64) as u32;
-                            let new_length = new_end - drag.orig_start + 1;
-                            (drag.orig_start, new_length)
-                        }
-                    };
-                    self.state.borrow_mut().queue_action(LayersPanelAction::SetPropertyBlockTiming(
-                        drag.layer_id.clone(),
-                        drag.property_id.clone(),
-                        drag.block_id.clone(),
-                        new_start,
-                        new_length,
-                    ));
+                    if drag.mode == PropertyDragMode::Swap {
+                        drag.swap_target_block_id = self
+                            .hovered_property_block
+                            .as_ref()
+                            .filter(|hover| {
+                                hover.layer_id == drag.layer_id
+                                    && hover.property_id == drag.property_id
+                                    && hover.block_id != drag.block_id
+                            })
+                            .map(|hover| hover.block_id.clone());
+                    } else {
+                        let (new_start, new_length) = match drag.mode {
+                            PropertyDragMode::Move => {
+                                let new_start = (drag.orig_start as i64 + delta).max(0) as u32;
+                                (new_start, drag.orig_length)
+                            }
+                            PropertyDragMode::TrimStart => {
+                                let max_start = drag.orig_start + drag.orig_length - 1;
+                                let new_start = (drag.orig_start as i64 + delta)
+                                    .clamp(0, max_start as i64) as u32;
+                                let new_length = drag.orig_start + drag.orig_length - new_start;
+                                (new_start, new_length)
+                            }
+                            PropertyDragMode::TrimEnd => {
+                                let orig_end = drag.orig_start + drag.orig_length - 1;
+                                let new_end =
+                                    (orig_end as i64 + delta).max(drag.orig_start as i64) as u32;
+                                let new_length = new_end - drag.orig_start + 1;
+                                (drag.orig_start, new_length)
+                            }
+                            PropertyDragMode::DynamicResize => {
+                                let orig_end = drag.orig_start + drag.orig_length - 1;
+                                if current_breath < drag.anchor_breath as i64 {
+                                    let new_start = (drag.orig_start as i64 + delta).max(0) as u32;
+                                    (new_start, orig_end - new_start + 1)
+                                } else {
+                                    let new_end =
+                                        (orig_end as i64 + delta).max(drag.orig_start as i64) as u32;
+                                    (drag.orig_start, new_end - drag.orig_start + 1)
+                                }
+                            }
+                            PropertyDragMode::Swap => unreachable!(),
+                        };
+                        self.state.borrow_mut().queue_action(LayersPanelAction::SetPropertyBlockTiming(
+                            drag.layer_id.clone(),
+                            drag.property_id.clone(),
+                            drag.block_id.clone(),
+                            new_start,
+                            new_length,
+                        ));
+                    }
                 }
             }
             ModulePointerEvent::Up { x, y } => {
                 self.gizmo_state.end_drag();
                 self.scrubbing_ruler = false;
                 self.bar_drag = None;
-                self.property_block_drag = None;
+                if let Some(drag) = self.property_block_drag.take() {
+                    if drag.mode == PropertyDragMode::Swap {
+                        if let Some(target_block_id) = drag.swap_target_block_id {
+                            self.state.borrow_mut().queue_action(LayersPanelAction::SwapPropertyBlocks(
+                                drag.layer_id,
+                                drag.property_id,
+                                drag.block_id,
+                                target_block_id,
+                            ));
+                        }
+                    }
+                }
                 self.hovered_property_block = self.property_block_hit_at(x, y);
             }
             ModulePointerEvent::Enter => self.gizmo_state.set_hovered(true),
@@ -1295,6 +1461,265 @@ mod tests {
                 "raster".to_string(),
                 "block-1".to_string(),
                 2,
+            ))
+        );
+    }
+
+    #[test]
+    fn right_double_clicking_a_content_block_blanks_it() {
+        let state = state_with_rows();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(4);
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 2,
+            y,
+            button: ModulePointerButton::Right,
+        });
+        state.borrow_mut().take_pending_action();
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 2,
+            y,
+            button: ModulePointerButton::Right,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::BlankPropertyBlock(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-1".to_string(),
+            ))
+        );
+    }
+
+    fn state_with_a_blank_between_two_content_blocks() -> Rc<RefCell<LayersPanelState>> {
+        let state = Rc::new(RefCell::new(LayersPanelState::default()));
+        state.borrow_mut().sync(
+            vec![row("layer-1", "Layer 1", 0, 11)],
+            vec![property(
+                "layer-1",
+                "raster",
+                "RASTER",
+                LayerPropertyKind::Raster,
+                vec![
+                    PropertyTrackBlock { id: "block-1".to_string(), start_breath: 0, length_breaths: 3, is_blank: false },
+                    PropertyTrackBlock { id: "block-2".to_string(), start_breath: 3, length_breaths: 5, is_blank: true },
+                    PropertyTrackBlock { id: "block-3".to_string(), start_breath: 8, length_breaths: 3, is_blank: false },
+                ],
+            )],
+            Some("layer-1".to_string()),
+            Some("raster".to_string()),
+            0,
+            false,
+        );
+        state
+    }
+
+    #[test]
+    fn right_double_clicking_the_left_half_of_a_blank_merges_it_left() {
+        let state = state_with_a_blank_between_two_content_blocks();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(4);
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 4,
+            y,
+            button: ModulePointerButton::Right,
+        });
+        state.borrow_mut().take_pending_action();
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 4,
+            y,
+            button: ModulePointerButton::Right,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::MergeBlankPropertyBlock(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-2".to_string(),
+                MergeDirection::Left,
+            ))
+        );
+    }
+
+    #[test]
+    fn right_double_clicking_the_right_half_of_a_blank_merges_it_right() {
+        let state = state_with_a_blank_between_two_content_blocks();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(4);
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 6,
+            y,
+            button: ModulePointerButton::Right,
+        });
+        state.borrow_mut().take_pending_action();
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 6,
+            y,
+            button: ModulePointerButton::Right,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::MergeBlankPropertyBlock(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-2".to_string(),
+                MergeDirection::Right,
+            ))
+        );
+    }
+
+    #[test]
+    fn left_click_dragging_the_center_of_a_blank_scrubs_the_timeline_instead_of_dragging() {
+        let state = state_with_a_blank_between_two_content_blocks();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(4);
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 5,
+            y,
+            button: ModulePointerButton::Left,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::SetCurrentBreath(5))
+        );
+        assert!(panel.wants_pointer_capture());
+
+        panel.on_pointer_event(ModulePointerEvent::Move {
+            x: timeline_start + 6,
+            y,
+        });
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::SetCurrentBreath(6))
+        );
+    }
+
+    fn state_with_two_adjacent_content_blocks() -> Rc<RefCell<LayersPanelState>> {
+        let state = Rc::new(RefCell::new(LayersPanelState::default()));
+        state.borrow_mut().sync(
+            vec![row("layer-1", "Layer 1", 0, 10)],
+            vec![property(
+                "layer-1",
+                "raster",
+                "RASTER",
+                LayerPropertyKind::Raster,
+                vec![
+                    PropertyTrackBlock { id: "block-1".to_string(), start_breath: 0, length_breaths: 5, is_blank: false },
+                    PropertyTrackBlock { id: "block-2".to_string(), start_breath: 5, length_breaths: 5, is_blank: false },
+                ],
+            )],
+            Some("layer-1".to_string()),
+            Some("raster".to_string()),
+            0,
+            false,
+        );
+        state
+    }
+
+    #[test]
+    fn right_click_dragging_the_body_previews_and_commits_a_swap_with_the_hovered_block() {
+        let state = state_with_two_adjacent_content_blocks();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(4);
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 2,
+            y,
+            button: ModulePointerButton::Right,
+        });
+        state.borrow_mut().take_pending_action();
+        assert!(panel.wants_pointer_capture());
+
+        panel.on_pointer_event(ModulePointerEvent::Move {
+            x: timeline_start + 7,
+            y,
+        });
+        assert_eq!(state.borrow_mut().take_pending_action(), None);
+
+        panel.on_pointer_event(ModulePointerEvent::Up {
+            x: timeline_start + 7,
+            y,
+        });
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::SwapPropertyBlocks(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-1".to_string(),
+                "block-2".to_string(),
+            ))
+        );
+        assert!(!panel.wants_pointer_capture());
+    }
+
+    #[test]
+    fn right_click_dragging_the_left_edge_can_flip_to_resizing_the_end() {
+        let state = Rc::new(RefCell::new(LayersPanelState::default()));
+        state.borrow_mut().sync(
+            vec![row("layer-1", "Layer 1", 0, 10)],
+            vec![property(
+                "layer-1",
+                "raster",
+                "RASTER",
+                LayerPropertyKind::Raster,
+                vec![PropertyTrackBlock { id: "block-1".to_string(), start_breath: 3, length_breaths: 5, is_blank: false }],
+            )],
+            Some("layer-1".to_string()),
+            Some("raster".to_string()),
+            0,
+            false,
+        );
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(4);
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 3,
+            y,
+            button: ModulePointerButton::Right,
+        });
+        state.borrow_mut().take_pending_action();
+
+        panel.on_pointer_event(ModulePointerEvent::Move {
+            x: timeline_start + 1,
+            y,
+        });
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::SetPropertyBlockTiming(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-1".to_string(),
+                1,
+                7,
+            ))
+        );
+
+        panel.on_pointer_event(ModulePointerEvent::Move {
+            x: timeline_start + 6,
+            y,
+        });
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::SetPropertyBlockTiming(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-1".to_string(),
+                3,
+                8,
             ))
         );
     }

@@ -52,7 +52,7 @@ pub use hand_settings_module::HandSettingsModule;
 pub use interpolation::{resolve_gap_fill, surrounding_items, BreathRanged, GapFill};
 pub use layers_panel_module::{
     LayerPropertyKind, LayerRow, LayersPanelAction, LayersPanelModule, LayersPanelState,
-    PropertyTrackBlock, PropertyTrackRow,
+    MergeDirection, PropertyTrackBlock, PropertyTrackRow,
 };
 pub use legacy_indexed_palette::legacy_indexed_palette;
 pub use manifest::{
@@ -74,10 +74,11 @@ pub use selection_state::{
 pub use storage::{
     append_action_record, load_or_create_shared_document, save_shared_document_snapshot,
     write_action_records_atomic, PersistedCellPoint, PersistedSharedGraphic,
-    PersistedSharedPaintColor, PersistedSharedPaintedCell, SharedCellPatch, SharedDocumentAction,
-    SharedDocumentActionRecord, SharedDocumentFile, SharedDocumentLayer,
-    SharedDocumentPaths, SharedDocumentPropertyBlock, SharedDocumentPropertyTrack,
-    SharedDocumentRuntime, SHARED_DOCUMENT_KIND, SHARED_DOCUMENT_SCHEMA_VERSION,
+    PersistedSharedPaintColor, PersistedSharedPaintedCell, PropertyBlockMergeDirection,
+    SharedCellPatch, SharedDocumentAction, SharedDocumentActionRecord, SharedDocumentFile,
+    SharedDocumentLayer, SharedDocumentPaths, SharedDocumentPropertyBlock,
+    SharedDocumentPropertyTrack, SharedDocumentRuntime, SHARED_DOCUMENT_KIND,
+    SHARED_DOCUMENT_SCHEMA_VERSION,
 };
 pub use timeline_state::TimelineState;
 pub use tool_state::{

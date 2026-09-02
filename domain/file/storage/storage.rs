@@ -24,6 +24,13 @@ pub struct SharedDocumentPropertyBlock {
     pub is_blank: bool,
 }
 
+/// Which content neighbor a blank property block merges into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PropertyBlockMergeDirection {
+    Left,
+    Right,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SharedDocumentPropertyTrack {
     pub property_id: String,
@@ -563,6 +570,98 @@ impl SharedDocumentRuntime {
                 is_blank: block.is_blank,
             },
         );
+        true
+    }
+
+    /// Turns a content block into a blank placeholder covering the same breath range, leaving
+    /// the track's coverage continuous. Returns `false` if no such block exists.
+    pub fn blank_property_block(&mut self, layer_id: &str, property_id: &str, block_id: &str) -> bool {
+        let Some(track) = self.ensure_property_track_mut(layer_id, property_id) else {
+            return false;
+        };
+        let Some(block) = track.blocks.iter_mut().find(|block| block.id == block_id) else {
+            return false;
+        };
+        block.is_blank = true;
+        true
+    }
+
+    /// Merges a blank block into its content neighbor on `direction`, extending that neighbor
+    /// to cover the blank's range and removing the blank block. Returns `false` if the block
+    /// isn't blank or has no content neighbor on that side.
+    pub fn merge_blank_property_block(
+        &mut self,
+        layer_id: &str,
+        property_id: &str,
+        block_id: &str,
+        direction: PropertyBlockMergeDirection,
+    ) -> bool {
+        let Some(track) = self.ensure_property_track_mut(layer_id, property_id) else {
+            return false;
+        };
+        let Some(index) = track.blocks.iter().position(|block| block.id == block_id) else {
+            return false;
+        };
+        if !track.blocks[index].is_blank {
+            return false;
+        }
+        let blank_start = track.blocks[index].start_breath;
+        let blank_end = blank_start + track.blocks[index].length_breaths.max(1) - 1;
+        match direction {
+            PropertyBlockMergeDirection::Left => {
+                let Some(previous) = index.checked_sub(1).map(|i| &mut track.blocks[i]) else {
+                    return false;
+                };
+                if previous.is_blank {
+                    return false;
+                }
+                let previous_start = previous.start_breath;
+                previous.length_breaths = blank_end.max(previous_start) - previous_start + 1;
+                track.blocks.remove(index);
+            }
+            PropertyBlockMergeDirection::Right => {
+                let Some(next) = track.blocks.get_mut(index + 1) else {
+                    return false;
+                };
+                if next.is_blank {
+                    return false;
+                }
+                let next_end = next.start_breath + next.length_breaths.max(1) - 1;
+                next.start_breath = blank_start.min(next.start_breath);
+                next.length_breaths = next_end.max(blank_start) - next.start_breath + 1;
+                track.blocks.remove(index);
+            }
+        }
+        true
+    }
+
+    /// Swaps the breath range of two blocks in the same property track. Returns `false` if
+    /// either block is missing or they are the same block.
+    pub fn swap_property_blocks(
+        &mut self,
+        layer_id: &str,
+        property_id: &str,
+        source_block_id: &str,
+        target_block_id: &str,
+    ) -> bool {
+        if source_block_id == target_block_id {
+            return false;
+        }
+        let Some(track) = self.ensure_property_track_mut(layer_id, property_id) else {
+            return false;
+        };
+        let Some(source_index) = track.blocks.iter().position(|block| block.id == source_block_id) else {
+            return false;
+        };
+        let Some(target_index) = track.blocks.iter().position(|block| block.id == target_block_id) else {
+            return false;
+        };
+        let source_span = (track.blocks[source_index].start_breath, track.blocks[source_index].length_breaths);
+        let target_span = (track.blocks[target_index].start_breath, track.blocks[target_index].length_breaths);
+        track.blocks[source_index].start_breath = target_span.0;
+        track.blocks[source_index].length_breaths = target_span.1;
+        track.blocks[target_index].start_breath = source_span.0;
+        track.blocks[target_index].length_breaths = source_span.1;
         true
     }
 
@@ -1171,5 +1270,101 @@ mod tests {
 
         assert_eq!(block.start_breath, 3);
         assert_eq!(block.length_breaths, 7);
+    }
+
+    #[test]
+    fn blank_property_block_marks_a_content_block_as_blank() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+
+        assert!(runtime.blank_property_block("layer-1", "raster", "block-1"));
+        let block = &runtime.property_track("layer-1", "raster").unwrap().blocks[0];
+        assert!(block.is_blank);
+
+        assert!(!runtime.blank_property_block("layer-1", "raster", "missing-block"));
+    }
+
+    #[test]
+    fn merge_blank_property_block_left_extends_the_previous_content_block() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        runtime.split_property_block("layer-1", "raster", "block-1", 8);
+        runtime.blank_property_block("layer-1", "raster", "block-2");
+
+        assert!(runtime.merge_blank_property_block(
+            "layer-1",
+            "raster",
+            "block-2",
+            PropertyBlockMergeDirection::Left,
+        ));
+        let blocks = &runtime.property_track("layer-1", "raster").unwrap().blocks;
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].id, "block-1");
+        assert_eq!(blocks[0].start_breath, 0);
+        assert_eq!(blocks[0].length_breaths, 24);
+        assert!(!blocks[0].is_blank);
+    }
+
+    #[test]
+    fn merge_blank_property_block_right_extends_the_next_content_block() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        runtime.split_property_block("layer-1", "raster", "block-1", 8);
+        runtime.blank_property_block("layer-1", "raster", "block-1");
+
+        assert!(runtime.merge_blank_property_block(
+            "layer-1",
+            "raster",
+            "block-1",
+            PropertyBlockMergeDirection::Right,
+        ));
+        let blocks = &runtime.property_track("layer-1", "raster").unwrap().blocks;
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].id, "block-2");
+        assert_eq!(blocks[0].start_breath, 0);
+        assert_eq!(blocks[0].length_breaths, 24);
+        assert!(!blocks[0].is_blank);
+    }
+
+    #[test]
+    fn merge_blank_property_block_fails_without_a_content_neighbor_on_that_side() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        runtime.blank_property_block("layer-1", "raster", "block-1");
+
+        assert!(!runtime.merge_blank_property_block(
+            "layer-1",
+            "raster",
+            "block-1",
+            PropertyBlockMergeDirection::Left,
+        ));
+        assert!(!runtime.merge_blank_property_block(
+            "layer-1",
+            "raster",
+            "block-1",
+            PropertyBlockMergeDirection::Right,
+        ));
+    }
+
+    #[test]
+    fn swap_property_blocks_exchanges_their_breath_ranges() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        runtime.split_property_block("layer-1", "raster", "block-1", 8);
+
+        assert!(runtime.swap_property_blocks("layer-1", "raster", "block-1", "block-2"));
+        let blocks = &runtime.property_track("layer-1", "raster").unwrap().blocks;
+        assert_eq!(blocks[0].start_breath, 8);
+        assert_eq!(blocks[0].length_breaths, 16);
+        assert_eq!(blocks[1].start_breath, 0);
+        assert_eq!(blocks[1].length_breaths, 8);
+
+        assert!(!runtime.swap_property_blocks("layer-1", "raster", "block-1", "block-1"));
+        assert!(!runtime.swap_property_blocks("layer-1", "raster", "block-1", "missing"));
     }
 }

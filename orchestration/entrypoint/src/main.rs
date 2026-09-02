@@ -14,12 +14,12 @@ use thaum_painter_domain::{
     append_action_record, load_or_create_shared_document, save_shared_document_snapshot, Canvas,
     CanvasBounds, CanvasPlaneAxis, DrawingSpaceWheelMode, GraphicPickerModule, HandSettingsModule,
     LayerPropertyKind, LayerRow, LayersPanelAction, LayersPanelModule, LayersPanelState,
-    MaterialPickerModule, PaintCanvasBoundsModule, PaintColorBlockModule,
+    MaterialPickerModule, MergeDirection, PaintCanvasBoundsModule, PaintColorBlockModule,
     PaintColorPickerModule, PaintHand,
     PaintTarget, PaintTool, PainterSelection, PainterUserSessionState, PersistedPainterUiState,
-    PropertyTrackBlock, PropertyTrackRow, SelectionMode, SharedCellPatch,
-    SharedDocumentActionRecord, SharedDocumentFile, SharedDocumentPaths, SharedDocumentRuntime,
-    TimelineState, ToolDef, ToolState, ToolboxModule,
+    PropertyBlockMergeDirection, PropertyTrackBlock, PropertyTrackRow, SelectionMode,
+    SharedCellPatch, SharedDocumentActionRecord, SharedDocumentFile, SharedDocumentPaths,
+    SharedDocumentRuntime, TimelineState, ToolDef, ToolState, ToolboxModule,
 };
 use thaum_renderer_boot::{
     boot_renderer, cell_clip_size_for_state, run_renderer_window_with_state_frame_provider,
@@ -835,6 +835,19 @@ fn apply_layers_panel_action(
         LayersPanelAction::SplitPropertyBlock(layer_id, property_id, block_id, split_breath) => {
             shared_document.split_property_block(&layer_id, &property_id, &block_id, split_breath);
             *selected_property_id = Some(property_id);
+        }
+        LayersPanelAction::BlankPropertyBlock(layer_id, property_id, block_id) => {
+            shared_document.blank_property_block(&layer_id, &property_id, &block_id);
+        }
+        LayersPanelAction::MergeBlankPropertyBlock(layer_id, property_id, block_id, direction) => {
+            let direction = match direction {
+                MergeDirection::Left => PropertyBlockMergeDirection::Left,
+                MergeDirection::Right => PropertyBlockMergeDirection::Right,
+            };
+            shared_document.merge_blank_property_block(&layer_id, &property_id, &block_id, direction);
+        }
+        LayersPanelAction::SwapPropertyBlocks(layer_id, property_id, source_block_id, target_block_id) => {
+            shared_document.swap_property_blocks(&layer_id, &property_id, &source_block_id, &target_block_id);
         }
     }
 }
