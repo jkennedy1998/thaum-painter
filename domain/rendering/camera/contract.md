@@ -21,6 +21,8 @@ Own app-side camera intent and focus-resolution rules before state is handed to 
 ## contents
 - `contract.md`
   - camera contract
+- `camera_viewport.rs`
+  - app-side camera→plane mapping and viewport-scroll intent (`CanvasBounds` derivation from the live camera, HUD/drawing-space wheel handling, viewport-centered swing/roll)
 
 ## dependencies
 - `/home/j/Repos/thaum-painter/domain/painter-document/`
@@ -40,6 +42,7 @@ Own app-side camera intent and focus-resolution rules before state is handed to 
 
 ## tests
 - future camera resolution tests
+- `camera_viewport` inline tests: bounds follow HUD pan offset, swing/roll keep the viewport-center world point under the viewport center, HUD and drawing-space scroll directions
 
 ## data
 - none

@@ -1,5 +1,7 @@
 #[path = "painter-operations/brush/brush.rs"]
 pub mod brush;
+#[path = "rendering/camera/camera_viewport.rs"]
+pub mod camera_viewport;
 #[path = "painter-operations/fill/fill.rs"]
 pub mod fill;
 #[path = "modules/individuals/graphic-picker/graphic_picker_module.rs"]

@@ -11,8 +11,12 @@ use std::{
 use anyhow::{Context, Result};
 use rfd::FileDialog;
 use thaum_painter_domain::{
-    append_action_record, load_or_create_shared_document, save_shared_document_snapshot, Canvas,
-    CanvasBounds, CanvasPlaneAxis, DrawingSpaceWheelMode, GraphicPickerModule, HandSettingsModule,
+    append_action_record, camera_viewport::{
+        apply_drawing_space_scroll, apply_hud_scroll, pan_hud_and_focus_right,
+        pan_hud_and_focus_up, reorient_camera_around_viewport_center, sync_canvas_bounds_to_camera,
+        INITIAL_PAINT_CANVAS_BOUNDS, INITIAL_PAINT_CANVAS_VIEWPORT,
+    }, load_or_create_shared_document, save_shared_document_snapshot, Canvas,
+    CanvasBounds, DrawingSpaceWheelMode, GraphicPickerModule, HandSettingsModule,
     LayerPropertyKind, LayerRow, LayersPanelAction, LayersPanelModule, LayersPanelState,
     MaterialPickerModule, MergeDirection, PaintCanvasBoundsModule, PaintColorBlockModule,
     PaintColorPickerModule, PaintHand,
@@ -27,13 +31,12 @@ use thaum_renderer_boot::{
     BootConfig, BootState,
 };
 use thaum_renderer_domain::{
-    active_depth_axis_for_swing, camera_view_orientation_for_camera,
-    remap_camera_units_to_active_plane_world, remap_surface_units_to_active_plane_world,
-    remap_surface_units_to_flat_2d_local, unproject_view_relative_to_world, Cell, CellColor,
+    remap_surface_units_to_active_plane_world,
+    remap_surface_units_to_flat_2d_local, Cell, CellColor,
     CellGraphic, CellGroup, CellPoint, CellWeight, CommandBar, CommandBarButton,
     CommandBarClickOutcome, Composition, ModulePointerButton, ModulePointerEvent, ModuleRect,
     ModuleRegistry, PersistedRendererUiSessionState, UiColorRole, UiCustomizationModule,
-    UiPalette, ViewRelativePoint, WorldAxis, WorldPoint,
+    UiPalette, WorldPoint,
 };
 use winit::keyboard::KeyCode;
 
@@ -310,24 +313,6 @@ fn save_painter_user_session_state(path: &Path, state: &PainterUserSessionState)
     })
 }
 
-/// Where the live paint viewport starts on the shared HUD layer before the
-/// user moves or resizes it through painter's bounds gizmo.
-const INITIAL_PAINT_CANVAS_VIEWPORT: ModuleRect = ModuleRect {
-    x0: -24,
-    y0: -8,
-    x1: -9,
-    y1: 8,
-};
-
-const INITIAL_PAINT_CANVAS_BOUNDS: CanvasBounds = CanvasBounds {
-    x0: -23,
-    y0: -7,
-    x1: -10,
-    y1: 6,
-    z: 0,
-    plane_axis: thaum_painter_domain::CanvasPlaneAxis::Z,
-};
-
 const INITIAL_LAYER_ID: &str = "layer-1";
 const INITIAL_LAYER_NAME: &str = "Layer 1";
 
@@ -468,212 +453,6 @@ fn build_plane_selection_cell_group(
         });
     }
     group
-}
-
-fn canvas_plane_axis_for_camera(state: &thaum_renderer_boot::BootState) -> CanvasPlaneAxis {
-    match active_depth_axis_for_swing(state.camera.swing) {
-        WorldAxis::X => CanvasPlaneAxis::X,
-        WorldAxis::Y => CanvasPlaneAxis::Y,
-        WorldAxis::Z => CanvasPlaneAxis::Z,
-    }
-}
-
-fn active_plane_coordinate_for_camera(state: &thaum_renderer_boot::BootState) -> i32 {
-    match active_depth_axis_for_swing(state.camera.swing) {
-        WorldAxis::X => state.camera.focus_target.x,
-        WorldAxis::Y => state.camera.focus_target.y,
-        WorldAxis::Z => state.camera.focus_target.z,
-    }
-}
-
-fn plane_coordinates(bounds: CanvasBounds, point: WorldPoint) -> (i32, i32) {
-    match bounds.plane_axis {
-        CanvasPlaneAxis::Z => (point.x, point.y),
-        CanvasPlaneAxis::X => (point.y, point.z),
-        CanvasPlaneAxis::Y => (point.x, point.z),
-    }
-}
-
-fn offset_rect(rect: ModuleRect, dx: i32, dy: i32) -> ModuleRect {
-    ModuleRect {
-        x0: rect.x0 + dx,
-        y0: rect.y0 + dy,
-        x1: rect.x1 + dx,
-        y1: rect.y1 + dy,
-    }
-}
-
-fn viewport_content_rect_in_camera_units(
-    viewport: ModuleRect,
-    state: &thaum_renderer_boot::BootState,
-) -> ModuleRect {
-    offset_rect(
-        PaintCanvasBoundsModule::content_rect(viewport),
-        state.camera.hud_pan_offset.x,
-        state.camera.hud_pan_offset.y,
-    )
-}
-
-fn viewport_content_center_in_camera_units(
-    viewport: ModuleRect,
-    state: &thaum_renderer_boot::BootState,
-) -> [f32; 2] {
-    let content = viewport_content_rect_in_camera_units(viewport, state);
-    [
-        (content.x0 + content.x1) as f32 * 0.5,
-        (content.y0 + content.y1) as f32 * 0.5,
-    ]
-}
-
-fn focus_target_for_world_at_camera_units(
-    camera: thaum_renderer_domain::Camera,
-    world: WorldPoint,
-    camera_units: [f32; 2],
-) -> WorldPoint {
-    let orientation = camera_view_orientation_for_camera(camera.swing, camera.roll);
-    let offset = unproject_view_relative_to_world(
-        orientation,
-        WorldPoint::origin(),
-        ViewRelativePoint {
-            right: camera_units[0].round() as i32,
-            up: camera_units[1].round() as i32,
-            depth: 0,
-        },
-    );
-    WorldPoint {
-        x: world.x - offset.x,
-        y: world.y - offset.y,
-        z: world.z - offset.z,
-    }
-}
-
-fn reorient_camera_around_viewport_center(
-    camera: &mut thaum_renderer_domain::Camera,
-    viewport: ModuleRect,
-    reorient: impl FnOnce(&mut thaum_renderer_domain::Camera),
-) {
-    let state = thaum_renderer_boot::BootState {
-        camera: *camera,
-        composition: Composition::default(),
-        data_lanes: thaum_renderer_domain::DataLanes::default(),
-        config: BootConfig::default(),
-        uses_fallback_breath: false,
-    };
-    let center = viewport_content_center_in_camera_units(viewport, &state);
-    let anchor = remap_camera_units_to_active_plane_world(*camera, center);
-    let mut next = *camera;
-    reorient(&mut next);
-    next.focus_target = focus_target_for_world_at_camera_units(next, anchor, center);
-    *camera = next;
-}
-
-fn canvas_bounds_for_viewport(
-    viewport: ModuleRect,
-    state: &thaum_renderer_boot::BootState,
-) -> CanvasBounds {
-    let content = viewport_content_rect_in_camera_units(viewport, state);
-    let mut bounds = CanvasBounds {
-        x0: 0,
-        y0: 0,
-        x1: 0,
-        y1: 0,
-        z: active_plane_coordinate_for_camera(state),
-        plane_axis: canvas_plane_axis_for_camera(state),
-    };
-    let lower_left = remap_camera_units_to_active_plane_world(
-        state.camera,
-        [content.x0 as f32, content.y0 as f32],
-    );
-    let upper_right = remap_camera_units_to_active_plane_world(
-        state.camera,
-        [content.x1 as f32, content.y1 as f32],
-    );
-    let (x0, y0) = plane_coordinates(bounds, lower_left);
-    let (x1, y1) = plane_coordinates(bounds, upper_right);
-    bounds.x0 = x0.min(x1);
-    bounds.y0 = y0.min(y1);
-    bounds.x1 = x0.max(x1);
-    bounds.y1 = y0.max(y1);
-    bounds
-}
-
-fn sync_canvas_bounds_to_camera(
-    viewport: &Rc<RefCell<ModuleRect>>,
-    bounds: &Rc<RefCell<CanvasBounds>>,
-    selection: &Rc<RefCell<PainterSelection>>,
-    state: &thaum_renderer_boot::BootState,
-) {
-    let next = canvas_bounds_for_viewport(*viewport.borrow(), state);
-    *bounds.borrow_mut() = next;
-    selection.borrow_mut().set_plane_bounds(next);
-}
-
-fn scroll_step_count(delta: f32) -> i32 {
-    if delta == 0.0 {
-        0
-    } else {
-        let rounded = delta.round() as i32;
-        if rounded == 0 {
-            delta.signum() as i32
-        } else {
-            rounded
-        }
-    }
-}
-
-fn pan_hud_and_focus_right(camera: &mut thaum_renderer_domain::Camera, delta: i32) {
-    camera.pan_hud_right(delta);
-    camera.pan_focus_right(-delta);
-}
-
-fn pan_hud_and_focus_up(camera: &mut thaum_renderer_domain::Camera, delta: i32) {
-    camera.pan_hud_up(delta);
-    camera.pan_focus_up(-delta);
-}
-
-fn apply_hud_scroll(camera: &mut thaum_renderer_domain::Camera, delta_x: f32, delta_y: f32) {
-    let x_steps = scroll_step_count(delta_x);
-    let y_steps = scroll_step_count(delta_y);
-    if x_steps != 0 {
-        pan_hud_and_focus_right(camera, x_steps);
-    }
-    if y_steps != 0 {
-        pan_hud_and_focus_up(camera, -y_steps);
-    }
-}
-
-fn apply_drawing_space_pan_scroll(
-    camera: &mut thaum_renderer_domain::Camera,
-    delta_x: f32,
-    delta_y: f32,
-) {
-    let x_steps = scroll_step_count(delta_x);
-    let y_steps = scroll_step_count(delta_y);
-    if x_steps != 0 {
-        camera.pan_focus_right(x_steps);
-    }
-    if y_steps != 0 {
-        camera.pan_focus_up(-y_steps);
-    }
-}
-
-fn apply_drawing_space_depth_scroll(camera: &mut thaum_renderer_domain::Camera, delta_y: f32) {
-    let y_steps = scroll_step_count(delta_y);
-    if y_steps != 0 {
-        camera.pan_focus_depth(y_steps);
-    }
-}
-
-fn apply_drawing_space_scroll(
-    camera: &mut thaum_renderer_domain::Camera,
-    mode: DrawingSpaceWheelMode,
-    delta_x: f32,
-    delta_y: f32,
-) {
-    match mode {
-        DrawingSpaceWheelMode::Pan => apply_drawing_space_pan_scroll(camera, delta_x, delta_y),
-        DrawingSpaceWheelMode::Depth => apply_drawing_space_depth_scroll(camera, delta_y),
-    }
 }
 
 fn file_menu_buttons() -> Vec<CommandBarButton> {
@@ -1235,113 +1014,6 @@ fn apply_shared_history_action(
 mod tests {
     use super::*;
     use thaum_painter_domain::SharedDocumentSelection;
-    use thaum_renderer_boot::BootState;
-    use thaum_renderer_domain::{
-        project_world_to_view_plane, Camera, CameraRoll, CameraSwing, DataLanes,
-    };
-
-    fn build_state(camera: Camera) -> BootState {
-        BootState {
-            camera,
-            composition: Composition::default(),
-            data_lanes: DataLanes::default(),
-            config: BootConfig::default(),
-            uses_fallback_breath: false,
-        }
-    }
-
-    #[test]
-    fn canvas_bounds_follow_hud_pan_offset() {
-        let at_rest = canvas_bounds_for_viewport(
-            INITIAL_PAINT_CANVAS_VIEWPORT,
-            &build_state(Camera::default()),
-        );
-        let panned = canvas_bounds_for_viewport(
-            INITIAL_PAINT_CANVAS_VIEWPORT,
-            &build_state(Camera {
-                hud_pan_offset: CellPoint { x: 4, y: -3, z: 0 },
-                ..Camera::default()
-            }),
-        );
-
-        assert_eq!(panned.x0, at_rest.x0 + 4);
-        assert_eq!(panned.x1, at_rest.x1 + 4);
-        assert_eq!(panned.y0, at_rest.y0 - 3);
-        assert_eq!(panned.y1, at_rest.y1 - 3);
-    }
-
-    #[test]
-    fn swing_keeps_viewport_center_world_point_under_viewport_center() {
-        let viewport = INITIAL_PAINT_CANVAS_VIEWPORT;
-        let before = Camera {
-            focus_target: WorldPoint { x: 8, y: -5, z: 2 },
-            hud_pan_offset: CellPoint { x: 3, y: -1, z: 0 },
-            swing: CameraSwing::PosZ,
-            roll: CameraRoll::Deg0,
-            ..Camera::default()
-        };
-        let center = viewport_content_center_in_camera_units(viewport, &build_state(before));
-        let anchor = remap_camera_units_to_active_plane_world(before, center);
-        let mut after = before;
-
-        reorient_camera_around_viewport_center(&mut after, viewport, |camera| camera.swing_right());
-
-        let projected = project_world_to_view_plane(after, anchor);
-        assert_eq!([projected.u, projected.v], center);
-    }
-
-    #[test]
-    fn roll_keeps_viewport_center_world_point_under_viewport_center() {
-        let viewport = INITIAL_PAINT_CANVAS_VIEWPORT;
-        let before = Camera {
-            focus_target: WorldPoint { x: -4, y: 7, z: 1 },
-            hud_pan_offset: CellPoint { x: -2, y: 5, z: 0 },
-            swing: CameraSwing::PosX,
-            roll: CameraRoll::Deg90,
-            ..Camera::default()
-        };
-        let center = viewport_content_center_in_camera_units(viewport, &build_state(before));
-        let anchor = remap_camera_units_to_active_plane_world(before, center);
-        let mut after = before;
-
-        reorient_camera_around_viewport_center(&mut after, viewport, |camera| {
-            camera.roll = camera.roll.rotate_clockwise()
-        });
-
-        let projected = project_world_to_view_plane(after, anchor);
-        assert_eq!([projected.u, projected.v], center);
-    }
-
-    #[test]
-    fn hud_scroll_follows_visual_scroll_direction_and_counterpans_3d() {
-        let mut camera = Camera::default();
-
-        apply_hud_scroll(&mut camera, -1.0, 1.0);
-
-        assert_eq!(camera.hud_pan_offset.x, -1);
-        assert_eq!(camera.hud_pan_offset.y, -1);
-        assert_eq!(camera.focus_target.x, 1);
-        assert_eq!(camera.focus_target.y, 1);
-    }
-
-    #[test]
-    fn drawing_space_pan_scroll_follows_visual_scroll_direction() {
-        let mut camera = Camera::default();
-
-        apply_drawing_space_pan_scroll(&mut camera, -1.0, 1.0);
-
-        assert_eq!(camera.focus_target.x, -1);
-        assert_eq!(camera.focus_target.y, -1);
-    }
-
-    #[test]
-    fn drawing_space_depth_scroll_moves_forward_on_scroll_up() {
-        let mut camera = Camera::default();
-
-        apply_drawing_space_depth_scroll(&mut camera, 1.0);
-
-        assert_eq!(camera.focus_target.z, 1);
-    }
 
     #[test]
     fn interpolate_cell_path_fills_every_step_between_two_points() {
@@ -1834,7 +1506,7 @@ fn main() -> Result<()> {
             &paint_canvas_viewport,
             &paint_canvas_bounds,
             &selection,
-            state,
+            &state.camera,
         );
 
         let camera = state.camera;
