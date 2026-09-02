@@ -1399,6 +1399,7 @@ mod tests {
                     property_tracks: vec![],
                 },
             ],
+            revision: 0,
             selection: SharedDocumentSelection::default(),
         });
 
@@ -1432,6 +1433,7 @@ mod tests {
                     property_tracks: vec![],
                 },
             ],
+            revision: 0,
             selection: SharedDocumentSelection::default(),
         });
 

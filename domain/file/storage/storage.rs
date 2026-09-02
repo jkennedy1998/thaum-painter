@@ -108,6 +108,13 @@ pub struct SharedDocumentFile {
     pub file_kind: String,
     pub schema_version: u32,
     pub document_id: String,
+    /// Monotonic save counter. Every snapshot save verifies the on-disk revision
+    /// matches the writer's loaded revision before overwriting, so a second writer
+    /// (another user / another app instance) cannot silently clobber changes —
+    /// the split-brain guard between document.json (structure) and actions.jsonl
+    /// (content).
+    #[serde(default)]
+    pub revision: u64,
     pub title: String,
     pub layers: Vec<SharedDocumentLayer>,
     /// Document-owned selection bitmaps, keyed by channel. Selection is per file, not
@@ -128,6 +135,7 @@ impl SharedDocumentFile {
         Self {
             file_kind: SHARED_DOCUMENT_KIND.to_string(),
             schema_version: SHARED_DOCUMENT_SCHEMA_VERSION,
+            revision: 0,
             document_id: document_id.into(),
             title: title.into(),
             layers: vec![SharedDocumentLayer {
@@ -395,10 +403,14 @@ pub struct SharedDocumentRuntime {
     applied_action_ids_by_layer: BTreeMap<String, Vec<String>>,
     undone_action_ids_by_layer: BTreeMap<String, Vec<String>>,
     patches_by_action_id: BTreeMap<String, AppliedCellPatches>,
+    /// The revision this runtime loaded (and last saved). Snapshots verify the
+    /// on-disk revision still matches before overwriting.
+    revision: u64,
 }
 
 impl SharedDocumentRuntime {
     pub fn new(document: SharedDocumentFile) -> Self {
+        let revision = document.revision;
         let mut block_canvases = BTreeMap::new();
         let mut applied_action_ids_by_layer = BTreeMap::new();
         let mut undone_action_ids_by_layer = BTreeMap::new();
@@ -425,7 +437,14 @@ impl SharedDocumentRuntime {
             applied_action_ids_by_layer,
             undone_action_ids_by_layer,
             patches_by_action_id: BTreeMap::new(),
+            revision,
         }
+    }
+
+    /// The revision this runtime loaded and last saved. Compare against
+    /// `load_document_file(..).revision` to detect another writer's changes.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub fn replay(document: SharedDocumentFile, actions: Vec<SharedDocumentActionRecord>) -> Self {
@@ -1421,7 +1440,7 @@ pub fn write_action_records_atomic(
 
 pub fn save_shared_document_snapshot(
     paths: &SharedDocumentPaths,
-    runtime: &SharedDocumentRuntime,
+    runtime: &mut SharedDocumentRuntime,
 ) -> Result<()> {
     fs::create_dir_all(&paths.root).with_context(|| {
         format!(
@@ -1429,8 +1448,34 @@ pub fn save_shared_document_snapshot(
             paths.root.display()
         )
     })?;
-    write_document_atomic(&paths.document_file_path, &runtime.document)?;
-    write_action_records_atomic(&paths.actions_file_path, &runtime.actions)
+
+    // Optimistic concurrency: refuse to overwrite a document that changed on disk
+    // since this runtime loaded it. Without this, a second writer's structure
+    // edits (document.json) and this writer's content (actions.jsonl) would
+    // silently split the document's truth across both files.
+    if paths.document_file_path.exists() {
+        let on_disk = load_document_file(&paths.document_file_path)?;
+        if on_disk.revision != runtime.revision {
+            return Err(anyhow::anyhow!(
+                "shared document changed on disk (disk revision {}, local revision {}); \
+                 refusing to overwrite — reload the document to pick up the other writer's changes",
+                on_disk.revision,
+                runtime.revision
+            ));
+        }
+    }
+
+    let next_revision = runtime.revision + 1;
+    let mut document = runtime.document.clone();
+    document.revision = next_revision;
+    write_document_atomic(&paths.document_file_path, &document)?;
+    write_action_records_atomic(&paths.actions_file_path, &runtime.actions)?;
+
+    // Only commit the bump after both files are safely on disk, so a failed
+    // write leaves the runtime retryable instead of permanently conflicting.
+    runtime.document = document;
+    runtime.revision = next_revision;
+    Ok(())
 }
 
 impl PersistedSharedPaintColor {
@@ -1570,6 +1615,7 @@ mod tests {
                     property_tracks: vec![default_raster_property_track(0, default_layer_length_breaths())],
                 },
             ],
+            revision: 0,
             selection: SharedDocumentSelection::default(),
         };
         let mut runtime = SharedDocumentRuntime::new(document);
@@ -1685,10 +1731,85 @@ mod tests {
             Some("block-1".to_string()),
         ));
 
-        save_shared_document_snapshot(&paths, &runtime).unwrap();
+        save_shared_document_snapshot(&paths, &mut runtime).unwrap();
 
         assert!(paths.document_file_path.exists());
         assert!(paths.actions_file_path.exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn snapshot_saves_bump_the_document_revision_monotonically() {
+        let unique = format!(
+            "thaum-painter-revision-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let paths = SharedDocumentPaths::new(root.clone());
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        assert_eq!(runtime.revision(), 0);
+
+        save_shared_document_snapshot(&paths, &mut runtime).unwrap();
+        save_shared_document_snapshot(&paths, &mut runtime).unwrap();
+
+        assert_eq!(runtime.revision(), 2);
+        let on_disk = load_document_file(&paths.document_file_path).unwrap();
+        assert_eq!(on_disk.revision, 2);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn snapshot_save_refuses_to_clobber_a_document_changed_on_disk() {
+        let unique = format!(
+            "thaum-painter-conflict-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let paths = SharedDocumentPaths::new(root.clone());
+        let mut writer = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        save_shared_document_snapshot(&paths, &mut writer).unwrap();
+
+        // A second writer loads the same file, saves first, and bumps the disk
+        // revision — simulating another user (or app instance) winning the race.
+        let mut rival = load_or_create_shared_document(&paths, {
+            let mut fallback = SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
+            fallback.revision = writer.revision();
+            fallback
+        })
+        .unwrap();
+        assert_eq!(rival.revision(), 1);
+        save_shared_document_snapshot(&paths, &mut rival).unwrap();
+
+        // The stale writer must be refused, and the on-disk document must still be
+        // the rival's — no silent split-brain overwrite.
+        let error = save_shared_document_snapshot(&paths, &mut writer)
+            .expect_err("stale writer must not clobber a newer on-disk document");
+        assert!(error.to_string().contains("changed on disk"));
+        let survivor = load_document_file(&paths.document_file_path).unwrap();
+        assert_eq!(survivor.revision, 2);
+
+        // Reloading the document re-seeds the revision, so saving works again.
+        let mut recovered = load_or_create_shared_document(&paths, {
+            let mut fallback = SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
+            fallback.revision = survivor.revision;
+            fallback
+        })
+        .unwrap();
+        assert_eq!(recovered.revision(), 2);
+        save_shared_document_snapshot(&paths, &mut recovered).unwrap();
+        assert_eq!(recovered.revision(), 3);
 
         let _ = fs::remove_dir_all(root);
     }
@@ -1778,7 +1899,7 @@ mod tests {
             SharedSelectionWriteMode::Additive,
         );
 
-        save_shared_document_snapshot(&paths, &runtime).unwrap();
+        save_shared_document_snapshot(&paths, &mut runtime).unwrap();
         let reloaded = load_or_create_shared_document(&paths, {
             let mut fallback = SharedDocumentFile::single_layer(
                 "doc-1", "Doc", "layer-1", "Layer 1",
@@ -1813,6 +1934,7 @@ mod tests {
         }"#;
         let document: SharedDocumentFile = serde_json::from_str(legacy_json).unwrap();
 
+        assert_eq!(document.revision, 0);
         assert_eq!(document.selection.channels.len(), 1);
         assert_eq!(
             document.selection.channels[0].channel_id,
