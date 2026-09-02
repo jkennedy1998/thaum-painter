@@ -33,3 +33,23 @@ That contradicts the renderer's own truth: **one module should become one render
 ## still open
 - whether module-level `placement` should be authored directly in thaum-painter, or mostly assigned by whatever composes multiple modules onto a shared board (possibly a future game-side concern) is not settled. For now the saved file keeps it as authored, editable state, since the old painter authored it directly (`module_position_storage.ts` lived inside the painter, not the game).
 - "general module features encapsulation" (the truth's phrase) as a cross-repo shared concept is not built. `domain/painter-document/modules/` covers thaum-painter's own editing-facing need; whether a shared module-usecase seam should live somewhere both painter and game can consume is future work, not decided here.
+
+## superseded (26-08-31): reversed to flat one-to-one groups
+
+Everything above this line is kept for provenance but is **no longer the live shape**. It has been reversed:
+
+- `document.modules[*].groups[]` collapses back to a flat `document.groups[]`, and each saved `group` maps directly to exactly one renderer `CellGroup` — no wrapper, no intra-unit compositing step.
+- `domain/painter-document/modules/` is removed. `domain/painter-document/groups/` absorbs its responsibilities (identity, order, visibility/lock, global-board `placement`) directly.
+- `domain/rendering/render-space/` now emits one `cell_groups[]` entry per **group**, not per module. `build_module_cell_group`'s compositing pass goes away.
+
+### why this reverses truth-2's own wording
+Truth-2 ("one menu piece, one encapsulated display module") was describing the **old system's** `src/mono_ui/modules/painter_canvas_module.ts` — a display-module concept the old system needed because it hadn't yet built a real universal 3D camera, so 3D behavior had to be hacked in per-module. `thaum-renderer`'s camera/projection/composition are now genuinely universal across the whole scene, not something that needs to be bundled or trapped inside one authored unit to work. Once the camera stopped being module-local, the reason to bundle several layers into one `CellGroup` before handoff went away with it.
+
+Renderer's own `domain/composition/overlap-policy` and `pass-order` already resolve overlap and ordering between `CellGroup`s (last-in-order wins on exact xyz) — the same rule the removed `build_module_cell_group` intra-unit compositing pass was independently re-implementing one level down. Flat 1:1 lets the renderer's existing composition machinery do that job once, at the top level, instead of painter pre-computing it internally.
+
+### word cleanup this also buys
+"module" now means exactly one thing across the whole ecosystem: the renderer-owned interactive UI-panel format (`thaum-renderer/domain/modules/`, mirrored per-consumer as `<repo>/domain/modules/`). It no longer also names a data/authoring concept. `group`/`CellGroup` is the vocabulary for authored renderable content, top to bottom.
+
+### still open after the reversal
+- object-level operations (select/move/hide "the whole sign" as one thing, when it's made of several stacked groups) are no longer free — they'd need an explicit multi-select or tag-based grouping mechanism in `domain/painter-session/selection/` if/when that UX is wanted. Not designed yet.
+- ~~`manifest.rs`, `render_space.rs`, the v1 example/schema JSON, and their inline tests still reflect the pre-reversal wrapped shape~~ — landed 2026-08-31: `Group.placement` is now directly authored (no more `local_placement`/module wrapper), `Module` is gone from `manifest.rs`, `build_composition` emits one `CellGroup` per group via `document.group_order`/`document.groups`, and the v1 manifest/render-space example+schema JSON match. `cargo test -p thaum-painter-domain` passes (22 tests).

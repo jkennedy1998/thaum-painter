@@ -1,5 +1,8 @@
 # ascii painter feature audit
 
+## superseded note (26-08-31)
+Module/group references below reflect an intermediate `document.modules[*].groups[]` shape that has since been reversed back to a flat `document.groups[]` (one group = one renderer `CellGroup` directly). See `context/module-concept-audit.md`'s "superseded" section for why. "module" now refers only to the renderer's `domain/modules/` UI-panel format, never this data concept.
+
 ## purpose
 Capture the major features in the old ASCII painter and map them into cleaner thaum-painter encapsulations before implementation starts.
 

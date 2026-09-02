@@ -53,10 +53,10 @@
     "composition": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["overlap_policy", "module_order"],
+      "required": ["overlap_policy", "group_order"],
       "properties": {
         "overlap_policy": { "type": "string", "minLength": 1 },
-        "module_order": {
+        "group_order": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 },
           "uniqueItems": true
@@ -88,9 +88,8 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["source_module_id", "source_group_id", "active_raster_segment_id", "active_move_block_id"],
+            "required": ["source_group_id", "active_raster_segment_id", "active_move_block_id"],
             "properties": {
-              "source_module_id": { "type": "string" },
               "source_group_id": { "type": "string" },
               "active_raster_segment_id": { "type": "string" },
               "active_move_block_id": { "type": "string" }
@@ -129,7 +128,7 @@
       "additionalProperties": false,
       "required": [
         "id",
-        "source_module_id",
+        "source_group_id",
         "intake_kind",
         "placement",
         "visible",
@@ -138,7 +137,7 @@
       ],
       "properties": {
         "id": { "type": "string", "minLength": 1 },
-        "source_module_id": { "type": "string", "minLength": 1 },
+        "source_group_id": { "type": "string", "minLength": 1 },
         "intake_kind": { "type": "string", "minLength": 1 },
         "placement": {
           "type": "object",

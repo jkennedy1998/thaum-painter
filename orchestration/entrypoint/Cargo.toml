@@ -1,0 +1,15 @@
+[package]
+name = "thaum-painter-entrypoint"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde_json.workspace = true
+thaum-painter-domain = { path = "/home/j/Repos/thaum-painter/domain" }
+thaum-renderer-boot = { path = "/home/j/Repos/thaum-renderer/orchestration/boot" }
+thaum-renderer-domain = { path = "/home/j/Repos/thaum-renderer/domain" }
+rfd = "0.15"
+winit = "0.30"

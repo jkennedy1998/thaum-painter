@@ -16,32 +16,54 @@
     "target_world": { "x": 8, "y": 3, "z": 1 }
   },
   "composition": {
-    "overlap_policy": "last-wins-by-module-order",
-    "module_order": [
-      "render_module_cavern_sign",
-      "render_module_torch_marker"
+    "overlap_policy": "last-wins-by-group-order",
+    "group_order": [
+      "render_group_background",
+      "render_group_letters",
+      "render_group_glow",
+      "render_group_torch_flame"
     ]
   },
   "cell_groups": [
     {
-      "id": "render_module_cavern_sign",
-      "source_module_id": "module_cavern_sign",
+      "id": "render_group_background",
+      "source_group_id": "group_background",
       "intake_kind": "non_rotating_2d",
       "placement": { "x": 0, "y": 0, "z": 0 },
       "visible": true,
       "opacity": 1,
       "cells": [
         { "x": 0, "y": 0, "z": 0, "char": ".", "rgb": { "r": 50, "g": 50, "b": 70 }, "weight_index": 1 },
-        { "x": 1, "y": 0, "z": 0, "char": ".", "rgb": { "r": 50, "g": 50, "b": 70 }, "weight_index": 1 },
-        { "x": 3, "y": 2, "z": 1, "char": "R", "rgb": { "r": 255, "g": 210, "b": 120 }, "weight_index": 2 },
-        { "x": 4, "y": 2, "z": 1, "char": "U", "rgb": { "r": 255, "g": 210, "b": 120 }, "weight_index": 2 },
-        { "x": 5, "y": 2, "z": 1, "char": "N", "rgb": { "r": 255, "g": 210, "b": 120 }, "weight_index": 2 },
-        { "x": 3, "y": 1, "z": 2, "char": "█", "rgb": { "r": 170, "g": 210, "b": 255 }, "weight_index": 3 }
+        { "x": 1, "y": 0, "z": 0, "char": ".", "rgb": { "r": 50, "g": 50, "b": 70 }, "weight_index": 1 }
       ]
     },
     {
-      "id": "render_module_torch_marker",
-      "source_module_id": "module_torch_marker",
+      "id": "render_group_letters",
+      "source_group_id": "group_letters",
+      "intake_kind": "non_rotating_2d",
+      "placement": { "x": 3, "y": 2, "z": 1 },
+      "visible": true,
+      "opacity": 1,
+      "cells": [
+        { "x": 0, "y": 0, "z": 0, "char": "R", "rgb": { "r": 255, "g": 210, "b": 120 }, "weight_index": 2 },
+        { "x": 1, "y": 0, "z": 0, "char": "U", "rgb": { "r": 255, "g": 210, "b": 120 }, "weight_index": 2 },
+        { "x": 2, "y": 0, "z": 0, "char": "N", "rgb": { "r": 255, "g": 210, "b": 120 }, "weight_index": 2 }
+      ]
+    },
+    {
+      "id": "render_group_glow",
+      "source_group_id": "group_glow",
+      "intake_kind": "non_rotating_2d",
+      "placement": { "x": 2, "y": 1, "z": 2 },
+      "visible": true,
+      "opacity": 0.85,
+      "cells": [
+        { "x": 1, "y": 0, "z": 0, "char": "█", "rgb": { "r": 170, "g": 210, "b": 255 }, "weight_index": 3 }
+      ]
+    },
+    {
+      "id": "render_group_torch_flame",
+      "source_group_id": "group_torch_flame",
       "intake_kind": "non_rotating_2d",
       "placement": { "x": 18, "y": 0, "z": 0 },
       "visible": true,
@@ -62,7 +84,6 @@
     ],
     "resolved_group_states": [
       {
-        "source_module_id": "module_cavern_sign",
         "source_group_id": "group_glow",
         "active_raster_segment_id": "segment_glow_bright",
         "active_move_block_id": "block_glow_move_b"

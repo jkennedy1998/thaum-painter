@@ -17,9 +17,7 @@ Own the painter editing-facing document view over saved file state without takin
 - UI interaction behavior
 
 ## children-encapsulations
-- `modules/`
-  - default
-- `groups/`
+- `layers/`
   - default
 - `timing/`
   - default
@@ -58,5 +56,5 @@ via: contract
 - `domain/rendering/render-space/` should own how file or live state sends data to `thaum-renderer`.
 - painter-document should stay narrower: it is the editing-facing document view, not the save-file owner and not the renderer bridge owner.
 - the current saved-truth input reference for this seam is `domain/file/manifest/example-thaum-painter-file-v1.json`.
-- module lookup, group lookup, property lookup, and timing lookup should likely land as child seams rather than one monolithic document file.
-- `modules/` was added after the module concept audit (`context/module-concept-audit.md`) showed one saved module maps to exactly one renderer cell-group, and groups are intra-module content, not top-level document content.
+- layer lookup, property lookup, and timing lookup should likely land as child seams rather than one monolithic document file.
+- an intermediate `modules/` child seam was added and later removed; see `context/module-concept-audit.md`'s "superseded" section. `layers/` is the sole top-level authored-unit seam and maps directly one-to-one to a renderer `CellGroup`.

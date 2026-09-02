@@ -7,6 +7,7 @@ authors.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 thaum-renderer-domain = { path = "/home/j/Repos/thaum-renderer/domain" }
 

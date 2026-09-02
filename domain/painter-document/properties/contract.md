@@ -14,27 +14,37 @@ Own editing-facing property-block views over painter file state.
 - renderer handoff
 
 ## children-encapsulations
-- none
+- `interpolation/`
+  - default
 
 ## contents
 - `contract.md`
   - properties contract
+- `properties.rs`
+  - `block_covering_breath`, the lookup that finds the bar (if any) covering a given breath
 
 ## dependencies
 - `/home/j/Repos/thaum-painter/domain/file/`
 
 ## exposed interfaces
-- none
+### block lookup
+send: a property's block list plus a breath
+returns: the block covering that breath, if any
+effects: none
+via: `block_covering_breath`
 
 ## interface consumers
 - painter-session
+- painter-session/timeline-state
 - render-space
 
 ## artifacts
 - none
 
 ## tests
-- future property-view tests
+- inline `#[cfg(test)]` in `properties.rs`
+  - light
+  - validates exact-boundary lookups, gap breaths, and an empty track all resolve correctly
 
 ## data
 - none

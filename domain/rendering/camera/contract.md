@@ -13,6 +13,7 @@ Own app-side camera intent and focus-resolution rules before state is handed to 
 - renderer camera internals
 - canonical saved file manifest ownership
 - general render-space translation
+- which physical keys/mouse gestures move the camera, or the action-binding/remap system that resolves them — owned by `thaum-renderer/domain/controls/`
 
 ## children-encapsulations
 - none
@@ -25,6 +26,7 @@ Own app-side camera intent and focus-resolution rules before state is handed to 
 - `/home/j/Repos/thaum-painter/domain/painter-document/`
 - `/home/j/Repos/thaum-painter/domain/painter-session/selection/`
 - `/home/j/Repos/thaum-renderer/domain/camera/`
+- `/home/j/Repos/thaum-renderer/domain/controls/`
 
 ## exposed interfaces
 - none
@@ -46,3 +48,4 @@ Own app-side camera intent and focus-resolution rules before state is handed to 
 - treat saved camera defaults as file-owned preference data and live camera motion/focus as rendering-owned state.
 - the current concrete baseline for saved defaults is `domain/file/manifest/example-thaum-painter-file-v1.json`, and the current concrete handoff target is `domain/rendering/render-space/example-render-space-v1.json`.
 - this seam should stay small enough that it can feed render-space without becoming a second broad view/runtime boundary.
+- camera has one source of truth in the renderer already (position/focus target/swing/roll/zoom); what changed by this seam is *how a program moves it*. Painter should declare its own named actions (e.g. `camera_pan_left`) against `thaum-renderer/domain/controls/`'s `ActionBindingMap` and bind them to whatever keys/scroll/drag gesture painter wants (remappable), then call `thaum-renderer/interfaces/camera/`'s movement operations when those actions fire — this seam does not hardcode keys itself.

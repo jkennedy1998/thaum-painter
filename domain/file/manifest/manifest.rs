@@ -82,22 +82,10 @@ pub struct Group {
     pub visible: bool,
     pub locked: bool,
     pub opacity: f64,
-    pub local_placement: GridPoint,
+    pub placement: GridPoint,
     pub timing: BreathWindow,
     pub raster_segments: Vec<RasterSegment>,
     pub properties: Vec<GroupProperty>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Module {
-    pub id: String,
-    pub name: String,
-    pub visible: bool,
-    pub locked: bool,
-    pub opacity: f64,
-    pub placement: GridPoint,
-    pub group_order: Vec<String>,
-    pub groups: Vec<Group>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,8 +99,8 @@ pub struct PlaybackWindow {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DocumentContent {
     pub bounds: DocumentBounds,
-    pub module_order: Vec<String>,
-    pub modules: Vec<Module>,
+    pub group_order: Vec<String>,
+    pub groups: Vec<Group>,
     pub playback: PlaybackWindow,
 }
 
@@ -177,7 +165,9 @@ pub struct Manifest {
 }
 
 fn field<'a>(value: &'a Value, name: &str) -> Result<&'a Value> {
-    value.get(name).with_context(|| format!("missing field '{name}'"))
+    value
+        .get(name)
+        .with_context(|| format!("missing field '{name}'"))
 }
 
 fn require_str<'a>(value: &'a Value, name: &str) -> Result<&'a str> {
@@ -331,28 +321,10 @@ fn parse_group(value: &Value) -> Result<Group> {
         visible: require_bool(value, "visible")?,
         locked: require_bool(value, "locked")?,
         opacity: require_f64(value, "opacity")?,
-        local_placement: parse_grid_point(field(value, "local_placement")?)?,
+        placement: parse_grid_point(field(value, "placement")?)?,
         timing: parse_breath_window(field(value, "timing")?)?,
         raster_segments,
         properties,
-    })
-}
-
-fn parse_module(value: &Value) -> Result<Module> {
-    let groups = require_array(value, "groups")?
-        .iter()
-        .map(parse_group)
-        .collect::<Result<Vec<_>>>()
-        .context("invalid module group")?;
-    Ok(Module {
-        id: require_str(value, "id")?.to_owned(),
-        name: require_str(value, "name")?.to_owned(),
-        visible: require_bool(value, "visible")?,
-        locked: require_bool(value, "locked")?,
-        opacity: require_f64(value, "opacity")?,
-        placement: parse_grid_point(field(value, "placement")?)?,
-        group_order: require_string_array(value, "group_order")?,
-        groups,
     })
 }
 
@@ -379,15 +351,15 @@ fn parse_playback_window(value: &Value) -> Result<PlaybackWindow> {
 }
 
 fn parse_document(value: &Value) -> Result<DocumentContent> {
-    let modules = require_array(value, "modules")?
+    let groups = require_array(value, "groups")?
         .iter()
-        .map(parse_module)
+        .map(parse_group)
         .collect::<Result<Vec<_>>>()
-        .context("invalid document module")?;
+        .context("invalid document group")?;
     Ok(DocumentContent {
         bounds: parse_document_bounds(field(value, "bounds")?)?,
-        module_order: require_string_array(value, "module_order")?,
-        modules,
+        group_order: require_string_array(value, "group_order")?,
+        groups,
         playback: parse_playback_window(field(value, "playback")?)?,
     })
 }
@@ -488,7 +460,8 @@ pub fn parse_manifest(value: &Value) -> Result<Manifest> {
         version,
         metadata: parse_metadata(field(value, "metadata")?).context("invalid metadata")?,
         document: parse_document(field(value, "document")?).context("invalid document")?,
-        time_assets: parse_time_assets(field(value, "time_assets")?).context("invalid time_assets")?,
+        time_assets: parse_time_assets(field(value, "time_assets")?)
+            .context("invalid time_assets")?,
         saved_camera_defaults: parse_saved_camera_defaults(field(value, "saved_camera_defaults")?)
             .context("invalid saved_camera_defaults")?,
         import_export_bookkeeping: parse_import_export_bookkeeping(field(
@@ -519,51 +492,63 @@ mod tests {
     }
 
     #[test]
-    fn parses_two_modules_each_with_their_own_placement_and_groups() {
+    fn parses_four_flat_groups_each_with_their_own_placement() {
         let manifest = parse_manifest_from_str(EXAMPLE_MANIFEST_JSON).unwrap();
-        assert_eq!(manifest.document.module_order, vec!["module_cavern_sign", "module_torch_marker"]);
-        assert_eq!(manifest.document.modules.len(), 2);
+        assert_eq!(
+            manifest.document.group_order,
+            vec![
+                "group_background",
+                "group_letters",
+                "group_glow",
+                "group_torch_flame"
+            ]
+        );
+        assert_eq!(manifest.document.groups.len(), 4);
 
-        let sign = &manifest.document.modules[0];
-        assert_eq!(sign.id, "module_cavern_sign");
-        assert_eq!(sign.placement, GridPoint { x: 0, y: 0, z: 0 });
-        assert_eq!(sign.groups.len(), 3);
+        let background = &manifest.document.groups[0];
+        assert_eq!(background.id, "group_background");
+        assert_eq!(background.placement, GridPoint { x: 0, y: 0, z: 0 });
 
-        let torch = &manifest.document.modules[1];
-        assert_eq!(torch.id, "module_torch_marker");
+        let torch = &manifest.document.groups[3];
+        assert_eq!(torch.id, "group_torch_flame");
         assert_eq!(torch.placement, GridPoint { x: 18, y: 0, z: 0 });
-        assert_eq!(torch.groups.len(), 1);
     }
 
     #[test]
-    fn group_local_placement_stays_separate_from_module_placement() {
+    fn each_group_carries_its_own_directly_authored_placement() {
         let manifest = parse_manifest_from_str(EXAMPLE_MANIFEST_JSON).unwrap();
-        let sign = &manifest.document.modules[0];
-        let glow = sign
+        let glow = manifest
+            .document
             .groups
             .iter()
             .find(|group| group.id == "group_glow")
             .unwrap();
-        assert_eq!(glow.local_placement, GridPoint { x: 2, y: 1, z: 2 });
-        assert_ne!(glow.local_placement, sign.placement);
+        assert_eq!(glow.placement, GridPoint { x: 2, y: 1, z: 2 });
     }
 
     #[test]
     fn parses_raster_segment_voxels_with_color_and_weight() {
         let manifest = parse_manifest_from_str(EXAMPLE_MANIFEST_JSON).unwrap();
-        let letters = &manifest.document.modules[0].groups[1];
+        let letters = &manifest.document.groups[1];
         assert_eq!(letters.id, "group_letters");
         let segment = &letters.raster_segments[0];
         assert_eq!(segment.voxels.len(), 3);
         assert_eq!(segment.voxels[0].char, 'R');
-        assert_eq!(segment.voxels[0].rgb, Rgb { r: 255, g: 210, b: 120 });
+        assert_eq!(
+            segment.voxels[0].rgb,
+            Rgb {
+                r: 255,
+                g: 210,
+                b: 120
+            }
+        );
         assert_eq!(segment.voxels[0].weight_index, 2);
     }
 
     #[test]
     fn parses_property_blocks_with_arbitrary_json_value_shapes() {
         let manifest = parse_manifest_from_str(EXAMPLE_MANIFEST_JSON).unwrap();
-        let glow = &manifest.document.modules[0].groups[2];
+        let glow = &manifest.document.groups[2];
         let move_property = glow
             .properties
             .iter()

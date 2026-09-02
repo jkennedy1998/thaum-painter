@@ -25,6 +25,8 @@ Own the painter-specific semantic boundaries for authoring ASCII scenes without 
   - default
 - `painter-operations/`
   - default
+- `modules/`
+  - default
 
 ## contents
 - `contract.md`
@@ -51,5 +53,6 @@ Own the painter-specific semantic boundaries for authoring ASCII scenes without 
 
 ## notes
 - start with headless boundaries first, then layer UI/modules later.
+- `modules/` mirrors `thaum-renderer/domain/modules/`'s shape and holds painter-only panels (color picker, character picker, toolbar) built on the renderer's shared registry/gizmo logic.
 - the first pass should be more encapsulated than the old system: file ownership and render-space handoff should not hide inside one broad painter-document seam.
 - prefer one clear renderer handoff seam under `domain/rendering/render-space/` rather than reviving a separate broad painter-render bridge.

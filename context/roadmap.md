@@ -2,25 +2,26 @@
 
 ## first boundaries to build
 - `domain/file/`
-  - canonical app-owned file manifest, saved asset shape, module identity/placement, and all authoring data the renderer does not own
+  - canonical app-owned file manifest, saved asset shape, group identity/placement, and all authoring data the renderer does not own
 - `domain/rendering/`
-  - app-side rendering seams including camera intent and render-space handoff into `thaum-renderer`, including the module-to-cell-group mapping
+  - app-side rendering seams including camera intent and render-space handoff into `thaum-renderer`, including the flat group-to-cell-group mapping
 - `domain/painter-document/`
-  - painter editing-facing document view over file state, including `modules/` (the top-level authored unit) alongside `groups/`, `timing/`, and `properties/`
+  - painter editing-facing document view over file state, including `groups/` (the top-level authored unit, one group per renderer `CellGroup`) alongside `timing/` and `properties/`
+- `domain/modules/`
+  - the renderer-owned interactive UI-panel format (color picker, character picker, and similar), mirrored per-consumer; painter's own `individuals/` holds painter-only panels like the character picker that the game never uses
 - `domain/painter-session/`
   - reducer-like editing/session state surface over painter-document
 - `domain/painter-operations/`
   - pure draw/fill/line/text/import operations independent from UI
 
 ## defer until after headless core
-- UI modules (canvas/toolbar/menu shell composition, i.e. `painter_canvas_module.ts`'s future home; this is a distinct concept from the `modules/` domain seam below and should not be confused with it)
+- the `domain/modules/` UI-panel format itself (canvas/toolbar/menu shell composition, i.e. `painter_canvas_module.ts`'s future home) and its gizmo/registry machinery
 - mouse-heavy selection systems
-- gizmos
 - clipboard/paste chrome
 - deep multiplayer/editor shells
 
 ## notes
-- use `context/module-concept-audit.md` for why `domain/painter-document/modules/` and `document.modules[]` exist: one saved module is the top-level authored unit and maps to exactly one `thaum-renderer` `CellGroup`.
+- use `context/module-concept-audit.md` for the full module/group history: an intermediate `document.modules[*].groups[]` wrapper shape was tried and reversed back to a flat `document.groups[]`, one saved group mapping directly to exactly one `thaum-renderer` `CellGroup`. "module" now means only the `domain/modules/` UI-panel format, never a data/authoring concept.
 - start from the old `painter_document.ts`, `painter_document_runtime.ts`, `painter_session_core.ts`, `copy_paste.ts`, `selection.ts`, `painter_breath.ts`, and related feature seams, but split them into cleaner ownership boundaries first.
 - do a contract-first pass across most core encapsulations before code-heavy rebuild work.
 - keep renderer as the owner of the low-level render primitives and directly consumed scene semantics.

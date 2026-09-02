@@ -1,0 +1,1540 @@
+use std::{cell::RefCell, rc::Rc, time::{Duration, Instant}};
+
+use thaum_renderer_domain::{
+    Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, GizmoBar, GizmoClickOutcome,
+    GizmoKind, GizmoState, Module, ModulePointerButton, ModulePointerEvent, ModuleRect,
+    PanelChrome, PersistedModuleUiState, UiColorRole, UiPalette, WorldPoint,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerPropertyKind {
+    Raster,
+    Move,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropertyTrackBlock {
+    pub id: String,
+    pub start_breath: u32,
+    pub length_breaths: u32,
+    pub is_blank: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropertyTrackRow {
+    pub layer_id: String,
+    pub property_id: String,
+    pub label: String,
+    pub kind: LayerPropertyKind,
+    pub blocks: Vec<PropertyTrackBlock>,
+}
+
+/// One row in the layer list: a saved layer's id, display name, visibility/lock state, and its
+/// own timeline bar (the breath range it occupies), all reflected from the real document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayerRow {
+    pub id: String,
+    pub name: String,
+    pub visible: bool,
+    pub locked: bool,
+    pub start_breath: u32,
+    pub length_breaths: u32,
+}
+
+/// A user action requested through the panel, for the orchestration layer to
+/// apply to the real document/session and then reflect back through
+/// `LayersPanelState::sync`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LayersPanelAction {
+    Select(String),
+    SelectProperty(String, String),
+    AddRequested,
+    ToggleVisible(String),
+    ToggleLocked(String),
+    Delete(String),
+    ToggleAutoKey,
+    SetCurrentBreath(u32),
+    SetLayerTiming(String, u32, u32),
+    SetPropertyBlockTiming(String, String, String, u32, u32),
+    SplitPropertyBlock(String, String, String, u32),
+}
+
+/// Shared state between `LayersPanelModule` and its orchestration caller. The module only ever
+/// reads/writes this small struct — it never touches the real document or the timeline session
+/// state directly, which keeps it unit-testable without any storage/session plumbing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LayersPanelState {
+    pub rows: Vec<LayerRow>,
+    pub property_rows: Vec<PropertyTrackRow>,
+    pub selected_id: Option<String>,
+    pub selected_property_id: Option<String>,
+    pub current_breath: u32,
+    pub auto_key_enabled: bool,
+    pending_action: Option<LayersPanelAction>,
+}
+
+impl LayersPanelState {
+    /// Refreshes the displayed rows/selection/timeline readout from the real document and
+    /// session. Called once per frame by the orchestration layer.
+    pub fn sync(
+        &mut self,
+        rows: Vec<LayerRow>,
+        property_rows: Vec<PropertyTrackRow>,
+        selected_id: Option<String>,
+        selected_property_id: Option<String>,
+        current_breath: u32,
+        auto_key_enabled: bool,
+    ) {
+        self.rows = rows;
+        self.property_rows = property_rows;
+        self.selected_id = selected_id;
+        self.selected_property_id = selected_property_id;
+        self.current_breath = current_breath;
+        self.auto_key_enabled = auto_key_enabled;
+    }
+
+    /// Takes the pending action, if any, for the orchestration layer to apply. At most one
+    /// action is queued per frame.
+    pub fn take_pending_action(&mut self) -> Option<LayersPanelAction> {
+        self.pending_action.take()
+    }
+
+    fn queue_action(&mut self, action: LayersPanelAction) {
+        self.pending_action = Some(action);
+    }
+}
+
+fn standard_gizmo_bar() -> GizmoBar {
+    GizmoBar::new(vec![
+        GizmoKind::Move,
+        GizmoKind::Close,
+        GizmoKind::Resize,
+        GizmoKind::Seamless,
+    ])
+}
+
+#[cfg(test)]
+const ROW_AUTO_KEY: usize = 0;
+#[cfg(test)]
+const ROW_RULER: usize = 1;
+#[cfg(test)]
+const ROW_ADD_LAYER: usize = 2;
+
+const COL_VISIBLE: i32 = 1;
+const COL_LOCK: i32 = 3;
+const COL_MARKER: i32 = 5;
+const COL_NAME: i32 = 7;
+const NAME_WIDTH: i32 = 10;
+const TIMELINE_START: i32 = COL_NAME + NAME_WIDTH + 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PanelRow {
+    AutoKeyToggle,
+    BreathRuler,
+    AddLayer,
+    Layer(usize),
+    Property(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BarDragMode {
+    Move,
+    TrimStart,
+    TrimEnd,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BarDrag {
+    layer_id: String,
+    mode: BarDragMode,
+    orig_start: u32,
+    orig_length: u32,
+    anchor_breath: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PropertyBlockHitMode {
+    EdgeStart,
+    EdgeEnd,
+    BodyMove,
+    BodySingle,
+    BlankStart,
+    BlankEnd,
+    BlankCenter,
+    BlankSingle,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PropertyBlockHit {
+    layer_id: String,
+    property_id: String,
+    block_id: String,
+    breath: u32,
+    mode: PropertyBlockHitMode,
+    is_blank: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PropertyBlockDrag {
+    layer_id: String,
+    property_id: String,
+    block_id: String,
+    mode: BarDragMode,
+    orig_start: u32,
+    orig_length: u32,
+    anchor_breath: u32,
+}
+
+#[derive(Debug, Clone)]
+struct RecentRasterClick {
+    hit: PropertyBlockHit,
+    button: ModulePointerButton,
+    at: Instant,
+}
+
+pub struct LayersPanelModule {
+    id: String,
+    rect: ModuleRect,
+    state: Rc<RefCell<LayersPanelState>>,
+    palette: UiPalette,
+    gizmos: GizmoBar,
+    gizmo_state: GizmoState,
+    hidden: bool,
+    scrubbing_ruler: bool,
+    bar_drag: Option<BarDrag>,
+    property_block_drag: Option<PropertyBlockDrag>,
+    hovered_property_block: Option<PropertyBlockHit>,
+    recent_raster_click: Option<RecentRasterClick>,
+}
+
+impl LayersPanelModule {
+    pub fn new(
+        id: impl Into<String>,
+        rect: ModuleRect,
+        state: Rc<RefCell<LayersPanelState>>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            rect,
+            state,
+            palette: UiPalette::default(),
+            gizmos: standard_gizmo_bar(),
+            gizmo_state: GizmoState::new(),
+            hidden: false,
+            scrubbing_ruler: false,
+            bar_drag: None,
+            property_block_drag: None,
+            hovered_property_block: None,
+            recent_raster_click: None,
+        }
+    }
+
+    pub fn with_palette(mut self, palette: UiPalette) -> Self {
+        self.palette = palette;
+        self
+    }
+
+    fn row_y(&self, index: usize) -> i32 {
+        let (_, content_height) = PanelChrome::content_size(self.rect);
+        let (_, content_y) = PanelChrome::content_origin();
+        content_y + content_height - 1 - index as i32
+    }
+
+    fn visible_rows(&self) -> Vec<PanelRow> {
+        let state = self.state.borrow();
+        let mut rows = vec![PanelRow::AutoKeyToggle, PanelRow::BreathRuler, PanelRow::AddLayer];
+        for (index, row) in state.rows.iter().enumerate() {
+            rows.push(PanelRow::Layer(index));
+            if state.selected_id.as_deref() == Some(row.id.as_str()) {
+                rows.extend(
+                    state
+                        .property_rows
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, property)| property.layer_id == row.id)
+                        .map(|(property_index, _)| PanelRow::Property(property_index)),
+                );
+            }
+        }
+        rows
+    }
+
+    fn row_at(&self, x: i32, y: i32) -> Option<PanelRow> {
+        let local_x = x - self.rect.x0;
+        let local_y = y - self.rect.y0;
+        let (content_x, _) = PanelChrome::content_origin();
+        let (content_width, _) = PanelChrome::content_size(self.rect);
+        if local_x < content_x || local_x >= content_x + content_width {
+            return None;
+        }
+        self.visible_rows()
+            .into_iter()
+            .enumerate()
+            .find_map(|(index, row)| (local_y == self.row_y(index)).then_some(row))
+    }
+
+    fn content_right(&self) -> i32 {
+        let (content_x, _) = PanelChrome::content_origin();
+        let (content_width, _) = PanelChrome::content_size(self.rect);
+        content_x + (content_width - 1).max(0)
+    }
+
+    fn timeline_bounds(&self) -> (i32, i32) {
+        let content_right = self.content_right();
+        (TIMELINE_START, (content_right - 1).max(TIMELINE_START))
+    }
+
+    fn breath_at_x(&self, local_x: i32) -> u32 {
+        let (start, end) = self.timeline_bounds();
+        local_x.clamp(start, end).saturating_sub(start) as u32
+    }
+
+    fn x_for_breath(&self, breath: u32) -> i32 {
+        let (start, end) = self.timeline_bounds();
+        (start + breath as i32).clamp(start, end)
+    }
+
+    fn visible_timeline_end_breath(&self) -> u32 {
+        let (start, end) = self.timeline_bounds();
+        end.saturating_sub(start) as u32
+    }
+
+    fn delete_column(&self) -> i32 {
+        self.content_right()
+    }
+
+    fn property_bar_bounds(&self, property: &PropertyTrackRow) -> Option<(u32, u32)> {
+        let start = property.blocks.iter().map(|block| block.start_breath).min()?;
+        let end = property
+            .blocks
+            .iter()
+            .map(|block| block.start_breath + block.length_breaths.saturating_sub(1))
+            .max()?;
+        Some((start, end))
+    }
+
+    fn layer_visible_for_property(&self, state: &LayersPanelState, property: &PropertyTrackRow) -> bool {
+        state
+            .rows
+            .iter()
+            .find(|row| row.id == property.layer_id)
+            .map(|row| row.visible)
+            .unwrap_or(true)
+    }
+
+    fn property_block_hit_at(&self, x: i32, y: i32) -> Option<PropertyBlockHit> {
+        let PanelRow::Property(property_index) = self.row_at(x, y)? else {
+            return None;
+        };
+        let state = self.state.borrow();
+        let property = state.property_rows.get(property_index)?;
+        let local_x = x - self.rect.x0;
+        let breath = self.breath_at_x(local_x);
+        let block = property.blocks.iter().find(|block| {
+            let end = block.start_breath + block.length_breaths.max(1).saturating_sub(1);
+            breath >= block.start_breath && breath <= end
+        })?;
+        let mode = property_block_hit_mode(block, breath);
+        Some(PropertyBlockHit {
+            layer_id: property.layer_id.clone(),
+            property_id: property.property_id.clone(),
+            block_id: block.id.clone(),
+            breath,
+            mode,
+            is_blank: block.is_blank,
+        })
+    }
+
+    fn property_block_interaction_style(
+        &self,
+        property: &PropertyTrackRow,
+        block: &PropertyTrackBlock,
+        breath: u32,
+    ) -> (thaum_renderer_domain::CellColor, thaum_renderer_domain::CellWeight) {
+        let hover_matches_block = self
+            .hovered_property_block
+            .as_ref()
+            .map(|hover| {
+                hover.layer_id == property.layer_id
+                    && hover.property_id == property.property_id
+                    && hover.block_id == block.id
+            })
+            .unwrap_or(false);
+        let hover_matches_breath = self
+            .hovered_property_block
+            .as_ref()
+            .map(|hover| hover_matches_block && hover.breath == breath)
+            .unwrap_or(false);
+        let drag_matches_block = self
+            .property_block_drag
+            .as_ref()
+            .map(|drag| {
+                drag.layer_id == property.layer_id
+                    && drag.property_id == property.property_id
+                    && drag.block_id == block.id
+            })
+            .unwrap_or(false);
+
+        let base_color = match property.kind {
+            LayerPropertyKind::Raster => self.palette.get(UiColorRole::Bright),
+            LayerPropertyKind::Move => self.palette.get(UiColorRole::Medium),
+        };
+        if drag_matches_block {
+            return (
+                self.palette.get(UiColorRole::Vivid),
+                thaum_renderer_domain::CellWeight::from_index_clamped(3),
+            );
+        }
+        if hover_matches_breath {
+            return (
+                self.palette.get(UiColorRole::Vivid),
+                thaum_renderer_domain::CellWeight::from_index_clamped(3),
+            );
+        }
+        if hover_matches_block {
+            return (
+                self.palette.get(UiColorRole::Vivid),
+                thaum_renderer_domain::CellWeight::from_index_clamped(2),
+            );
+        }
+        (
+            base_color,
+            thaum_renderer_domain::CellWeight::from_index_clamped(1),
+        )
+    }
+
+    fn handle_property_block_click(
+        &mut self,
+        hit: PropertyBlockHit,
+        button: ModulePointerButton,
+    ) {
+        const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
+        let now = Instant::now();
+        let is_double_click = self
+            .recent_raster_click
+            .as_ref()
+            .map(|recent| {
+                recent.button == button
+                    && recent.at.elapsed() <= DOUBLE_CLICK_WINDOW
+                    && recent.hit.layer_id == hit.layer_id
+                    && recent.hit.property_id == hit.property_id
+                    && recent.hit.block_id == hit.block_id
+                    && recent.hit.mode == hit.mode
+            })
+            .unwrap_or(false);
+        self.recent_raster_click = Some(RecentRasterClick {
+            hit: hit.clone(),
+            button,
+            at: now,
+        });
+
+        if button == ModulePointerButton::Left && is_double_click && hit.mode == PropertyBlockHitMode::BodyMove {
+            self.state.borrow_mut().queue_action(LayersPanelAction::SplitPropertyBlock(
+                hit.layer_id,
+                hit.property_id,
+                hit.block_id,
+                hit.breath,
+            ));
+            self.property_block_drag = None;
+            return;
+        }
+
+        if button != ModulePointerButton::Left {
+            return;
+        }
+
+        self.state.borrow_mut().queue_action(LayersPanelAction::SelectProperty(
+            hit.layer_id.clone(),
+            hit.property_id.clone(),
+        ));
+
+        let mode = match hit.mode {
+            PropertyBlockHitMode::EdgeStart => Some(BarDragMode::TrimStart),
+            PropertyBlockHitMode::EdgeEnd => Some(BarDragMode::TrimEnd),
+            PropertyBlockHitMode::BodyMove | PropertyBlockHitMode::BodySingle => Some(BarDragMode::Move),
+            PropertyBlockHitMode::BlankStart
+            | PropertyBlockHitMode::BlankEnd
+            | PropertyBlockHitMode::BlankCenter
+            | PropertyBlockHitMode::BlankSingle => None,
+        };
+        let Some(mode) = mode else {
+            return;
+        };
+        let state = self.state.borrow();
+        let block = state
+            .property_rows
+            .iter()
+            .find(|property| {
+                property.layer_id == hit.layer_id && property.property_id == hit.property_id
+            })
+            .and_then(|property| property.blocks.iter().find(|block| block.id == hit.block_id))
+            .cloned();
+        drop(state);
+        let Some(block) = block else {
+            return;
+        };
+        self.property_block_drag = Some(PropertyBlockDrag {
+            layer_id: hit.layer_id,
+            property_id: hit.property_id,
+            block_id: hit.block_id,
+            mode,
+            orig_start: block.start_breath,
+            orig_length: block.length_breaths.max(1),
+            anchor_breath: hit.breath,
+        });
+    }
+}
+
+fn property_block_hit_mode(block: &PropertyTrackBlock, breath: u32) -> PropertyBlockHitMode {
+    let start = block.start_breath;
+    let end = block.start_breath + block.length_breaths.max(1).saturating_sub(1);
+    if start == end {
+        return if block.is_blank {
+            PropertyBlockHitMode::BlankSingle
+        } else {
+            PropertyBlockHitMode::BodySingle
+        };
+    }
+    if breath == start {
+        return if block.is_blank {
+            PropertyBlockHitMode::BlankStart
+        } else {
+            PropertyBlockHitMode::EdgeStart
+        };
+    }
+    if breath == end {
+        return if block.is_blank {
+            PropertyBlockHitMode::BlankEnd
+        } else {
+            PropertyBlockHitMode::EdgeEnd
+        };
+    }
+    if block.is_blank {
+        PropertyBlockHitMode::BlankCenter
+    } else {
+        PropertyBlockHitMode::BodyMove
+    }
+}
+
+fn property_track_cell_graphic(
+    is_blank: bool,
+    is_visible: bool,
+    length_breaths: u32,
+    local_index: u32,
+) -> char {
+    let is_single = length_breaths <= 1;
+    let is_first = local_index == 0;
+    let is_last = local_index + 1 >= length_breaths;
+
+    if is_blank {
+        if is_single {
+            return '▢';
+        }
+        if is_first {
+            return '<';
+        }
+        if is_last {
+            return '>';
+        }
+        return '▢';
+    }
+
+    if is_visible {
+        if is_single {
+            return '█';
+        }
+        if is_first {
+            return '█';
+        }
+        if is_last {
+            return '▦';
+        }
+        return '▥';
+    }
+
+    if is_single {
+        return '▒';
+    }
+    if is_first {
+        return '╺';
+    }
+    if is_last {
+        return '╸';
+    }
+    '╌'
+}
+
+impl Module for LayersPanelModule {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn rect(&self) -> ModuleRect {
+        self.rect
+    }
+
+    fn draw(&self) -> CellGroup {
+        let origin = WorldPoint {
+            x: self.rect.x0,
+            y: self.rect.y0,
+            z: 0,
+        };
+        let mut cells: Vec<Cell> = if self.gizmo_state.is_seamless() {
+            Vec::new()
+        } else {
+            self.gizmo_state
+                .decorate_panel_chrome(
+                    PanelChrome::new(self.rect, &self.palette)
+                        .with_title("LAYERS")
+                        .with_title_start_x(self.gizmos.title_start_x()),
+                    &self.palette,
+                )
+                .cells()
+        };
+        if self.gizmo_state.should_draw_gizmo_bar() {
+            cells.extend(
+                self.gizmos
+                    .cells(self.rect, &self.gizmo_state, &self.palette),
+            );
+        }
+
+        let state = self.state.borrow();
+        let content_right = self.content_right();
+        let visible_rows = self.visible_rows();
+
+        let push_text = |cells: &mut Vec<Cell>, start_x: i32, y: i32, text: &str, color, max_x: i32| {
+            for (column, glyph) in text.chars().enumerate() {
+                let x = start_x + column as i32;
+                if x > max_x {
+                    break;
+                }
+                cells.push(Cell {
+                    position: CellPoint { x, y, z: 0 },
+                    graphic: CellGraphic::Glyph(glyph),
+                    color,
+                    ..Cell::default()
+                });
+            }
+        };
+
+        let (timeline_start, timeline_end) = self.timeline_bounds();
+        let playhead_x = self.x_for_breath(state.current_breath);
+
+        for (index, row_kind) in visible_rows.into_iter().enumerate() {
+            let y = self.row_y(index);
+            match row_kind {
+                PanelRow::AutoKeyToggle => {
+                    let auto_key_glyph = if state.auto_key_enabled { 'x' } else { ' ' };
+                    push_text(
+                        &mut cells,
+                        1,
+                        y,
+                        &format!("[{auto_key_glyph}] AUTO KEY"),
+                        self.palette.get(UiColorRole::Medium),
+                        timeline_start - 2,
+                    );
+
+                    let end_breath = self.visible_timeline_end_breath();
+                    let start_label = "0";
+                    let current_label = state.current_breath.to_string();
+                    let end_label = end_breath.to_string();
+                    push_text(
+                        &mut cells,
+                        timeline_start,
+                        y,
+                        start_label,
+                        self.palette.get(UiColorRole::Dimmest),
+                        timeline_end,
+                    );
+                    let current_start = (playhead_x - (current_label.len() as i32 / 2))
+                        .clamp(timeline_start, timeline_end - current_label.len() as i32 + 1);
+                    push_text(
+                        &mut cells,
+                        current_start,
+                        y,
+                        &current_label,
+                        self.palette.get(UiColorRole::Vivid),
+                        timeline_end,
+                    );
+                    let end_start = (timeline_end - end_label.len() as i32 + 1).max(timeline_start);
+                    push_text(
+                        &mut cells,
+                        end_start,
+                        y,
+                        &end_label,
+                        self.palette.get(UiColorRole::Dimmest),
+                        timeline_end,
+                    );
+                }
+                PanelRow::BreathRuler => {
+                    for x in timeline_start..=timeline_end {
+                        cells.push(Cell {
+                            position: CellPoint { x, y, z: 0 },
+                            graphic: CellGraphic::Glyph('─'),
+                            color: self.palette.get(UiColorRole::Dimmest),
+                            ..Cell::default()
+                        });
+                    }
+                    cells.push(Cell {
+                        position: CellPoint {
+                            x: playhead_x,
+                            y,
+                            z: 0,
+                        },
+                        graphic: CellGraphic::Glyph('║'),
+                        color: self.palette.get(UiColorRole::Vivid),
+                        ..Cell::default()
+                    });
+                }
+                PanelRow::AddLayer => {
+                    push_text(
+                        &mut cells,
+                        1,
+                        y,
+                        "+ NEW LAYER",
+                        self.palette.get(UiColorRole::Medium),
+                        content_right,
+                    );
+                }
+                PanelRow::Layer(layer_index) => {
+                    let row = &state.rows[layer_index];
+                    let is_selected = state.selected_id.as_deref() == Some(row.id.as_str());
+                    let text_color = if is_selected {
+                        self.palette.get(UiColorRole::Bright)
+                    } else {
+                        self.palette.get(UiColorRole::Medium)
+                    };
+                    let visible_glyph = if row.visible { 'o' } else { '.' };
+                    let lock_glyph = if row.locked { 'L' } else { '.' };
+                    let marker = if is_selected { '*' } else { '-' };
+
+                    cells.push(Cell {
+                        position: CellPoint {
+                            x: COL_VISIBLE,
+                            y,
+                            z: 0,
+                        },
+                        graphic: CellGraphic::Glyph(visible_glyph),
+                        color: text_color,
+                        ..Cell::default()
+                    });
+                    cells.push(Cell {
+                        position: CellPoint { x: COL_LOCK, y, z: 0 },
+                        graphic: CellGraphic::Glyph(lock_glyph),
+                        color: text_color,
+                        ..Cell::default()
+                    });
+                    cells.push(Cell {
+                        position: CellPoint {
+                            x: COL_MARKER,
+                            y,
+                            z: 0,
+                        },
+                        graphic: CellGraphic::Glyph(marker),
+                        color: text_color,
+                        ..Cell::default()
+                    });
+                    push_text(&mut cells, COL_NAME, y, &row.name, text_color, timeline_start - 2);
+
+                    for x in timeline_start..=timeline_end {
+                        cells.push(Cell {
+                            position: CellPoint { x, y, z: 0 },
+                            graphic: CellGraphic::Glyph(' '),
+                            color: self.palette.get(UiColorRole::Dimmest),
+                            ..Cell::default()
+                        });
+                    }
+                    cells.push(Cell {
+                        position: CellPoint {
+                            x: playhead_x,
+                            y,
+                            z: 0,
+                        },
+                        graphic: CellGraphic::Glyph('│'),
+                        color: self.palette.get(UiColorRole::Dimmest),
+                        ..Cell::default()
+                    });
+
+                    cells.push(Cell {
+                        position: CellPoint {
+                            x: self.delete_column(),
+                            y,
+                            z: 0,
+                        },
+                        graphic: CellGraphic::Glyph('x'),
+                        color: self.palette.get(UiColorRole::Medium),
+                        ..Cell::default()
+                    });
+                }
+                PanelRow::Property(property_index) => {
+                    let property = &state.property_rows[property_index];
+                    let is_selected = state.selected_property_id.as_deref()
+                        == Some(property.property_id.as_str());
+                    let is_visible = self.layer_visible_for_property(&state, property);
+                    let text_color = if is_selected {
+                        self.palette.get(UiColorRole::Vivid)
+                    } else {
+                        self.palette.get(UiColorRole::Medium)
+                    };
+                    let marker = if is_selected { '>' } else { ':' };
+                    cells.push(Cell {
+                        position: CellPoint {
+                            x: COL_MARKER,
+                            y,
+                            z: 0,
+                        },
+                        graphic: CellGraphic::Glyph(marker),
+                        color: text_color,
+                        ..Cell::default()
+                    });
+                    push_text(
+                        &mut cells,
+                        COL_NAME,
+                        y,
+                        &property.label,
+                        text_color,
+                        timeline_start - 2,
+                    );
+                    for x in timeline_start..=timeline_end {
+                        cells.push(Cell {
+                            position: CellPoint { x, y, z: 0 },
+                            graphic: CellGraphic::Glyph('·'),
+                            color: self.palette.get(UiColorRole::Dimmest),
+                            ..Cell::default()
+                        });
+                    }
+                    for block in &property.blocks {
+                        let block_start_x = self.x_for_breath(block.start_breath);
+                        for local_index in 0..block.length_breaths.max(1) {
+                            let breath = block.start_breath + local_index;
+                            let x = block_start_x + local_index as i32;
+                            if x > timeline_end {
+                                break;
+                            }
+                            let (color, weight) =
+                                self.property_block_interaction_style(property, block, breath);
+                            cells.push(Cell {
+                                position: CellPoint { x, y, z: 0 },
+                                graphic: CellGraphic::Glyph(property_track_cell_graphic(
+                                    block.is_blank,
+                                    is_visible,
+                                    block.length_breaths.max(1),
+                                    local_index,
+                                )),
+                                color,
+                                weight,
+                                ..Cell::default()
+                            });
+                        }
+                    }
+                    if let Some((start, end)) = self.property_bar_bounds(property) {
+                        if state.current_breath >= start && state.current_breath <= end {
+                            cells.push(Cell {
+                                position: CellPoint {
+                                    x: playhead_x,
+                                    y,
+                                    z: 0,
+                                },
+                                graphic: CellGraphic::Glyph('║'),
+                                color: self.palette.get(UiColorRole::Vivid),
+                                ..Cell::default()
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        CellGroup::from_cells(origin, cells).with_intake_behavior(CellGroupIntakeBehavior::Flat2d)
+    }
+
+    fn on_pointer_event(&mut self, event: ModulePointerEvent) {
+        match event {
+            ModulePointerEvent::Click { x, y, button } => {
+                if let Some(outcome) = self.gizmo_state.handle_click(&self.gizmos, self.rect, x, y)
+                {
+                    if outcome == GizmoClickOutcome::Gizmo(GizmoKind::Close) {
+                        self.hidden = true;
+                    }
+                    return;
+                }
+                let Some(row_kind) = self.row_at(x, y) else {
+                    return;
+                };
+                match row_kind {
+                    PanelRow::AutoKeyToggle => {
+                        if button == ModulePointerButton::Left {
+                            self.state.borrow_mut().queue_action(LayersPanelAction::ToggleAutoKey);
+                        }
+                    }
+                    PanelRow::BreathRuler => {
+                        if button == ModulePointerButton::Left {
+                            let local_x = x - self.rect.x0;
+                            let breath = self.breath_at_x(local_x);
+                            self.state
+                                .borrow_mut()
+                                .queue_action(LayersPanelAction::SetCurrentBreath(breath));
+                            self.scrubbing_ruler = true;
+                        }
+                    }
+                    PanelRow::AddLayer => {
+                        if button == ModulePointerButton::Left {
+                            self.state.borrow_mut().queue_action(LayersPanelAction::AddRequested);
+                        }
+                    }
+                    PanelRow::Layer(row_index) => {
+                        if button != ModulePointerButton::Left {
+                            return;
+                        }
+                        let local_x = x - self.rect.x0;
+                        let row = self.state.borrow().rows.get(row_index).cloned();
+                        let Some(row) = row else {
+                            return;
+                        };
+                        if local_x == COL_VISIBLE {
+                            self.state
+                                .borrow_mut()
+                                .queue_action(LayersPanelAction::ToggleVisible(row.id));
+                            return;
+                        }
+                        if local_x == COL_LOCK {
+                            self.state
+                                .borrow_mut()
+                                .queue_action(LayersPanelAction::ToggleLocked(row.id));
+                            return;
+                        }
+                        if local_x == self.delete_column() {
+                            self.state
+                                .borrow_mut()
+                                .queue_action(LayersPanelAction::Delete(row.id));
+                            return;
+                        }
+                        self.state
+                            .borrow_mut()
+                            .queue_action(LayersPanelAction::Select(row.id));
+                    }
+                    PanelRow::Property(property_index) => {
+                        let property = self
+                            .state
+                            .borrow()
+                            .property_rows
+                            .get(property_index)
+                            .cloned();
+                        if let Some(hit) = self.property_block_hit_at(x, y) {
+                            self.handle_property_block_click(hit, button);
+                        } else if let Some(property) = property {
+                            if button == ModulePointerButton::Left {
+                                self.state.borrow_mut().queue_action(LayersPanelAction::SelectProperty(
+                                    property.layer_id,
+                                    property.property_id,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            ModulePointerEvent::Move { x, y } => {
+                self.gizmo_state.note_pointer(&self.gizmos, self.rect, x, y);
+                self.hovered_property_block = self.property_block_hit_at(x, y);
+                if let Some(next_rect) = self.gizmo_state.drag_rect(x, y) {
+                    self.rect = next_rect;
+                }
+                if self.scrubbing_ruler {
+                    let local_x = x - self.rect.x0;
+                    let breath = self.breath_at_x(local_x);
+                    self.state
+                        .borrow_mut()
+                        .queue_action(LayersPanelAction::SetCurrentBreath(breath));
+                }
+                if let Some(drag) = &self.bar_drag {
+                    let local_x = x - self.rect.x0;
+                    let current_breath = self.breath_at_x(local_x) as i64;
+                    let delta = current_breath - drag.anchor_breath as i64;
+                    let (new_start, new_length) = match drag.mode {
+                        BarDragMode::Move => {
+                            let new_start = (drag.orig_start as i64 + delta).max(0) as u32;
+                            (new_start, drag.orig_length)
+                        }
+                        BarDragMode::TrimStart => {
+                            let max_start = drag.orig_start + drag.orig_length - 1;
+                            let new_start =
+                                (drag.orig_start as i64 + delta).clamp(0, max_start as i64) as u32;
+                            let new_length = drag.orig_start + drag.orig_length - new_start;
+                            (new_start, new_length)
+                        }
+                        BarDragMode::TrimEnd => {
+                            let orig_end = drag.orig_start + drag.orig_length - 1;
+                            let new_end =
+                                (orig_end as i64 + delta).max(drag.orig_start as i64) as u32;
+                            let new_length = new_end - drag.orig_start + 1;
+                            (drag.orig_start, new_length)
+                        }
+                    };
+                    self.state.borrow_mut().queue_action(LayersPanelAction::SetLayerTiming(
+                        drag.layer_id.clone(),
+                        new_start,
+                        new_length,
+                    ));
+                }
+                if let Some(drag) = &self.property_block_drag {
+                    let local_x = x - self.rect.x0;
+                    let current_breath = self.breath_at_x(local_x) as i64;
+                    let delta = current_breath - drag.anchor_breath as i64;
+                    let (new_start, new_length) = match drag.mode {
+                        BarDragMode::Move => {
+                            let new_start = (drag.orig_start as i64 + delta).max(0) as u32;
+                            (new_start, drag.orig_length)
+                        }
+                        BarDragMode::TrimStart => {
+                            let max_start = drag.orig_start + drag.orig_length - 1;
+                            let new_start =
+                                (drag.orig_start as i64 + delta).clamp(0, max_start as i64) as u32;
+                            let new_length = drag.orig_start + drag.orig_length - new_start;
+                            (new_start, new_length)
+                        }
+                        BarDragMode::TrimEnd => {
+                            let orig_end = drag.orig_start + drag.orig_length - 1;
+                            let new_end =
+                                (orig_end as i64 + delta).max(drag.orig_start as i64) as u32;
+                            let new_length = new_end - drag.orig_start + 1;
+                            (drag.orig_start, new_length)
+                        }
+                    };
+                    self.state.borrow_mut().queue_action(LayersPanelAction::SetPropertyBlockTiming(
+                        drag.layer_id.clone(),
+                        drag.property_id.clone(),
+                        drag.block_id.clone(),
+                        new_start,
+                        new_length,
+                    ));
+                }
+            }
+            ModulePointerEvent::Up { x, y } => {
+                self.gizmo_state.end_drag();
+                self.scrubbing_ruler = false;
+                self.bar_drag = None;
+                self.property_block_drag = None;
+                self.hovered_property_block = self.property_block_hit_at(x, y);
+            }
+            ModulePointerEvent::Enter => self.gizmo_state.set_hovered(true),
+            ModulePointerEvent::Leave => {
+                self.gizmo_state.set_hovered(false);
+                self.hovered_property_block = None;
+            }
+            ModulePointerEvent::Down { .. } => {}
+        }
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.gizmo_state.wants_pointer_capture()
+            || self.scrubbing_ruler
+            || self.bar_drag.is_some()
+            || self.property_block_drag.is_some()
+    }
+
+    fn is_hidden(&self) -> bool {
+        self.hidden
+    }
+
+    fn set_hidden(&mut self, hidden: bool) {
+        self.hidden = hidden;
+    }
+
+    fn persisted_ui_state(&self) -> Option<PersistedModuleUiState> {
+        Some(PersistedModuleUiState::new(
+            self.id(),
+            self.rect,
+            self.gizmo_state.is_seamless(),
+            self.hidden,
+        ))
+    }
+
+    fn apply_persisted_ui_state(&mut self, state: &PersistedModuleUiState) {
+        self.rect = state.rect.to_runtime();
+        self.gizmo_state.set_seamless(state.is_seamless);
+        self.hidden = state.is_hidden;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect() -> ModuleRect {
+        ModuleRect {
+            x0: 0,
+            y0: 0,
+            x1: 50,
+            y1: 12,
+        }
+    }
+
+    fn row(id: &str, name: &str, start_breath: u32, length_breaths: u32) -> LayerRow {
+        LayerRow {
+            id: id.to_string(),
+            name: name.to_string(),
+            visible: true,
+            locked: false,
+            start_breath,
+            length_breaths,
+        }
+    }
+
+    fn property(layer_id: &str, property_id: &str, label: &str, kind: LayerPropertyKind, blocks: Vec<PropertyTrackBlock>) -> PropertyTrackRow {
+        PropertyTrackRow {
+            layer_id: layer_id.to_string(),
+            property_id: property_id.to_string(),
+            label: label.to_string(),
+            kind,
+            blocks,
+        }
+    }
+
+    fn state_with_rows() -> Rc<RefCell<LayersPanelState>> {
+        let state = Rc::new(RefCell::new(LayersPanelState::default()));
+        state.borrow_mut().sync(
+            vec![
+                row("layer-1", "Layer 1", 0, 5),
+                row("layer-2", "Layer 2", 2, 1),
+            ],
+            vec![
+                property(
+                    "layer-1",
+                    "raster",
+                    "RASTER",
+                    LayerPropertyKind::Raster,
+                    vec![PropertyTrackBlock {
+                        id: "block-1".to_string(),
+                        start_breath: 0,
+                        length_breaths: 5,
+                        is_blank: false,
+                    }],
+                ),
+                property(
+                    "layer-1",
+                    "move",
+                    "MOVE",
+                    LayerPropertyKind::Move,
+                    vec![],
+                ),
+            ],
+            Some("layer-1".to_string()),
+            Some("raster".to_string()),
+            0,
+            false,
+        );
+        state
+    }
+
+    #[test]
+    fn clicking_a_layer_name_queues_a_select_action_for_that_layer() {
+        let state = state_with_rows();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: COL_NAME,
+            y: panel.row_y(3),
+            button: ModulePointerButton::Left,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::Select("layer-1".to_string()))
+        );
+    }
+
+    #[test]
+    fn clicking_a_property_row_queues_a_select_property_action() {
+        let state = state_with_rows();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: COL_NAME,
+            y: panel.row_y(4),
+            button: ModulePointerButton::Left,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::SelectProperty(
+                "layer-1".to_string(),
+                "raster".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn drawing_the_selected_layer_renders_property_rows_beneath_it() {
+        let state = state_with_rows();
+        let panel = LayersPanelModule::new("layers_panel", rect(), state);
+        let group = panel.draw();
+        let (timeline_start, _) = panel.timeline_bounds();
+
+        assert_eq!(
+            group.cells.get(&CellPoint {
+                x: COL_NAME,
+                y: panel.row_y(4),
+                z: 0,
+            }).map(|cell| cell.graphic.clone()),
+            Some(CellGraphic::Glyph('R'))
+        );
+        assert_eq!(
+            group.cells.get(&CellPoint {
+                x: timeline_start,
+                y: panel.row_y(4),
+                z: 0,
+            }).map(|cell| cell.graphic.clone()),
+            Some(CellGraphic::Glyph('║'))
+        );
+    }
+
+    #[test]
+    fn raster_property_blocks_use_old_system_endcaps_midsections_and_singles() {
+        assert_eq!(property_track_cell_graphic(false, true, 1, 0), '█');
+        assert_eq!(property_track_cell_graphic(false, true, 2, 0), '█');
+        assert_eq!(property_track_cell_graphic(false, true, 2, 1), '▦');
+        assert_eq!(property_track_cell_graphic(false, true, 4, 1), '▥');
+        assert_eq!(property_track_cell_graphic(true, true, 1, 0), '▢');
+        assert_eq!(property_track_cell_graphic(true, true, 2, 0), '<');
+        assert_eq!(property_track_cell_graphic(true, true, 2, 1), '>');
+        assert_eq!(property_track_cell_graphic(true, true, 4, 1), '▢');
+    }
+
+    #[test]
+    fn hidden_property_blocks_use_old_system_hidden_caps_and_midsections() {
+        assert_eq!(property_track_cell_graphic(false, false, 1, 0), '▒');
+        assert_eq!(property_track_cell_graphic(false, false, 2, 0), '╺');
+        assert_eq!(property_track_cell_graphic(false, false, 2, 1), '╸');
+        assert_eq!(property_track_cell_graphic(false, false, 4, 1), '╌');
+    }
+
+    #[test]
+    fn hovering_a_raster_block_highlights_it_with_vivid_color_and_weight() {
+        let state = state_with_rows();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state);
+        let (timeline_start, _) = panel.timeline_bounds();
+
+        panel.on_pointer_event(ModulePointerEvent::Move {
+            x: timeline_start + 1,
+            y: panel.row_y(4),
+        });
+        let group = panel.draw();
+        let cell = group
+            .cells
+            .get(&CellPoint {
+                x: timeline_start + 1,
+                y: panel.row_y(4),
+                z: 0,
+            })
+            .unwrap();
+
+        assert_eq!(cell.color, UiPalette::default().get(UiColorRole::Vivid));
+        assert_eq!(cell.weight, thaum_renderer_domain::CellWeight::from_index_clamped(3));
+    }
+
+    #[test]
+    fn clicking_and_dragging_a_raster_block_moves_its_timing() {
+        let state = state_with_rows();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(4);
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 2,
+            y,
+            button: ModulePointerButton::Left,
+        });
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::SelectProperty(
+                "layer-1".to_string(),
+                "raster".to_string(),
+            ))
+        );
+        assert!(panel.wants_pointer_capture());
+
+        panel.on_pointer_event(ModulePointerEvent::Move {
+            x: timeline_start + 4,
+            y,
+        });
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::SetPropertyBlockTiming(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-1".to_string(),
+                2,
+                5,
+            ))
+        );
+    }
+
+    #[test]
+    fn double_clicking_the_body_of_a_raster_block_splits_it() {
+        let state = state_with_rows();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(4);
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 2,
+            y,
+            button: ModulePointerButton::Left,
+        });
+        state.borrow_mut().take_pending_action();
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 2,
+            y,
+            button: ModulePointerButton::Left,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::SplitPropertyBlock(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-1".to_string(),
+                2,
+            ))
+        );
+    }
+
+    #[test]
+    fn clicking_the_add_row_queues_an_add_requested_action() {
+        let state = state_with_rows();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: 1,
+            y: panel.row_y(ROW_ADD_LAYER),
+            button: ModulePointerButton::Left,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::AddRequested)
+        );
+    }
+
+    #[test]
+    fn clicking_the_visible_icon_queues_a_toggle_visible_action() {
+        let state = state_with_rows();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: COL_VISIBLE,
+            y: panel.row_y(6),
+            button: ModulePointerButton::Left,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::ToggleVisible("layer-2".to_string()))
+        );
+    }
+
+    #[test]
+    fn clicking_the_lock_icon_queues_a_toggle_locked_action() {
+        let state = state_with_rows();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: COL_LOCK,
+            y: panel.row_y(3),
+            button: ModulePointerButton::Left,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::ToggleLocked("layer-1".to_string()))
+        );
+    }
+
+    #[test]
+    fn clicking_the_delete_icon_queues_a_delete_action() {
+        let state = state_with_rows();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: panel.delete_column(),
+            y: panel.row_y(3),
+            button: ModulePointerButton::Left,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::Delete("layer-1".to_string()))
+        );
+    }
+
+    #[test]
+    fn clicking_the_auto_key_row_queues_a_toggle_auto_key_action() {
+        let state = state_with_rows();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: 1,
+            y: panel.row_y(ROW_AUTO_KEY),
+            button: ModulePointerButton::Left,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::ToggleAutoKey)
+        );
+    }
+
+    #[test]
+    fn clicking_the_ruler_queues_a_set_current_breath_action_and_starts_scrubbing() {
+        let state = state_with_rows();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 5,
+            y: panel.row_y(ROW_RULER),
+            button: ModulePointerButton::Left,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::SetCurrentBreath(5))
+        );
+        assert!(panel.wants_pointer_capture());
+    }
+
+    #[test]
+    fn dragging_after_a_ruler_click_keeps_updating_the_breath_until_release() {
+        let state = state_with_rows();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 3,
+            y: panel.row_y(ROW_RULER),
+            button: ModulePointerButton::Left,
+        });
+        state.borrow_mut().take_pending_action();
+
+        panel.on_pointer_event(ModulePointerEvent::Move {
+            x: timeline_start + 8,
+            y: panel.row_y(ROW_RULER),
+        });
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::SetCurrentBreath(8))
+        );
+
+        panel.on_pointer_event(ModulePointerEvent::Up {
+            x: timeline_start + 8,
+            y: panel.row_y(ROW_RULER),
+        });
+        assert!(!panel.wants_pointer_capture());
+    }
+
+    #[test]
+    fn clicking_the_layer_row_timeline_space_selects_the_layer_without_starting_a_drag() {
+        let state = state_with_rows();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(3);
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 2,
+            y,
+            button: ModulePointerButton::Left,
+        });
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::Select("layer-1".to_string()))
+        );
+        assert!(!panel.wants_pointer_capture());
+    }
+
+    #[test]
+    fn clicking_the_layer_row_timeline_edge_still_selects_the_layer() {
+        let state = state_with_rows();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(3);
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 4,
+            y,
+            button: ModulePointerButton::Left,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::Select("layer-1".to_string()))
+        );
+    }
+
+    #[test]
+    fn clicking_the_layer_row_start_of_timeline_selects_the_layer() {
+        let state = state_with_rows();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(3);
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start,
+            y,
+            button: ModulePointerButton::Left,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::Select("layer-1".to_string()))
+        );
+    }
+
+    #[test]
+    fn clicking_outside_a_single_breath_bar_still_selects_that_layer() {
+        let state = state_with_rows();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(6);
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start,
+            y,
+            button: ModulePointerButton::Left,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::Select("layer-2".to_string()))
+        );
+        assert!(!panel.wants_pointer_capture());
+    }
+
+    #[test]
+    fn clicking_outside_any_row_queues_nothing() {
+        let state = state_with_rows();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: 0,
+            y: panel.row_y(6),
+            button: ModulePointerButton::Left,
+        });
+
+        assert_eq!(state.borrow_mut().take_pending_action(), None);
+    }
+
+    #[test]
+    fn clicking_the_close_gizmo_hides_the_panel() {
+        let state = state_with_rows();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state);
+
+        let close_y = rect().y0 + (rect().y1 - rect().y0) - 1;
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: rect().x0 + 3,
+            y: close_y,
+            button: ModulePointerButton::Left,
+        });
+
+        assert!(panel.is_hidden());
+    }
+}

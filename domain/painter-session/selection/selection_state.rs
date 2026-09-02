@@ -1,0 +1,515 @@
+use std::collections::{BTreeSet, VecDeque};
+
+use thaum_renderer_domain::CellPoint;
+
+use crate::{
+    brush::{Canvas, PaintedCell},
+    fill::CanvasBounds,
+    tool_state::ChannelMask,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SelectionMode {
+    #[default]
+    Replace,
+    Additive,
+    Subtract,
+    Intersect,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaneSelection {
+    bounds: CanvasBounds,
+    cells: BTreeSet<CellPoint>,
+}
+
+impl PlaneSelection {
+    pub fn new(bounds: CanvasBounds) -> Self {
+        Self {
+            bounds,
+            cells: BTreeSet::new(),
+        }
+    }
+
+    pub fn bounds(&self) -> CanvasBounds {
+        self.bounds
+    }
+
+    pub fn set_bounds(&mut self, bounds: CanvasBounds) {
+        self.bounds = bounds;
+        self.cells.retain(|point| bounds.contains(*point));
+    }
+
+    pub fn clear(&mut self) {
+        self.cells.clear();
+    }
+
+    pub fn select_all(&mut self) {
+        self.cells = self.bounds.iter_points().into_iter().collect();
+    }
+
+    pub fn invert(&mut self) {
+        let previous = self.cells.clone();
+        self.cells = self
+            .bounds
+            .iter_points()
+            .into_iter()
+            .filter(|point| !previous.contains(point))
+            .collect();
+    }
+
+    pub fn has_selection(&self) -> bool {
+        !self.cells.is_empty()
+    }
+
+    pub fn contains(&self, point: CellPoint) -> bool {
+        self.cells.contains(&point)
+    }
+
+    pub fn allows_edit(&self, point: CellPoint) -> bool {
+        !self.has_selection() || self.contains(point)
+    }
+
+    pub fn filter_edit_points<I>(&self, points: I) -> Vec<CellPoint>
+    where
+        I: IntoIterator<Item = CellPoint>,
+    {
+        points
+            .into_iter()
+            .filter(|point| self.bounds.contains(*point))
+            .filter(|point| self.allows_edit(*point))
+            .collect()
+    }
+
+    pub fn set_selected(&mut self, point: CellPoint, selected: bool) {
+        if !self.bounds.contains(point) {
+            return;
+        }
+        if selected {
+            self.cells.insert(point);
+        } else {
+            self.cells.remove(&point);
+        }
+    }
+
+    pub fn apply_points<I>(&mut self, points: I, mode: SelectionMode)
+    where
+        I: IntoIterator<Item = CellPoint>,
+    {
+        let incoming: BTreeSet<CellPoint> = points
+            .into_iter()
+            .filter(|point| self.bounds.contains(*point))
+            .collect();
+
+        match mode {
+            SelectionMode::Replace => self.cells = incoming,
+            SelectionMode::Additive => self.cells.extend(incoming),
+            SelectionMode::Subtract => {
+                for point in incoming {
+                    self.cells.remove(&point);
+                }
+            }
+            SelectionMode::Intersect => {
+                self.cells = self.cells.intersection(&incoming).copied().collect();
+            }
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = CellPoint> + '_ {
+        self.cells.iter().copied()
+    }
+
+    pub fn is_border(&self, point: CellPoint) -> bool {
+        if !self.contains(point) {
+            return false;
+        }
+        plane_neighbors(self.bounds, point)
+            .into_iter()
+            .any(|neighbor| !self.bounds.contains(neighbor) || !self.contains(neighbor))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WorldSelection {
+    cells: BTreeSet<CellPoint>,
+}
+
+impl WorldSelection {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn clear(&mut self) {
+        self.cells.clear();
+    }
+
+    pub fn has_selection(&self) -> bool {
+        !self.cells.is_empty()
+    }
+
+    pub fn contains(&self, point: CellPoint) -> bool {
+        self.cells.contains(&point)
+    }
+
+    pub fn set_selected(&mut self, point: CellPoint, selected: bool) {
+        if selected {
+            self.cells.insert(point);
+        } else {
+            self.cells.remove(&point);
+        }
+    }
+
+    pub fn apply_points<I>(&mut self, points: I, mode: SelectionMode)
+    where
+        I: IntoIterator<Item = CellPoint>,
+    {
+        let incoming: BTreeSet<CellPoint> = points.into_iter().collect();
+        match mode {
+            SelectionMode::Replace => self.cells = incoming,
+            SelectionMode::Additive => self.cells.extend(incoming),
+            SelectionMode::Subtract => {
+                for point in incoming {
+                    self.cells.remove(&point);
+                }
+            }
+            SelectionMode::Intersect => {
+                self.cells = self.cells.intersection(&incoming).copied().collect();
+            }
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = CellPoint> + '_ {
+        self.cells.iter().copied()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PainterSelection {
+    plane: PlaneSelection,
+    world: WorldSelection,
+    mode: SelectionMode,
+}
+
+impl PainterSelection {
+    pub fn new(bounds: CanvasBounds) -> Self {
+        Self {
+            plane: PlaneSelection::new(bounds),
+            world: WorldSelection::new(),
+            mode: SelectionMode::Replace,
+        }
+    }
+
+    pub fn plane(&self) -> &PlaneSelection {
+        &self.plane
+    }
+
+    pub fn world(&self) -> &WorldSelection {
+        &self.world
+    }
+
+    pub fn mode(&self) -> SelectionMode {
+        self.mode
+    }
+
+    pub fn set_mode(&mut self, mode: SelectionMode) {
+        self.mode = mode;
+    }
+
+    pub fn set_plane_bounds(&mut self, bounds: CanvasBounds) {
+        self.plane.set_bounds(bounds);
+    }
+
+    pub fn clear_plane(&mut self) {
+        self.plane.clear();
+    }
+
+    pub fn select_all_plane(&mut self) {
+        self.plane.select_all();
+    }
+
+    pub fn invert_plane(&mut self) {
+        self.plane.invert();
+    }
+
+    pub fn apply_plane_points<I>(&mut self, points: I)
+    where
+        I: IntoIterator<Item = CellPoint>,
+    {
+        self.plane.apply_points(points, self.mode);
+    }
+
+    pub fn apply_plane_points_with_mode<I>(&mut self, points: I, mode: SelectionMode)
+    where
+        I: IntoIterator<Item = CellPoint>,
+    {
+        self.plane.apply_points(points, mode);
+    }
+
+    pub fn preview_plane_with_mode<I>(&self, points: I, mode: SelectionMode) -> PlaneSelection
+    where
+        I: IntoIterator<Item = CellPoint>,
+    {
+        let mut preview = self.plane.clone();
+        preview.apply_points(points, mode);
+        preview
+    }
+
+    pub fn allows_plane_edit(&self, point: CellPoint) -> bool {
+        self.plane.allows_edit(point)
+    }
+
+    pub fn filter_plane_edit_points<I>(&self, points: I) -> Vec<CellPoint>
+    where
+        I: IntoIterator<Item = CellPoint>,
+    {
+        self.plane.filter_edit_points(points)
+    }
+
+    pub fn apply_world_points<I>(&mut self, points: I)
+    where
+        I: IntoIterator<Item = CellPoint>,
+    {
+        self.world.apply_points(points, self.mode);
+    }
+
+    pub fn apply_world_points_with_mode<I>(&mut self, points: I, mode: SelectionMode)
+    where
+        I: IntoIterator<Item = CellPoint>,
+    {
+        self.world.apply_points(points, mode);
+    }
+}
+
+fn plane_neighbors(bounds: CanvasBounds, point: CellPoint) -> Vec<CellPoint> {
+    vec![
+        bounds.offset_in_plane(point, -1, 0),
+        bounds.offset_in_plane(point, 1, 0),
+        bounds.offset_in_plane(point, 0, -1),
+        bounds.offset_in_plane(point, 0, 1),
+    ]
+}
+
+fn cells_match_on_mask(
+    left: Option<PaintedCell>,
+    right: Option<PaintedCell>,
+    channels: ChannelMask,
+) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => {
+            (!channels.graphic || left.graphic == right.graphic)
+                && (!channels.color || left.color == right.color)
+                && (!channels.weight || left.weight_index == right.weight_index)
+        }
+        _ => false,
+    }
+}
+
+pub fn flood_select_points(
+    canvas: &Canvas,
+    start: CellPoint,
+    bounds: CanvasBounds,
+    channels: ChannelMask,
+) -> Vec<CellPoint> {
+    if !bounds.contains(start) || !channels.any_enabled() {
+        return Vec::new();
+    }
+
+    let target = canvas.get(&start).cloned();
+    let mut queue = VecDeque::from([start]);
+    let mut seen = BTreeSet::new();
+    let mut points = Vec::new();
+
+    while let Some(point) = queue.pop_front() {
+        if !seen.insert(point) || !bounds.contains(point) {
+            continue;
+        }
+        if !cells_match_on_mask(canvas.get(&point).cloned(), target.clone(), channels) {
+            continue;
+        }
+
+        points.push(point);
+        queue.extend(plane_neighbors(bounds, point));
+    }
+
+    points
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::brush::apply_brush;
+
+    fn point(x: i32, y: i32) -> CellPoint {
+        CellPoint { x, y, z: 0 }
+    }
+
+    fn bounds() -> CanvasBounds {
+        CanvasBounds {
+            x0: 0,
+            y0: 0,
+            x1: 4,
+            y1: 4,
+            z: 0,
+            plane_axis: crate::fill::CanvasPlaneAxis::Z,
+        }
+    }
+
+    fn cell(glyph: char, rgb: (u8, u8, u8), weight_index: i64) -> PaintedCell {
+        PaintedCell {
+            graphic: thaum_renderer_domain::CellGraphic::Glyph(glyph),
+            color: crate::paint_color::PaintColor::flat_rgb(rgb.0, rgb.1, rgb.2),
+            weight_index,
+        }
+    }
+
+    #[test]
+    fn additive_and_subtractive_application_update_the_live_selection() {
+        let mut selection = PlaneSelection::new(bounds());
+        selection.apply_points([point(1, 1), point(2, 1)], SelectionMode::Additive);
+        selection.apply_points([point(2, 1)], SelectionMode::Subtract);
+
+        assert!(selection.contains(point(1, 1)));
+        assert!(!selection.contains(point(2, 1)));
+    }
+
+    #[test]
+    fn select_all_and_invert_cover_the_whole_plane_bounds() {
+        let mut selection = PlaneSelection::new(bounds());
+        selection.apply_points([point(1, 1)], SelectionMode::Replace);
+        selection.invert();
+
+        assert!(!selection.contains(point(1, 1)));
+        assert!(selection.contains(point(0, 0)));
+        assert!(selection.contains(point(4, 4)));
+
+        selection.clear();
+        selection.select_all();
+        assert!(selection.contains(point(0, 0)));
+        assert!(selection.contains(point(4, 4)));
+    }
+
+    #[test]
+    fn painter_selection_applies_the_current_mode_to_plane_updates() {
+        let mut selection = PainterSelection::new(bounds());
+        selection.set_mode(SelectionMode::Additive);
+        selection.apply_plane_points([point(1, 1)]);
+        selection.apply_plane_points([point(2, 1)]);
+        assert!(selection.plane().contains(point(1, 1)));
+        assert!(selection.plane().contains(point(2, 1)));
+
+        selection.set_mode(SelectionMode::Intersect);
+        selection.apply_plane_points([point(2, 1), point(3, 1)]);
+        assert!(!selection.plane().contains(point(1, 1)));
+        assert!(selection.plane().contains(point(2, 1)));
+        assert!(!selection.plane().contains(point(3, 1)));
+    }
+
+    #[test]
+    fn painter_selection_keeps_world_selection_separate_from_plane_selection() {
+        let mut selection = PainterSelection::new(bounds());
+        selection.apply_plane_points([point(1, 1)]);
+        selection.set_mode(SelectionMode::Additive);
+        selection.apply_world_points([
+            CellPoint { x: 9, y: 9, z: 2 },
+            CellPoint { x: 10, y: 9, z: 2 },
+        ]);
+
+        assert!(selection.plane().contains(point(1, 1)));
+        assert!(selection.world().contains(CellPoint { x: 9, y: 9, z: 2 }));
+        assert!(selection.world().contains(CellPoint { x: 10, y: 9, z: 2 }));
+    }
+
+    #[test]
+    fn plane_edit_filter_allows_everything_when_no_selection_exists() {
+        let selection = PainterSelection::new(bounds());
+
+        assert_eq!(
+            selection.filter_plane_edit_points([point(0, 0), point(1, 0)]),
+            vec![point(0, 0), point(1, 0)]
+        );
+    }
+
+    #[test]
+    fn set_plane_bounds_prunes_any_out_of_bounds_selection_cells() {
+        let mut selection = PainterSelection::new(bounds());
+        selection.apply_plane_points_with_mode([point(1, 1), point(4, 4)], SelectionMode::Replace);
+
+        selection.set_plane_bounds(CanvasBounds {
+            x0: 0,
+            y0: 0,
+            x1: 2,
+            y1: 2,
+            z: 0,
+            plane_axis: crate::fill::CanvasPlaneAxis::Z,
+        });
+
+        assert!(selection.plane().contains(point(1, 1)));
+        assert!(!selection.plane().contains(point(4, 4)));
+    }
+
+    #[test]
+    fn plane_edit_filter_limits_edits_to_the_selected_cells() {
+        let mut selection = PainterSelection::new(bounds());
+        selection.apply_plane_points([point(1, 1), point(2, 1)]);
+
+        assert_eq!(
+            selection.filter_plane_edit_points([point(0, 0), point(1, 1), point(2, 1)]),
+            vec![point(1, 1), point(2, 1)]
+        );
+    }
+
+    #[test]
+    fn border_detection_marks_edge_cells() {
+        let mut selection = PlaneSelection::new(bounds());
+        selection.apply_points(
+            [
+                point(1, 1),
+                point(2, 1),
+                point(3, 1),
+                point(1, 2),
+                point(2, 2),
+                point(3, 2),
+                point(1, 3),
+                point(2, 3),
+                point(3, 3),
+            ],
+            SelectionMode::Replace,
+        );
+
+        assert!(selection.is_border(point(1, 1)));
+        assert!(!selection.is_border(point(2, 2)));
+    }
+
+    #[test]
+    fn flood_select_respects_the_enabled_channels() {
+        let mut canvas = Canvas::new();
+        apply_brush(&mut canvas, point(0, 0), cell('A', (1, 1, 1), 0));
+        apply_brush(&mut canvas, point(1, 0), cell('B', (1, 1, 1), 0));
+        apply_brush(&mut canvas, point(2, 0), cell('B', (9, 9, 9), 0));
+
+        let glyph_only = flood_select_points(
+            &canvas,
+            point(1, 0),
+            bounds(),
+            ChannelMask {
+                graphic: true,
+                color: false,
+                weight: false,
+            },
+        );
+        let glyph_and_color = flood_select_points(
+            &canvas,
+            point(1, 0),
+            bounds(),
+            ChannelMask {
+                graphic: true,
+                color: true,
+                weight: false,
+            },
+        );
+
+        assert_eq!(glyph_only, vec![point(1, 0), point(2, 0)]);
+        assert_eq!(glyph_and_color, vec![point(1, 0)]);
+    }
+}

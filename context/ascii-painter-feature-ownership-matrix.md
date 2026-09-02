@@ -1,5 +1,8 @@
 # ascii painter feature ownership matrix
 
+## superseded note (26-08-31)
+Rows referencing `domain/painter-document/modules/` or a module-wrapped `document.modules[*].groups[]` shape are stale: that wrapper was reversed back to a flat `document.groups[]`, one group mapping directly to one renderer `CellGroup`. `domain/painter-document/modules/` no longer exists; its duties folded into `domain/painter-document/groups/`. See `context/module-concept-audit.md`'s "superseded" section.
+
 ## purpose
 Map the old ASCII painter feature surface into the new thaum-painter encapsulations so each major behavior has one clear primary owner, clear secondary consumers, and a visible growth-risk note.
 

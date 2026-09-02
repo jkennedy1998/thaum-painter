@@ -4,7 +4,7 @@
   "metadata": {
     "document_id": "doc_cavern_sign_001",
     "title": "Cavern Sign",
-    "description": "Animated cave sign with one moving glow pass and a torch marker module.",
+    "description": "Animated cave sign with one moving glow pass and a torch marker group.",
     "tags": ["signage", "cave", "animated"],
     "created_at": "2026-08-28T18:00:00.000Z",
     "modified_at": "2026-08-28T18:05:00.000Z",
@@ -19,177 +19,151 @@
       "height": 8,
       "depth": 3
     },
-    "module_order": [
-      "module_cavern_sign",
-      "module_torch_marker"
+    "group_order": [
+      "group_background",
+      "group_letters",
+      "group_glow",
+      "group_torch_flame"
     ],
-    "modules": [
+    "groups": [
       {
-        "id": "module_cavern_sign",
-        "name": "Cavern Sign",
+        "id": "group_background",
+        "name": "Background",
         "visible": true,
         "locked": false,
         "opacity": 1,
         "placement": { "x": 0, "y": 0, "z": 0 },
-        "group_order": [
-          "group_background",
-          "group_letters",
-          "group_glow"
-        ],
-        "groups": [
+        "timing": {
+          "start_breath": 0,
+          "window_start_breath": 0,
+          "window_end_breath": 7
+        },
+        "raster_segments": [
           {
-            "id": "group_background",
-            "name": "Background",
-            "visible": true,
-            "locked": false,
-            "opacity": 1,
-            "local_placement": { "x": 0, "y": 0, "z": 0 },
-            "timing": {
-              "start_breath": 0,
-              "window_start_breath": 0,
-              "window_end_breath": 7
-            },
-            "raster_segments": [
-              {
-                "id": "segment_background_base",
-                "start_breath": 0,
-                "end_breath": 7,
-                "voxels": [
-                  { "x": 0, "y": 0, "z": 0, "char": ".", "rgb": { "r": 50, "g": 50, "b": 70 }, "weight_index": 1 },
-                  { "x": 1, "y": 0, "z": 0, "char": ".", "rgb": { "r": 50, "g": 50, "b": 70 }, "weight_index": 1 }
-                ]
-              }
-            ],
-            "properties": []
-          },
-          {
-            "id": "group_letters",
-            "name": "Letters",
-            "visible": true,
-            "locked": false,
-            "opacity": 1,
-            "local_placement": { "x": 3, "y": 2, "z": 1 },
-            "timing": {
-              "start_breath": 0,
-              "window_start_breath": 0,
-              "window_end_breath": 7
-            },
-            "raster_segments": [
-              {
-                "id": "segment_letters_base",
-                "start_breath": 0,
-                "end_breath": 7,
-                "voxels": [
-                  { "x": 0, "y": 0, "z": 0, "char": "R", "rgb": { "r": 255, "g": 210, "b": 120 }, "weight_index": 2 },
-                  { "x": 1, "y": 0, "z": 0, "char": "U", "rgb": { "r": 255, "g": 210, "b": 120 }, "weight_index": 2 },
-                  { "x": 2, "y": 0, "z": 0, "char": "N", "rgb": { "r": 255, "g": 210, "b": 120 }, "weight_index": 2 }
-                ]
-              }
-            ],
-            "properties": [
-              {
-                "id": "prop_letters_opacity",
-                "kind": "opacity",
-                "blocks": [
-                  {
-                    "id": "block_letters_opacity",
-                    "start_breath": 0,
-                    "end_breath": 7,
-                    "value": 1
-                  }
-                ]
-              }
+            "id": "segment_background_base",
+            "start_breath": 0,
+            "end_breath": 7,
+            "voxels": [
+              { "x": 0, "y": 0, "z": 0, "char": ".", "rgb": { "r": 50, "g": 50, "b": 70 }, "weight_index": 1 },
+              { "x": 1, "y": 0, "z": 0, "char": ".", "rgb": { "r": 50, "g": 50, "b": 70 }, "weight_index": 1 }
             ]
-          },
+          }
+        ],
+        "properties": []
+      },
+      {
+        "id": "group_letters",
+        "name": "Letters",
+        "visible": true,
+        "locked": false,
+        "opacity": 1,
+        "placement": { "x": 3, "y": 2, "z": 1 },
+        "timing": {
+          "start_breath": 0,
+          "window_start_breath": 0,
+          "window_end_breath": 7
+        },
+        "raster_segments": [
           {
-            "id": "group_glow",
-            "name": "Glow",
-            "visible": true,
-            "locked": false,
-            "opacity": 0.85,
-            "local_placement": { "x": 2, "y": 1, "z": 2 },
-            "timing": {
-              "start_breath": 0,
-              "window_start_breath": 0,
-              "window_end_breath": 7
-            },
-            "raster_segments": [
+            "id": "segment_letters_base",
+            "start_breath": 0,
+            "end_breath": 7,
+            "voxels": [
+              { "x": 0, "y": 0, "z": 0, "char": "R", "rgb": { "r": 255, "g": 210, "b": 120 }, "weight_index": 2 },
+              { "x": 1, "y": 0, "z": 0, "char": "U", "rgb": { "r": 255, "g": 210, "b": 120 }, "weight_index": 2 },
+              { "x": 2, "y": 0, "z": 0, "char": "N", "rgb": { "r": 255, "g": 210, "b": 120 }, "weight_index": 2 }
+            ]
+          }
+        ],
+        "properties": [
+          {
+            "id": "prop_letters_opacity",
+            "kind": "opacity",
+            "blocks": [
               {
-                "id": "segment_glow_dim",
+                "id": "block_letters_opacity",
                 "start_breath": 0,
-                "end_breath": 3,
-                "voxels": [
-                  { "x": 0, "y": 0, "z": 0, "char": "░", "rgb": { "r": 100, "g": 160, "b": 255 }, "weight_index": 1 }
-                ]
-              },
-              {
-                "id": "segment_glow_bright",
-                "start_breath": 4,
                 "end_breath": 7,
-                "voxels": [
-                  { "x": 0, "y": 0, "z": 0, "char": "█", "rgb": { "r": 170, "g": 210, "b": 255 }, "weight_index": 3 }
-                ]
-              }
-            ],
-            "properties": [
-              {
-                "id": "prop_glow_move",
-                "kind": "move",
-                "blocks": [
-                  {
-                    "id": "block_glow_move_a",
-                    "start_breath": 0,
-                    "end_breath": 3,
-                    "value": { "x": 0, "y": 0, "z": 0 }
-                  },
-                  {
-                    "id": "block_glow_move_b",
-                    "start_breath": 4,
-                    "end_breath": 7,
-                    "value": { "x": 1, "y": 0, "z": 0 }
-                  }
-                ]
+                "value": 1
               }
             ]
           }
         ]
       },
       {
-        "id": "module_torch_marker",
-        "name": "Torch Marker",
+        "id": "group_glow",
+        "name": "Glow",
+        "visible": true,
+        "locked": false,
+        "opacity": 0.85,
+        "placement": { "x": 2, "y": 1, "z": 2 },
+        "timing": {
+          "start_breath": 0,
+          "window_start_breath": 0,
+          "window_end_breath": 7
+        },
+        "raster_segments": [
+          {
+            "id": "segment_glow_dim",
+            "start_breath": 0,
+            "end_breath": 3,
+            "voxels": [
+              { "x": 0, "y": 0, "z": 0, "char": "░", "rgb": { "r": 100, "g": 160, "b": 255 }, "weight_index": 1 }
+            ]
+          },
+          {
+            "id": "segment_glow_bright",
+            "start_breath": 4,
+            "end_breath": 7,
+            "voxels": [
+              { "x": 0, "y": 0, "z": 0, "char": "█", "rgb": { "r": 170, "g": 210, "b": 255 }, "weight_index": 3 }
+            ]
+          }
+        ],
+        "properties": [
+          {
+            "id": "prop_glow_move",
+            "kind": "move",
+            "blocks": [
+              {
+                "id": "block_glow_move_a",
+                "start_breath": 0,
+                "end_breath": 3,
+                "value": { "x": 0, "y": 0, "z": 0 }
+              },
+              {
+                "id": "block_glow_move_b",
+                "start_breath": 4,
+                "end_breath": 7,
+                "value": { "x": 1, "y": 0, "z": 0 }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "group_torch_flame",
+        "name": "Flame",
         "visible": true,
         "locked": false,
         "opacity": 1,
         "placement": { "x": 18, "y": 0, "z": 0 },
-        "group_order": [
-          "group_torch_flame"
-        ],
-        "groups": [
+        "timing": {
+          "start_breath": 0,
+          "window_start_breath": 0,
+          "window_end_breath": 7
+        },
+        "raster_segments": [
           {
-            "id": "group_torch_flame",
-            "name": "Flame",
-            "visible": true,
-            "locked": false,
-            "opacity": 1,
-            "local_placement": { "x": 0, "y": 0, "z": 0 },
-            "timing": {
-              "start_breath": 0,
-              "window_start_breath": 0,
-              "window_end_breath": 7
-            },
-            "raster_segments": [
-              {
-                "id": "segment_torch_flame",
-                "start_breath": 0,
-                "end_breath": 7,
-                "voxels": [
-                  { "x": 0, "y": 0, "z": 0, "char": "^", "rgb": { "r": 255, "g": 140, "b": 40 }, "weight_index": 2 }
-                ]
-              }
-            ],
-            "properties": []
+            "id": "segment_torch_flame",
+            "start_breath": 0,
+            "end_breath": 7,
+            "voxels": [
+              { "x": 0, "y": 0, "z": 0, "char": "^", "rgb": { "r": 255, "g": 140, "b": 40 }, "weight_index": 2 }
+            ]
           }
-        ]
+        ],
+        "properties": []
       }
     ],
     "playback": {

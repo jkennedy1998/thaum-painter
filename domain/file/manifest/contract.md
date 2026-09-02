@@ -8,8 +8,7 @@ Own the canonical top-level saved file manifest and versioned shape for thaum-pa
 - top-level file sections and required keys
 - canonical placement of painter-only metadata versus renderable content sections
 - the stable saved split between document content, time assets, authoring metadata, saved camera defaults, and other painter-only sections
-- canonical module identity, module order, and module-level (global-board) placement
-- canonical intra-module group storage, nested one level under its owning module
+- canonical group identity, group order, and group-level (global-board) placement
 
 ## does not own
 - persistence transports
@@ -23,7 +22,7 @@ Own the canonical top-level saved file manifest and versioned shape for thaum-pa
 - `contract.md`
   - manifest contract
 - `manifest.rs`
-  - rust manifest parsing/validation shapes, owned by this encapsulation
+  - rust manifest parsing/validation shapes, owned by this encapsulation (currently still parses the pre-reversal module-wrapped shape; needs an implementation pass, see notes)
 - `example-thaum-painter-file-v1.json`
   - first implementation-ready saved file example
 - `example-thaum-painter-file-v1.md`
@@ -62,7 +61,7 @@ via: rust fn
 ## tests
 - `manifest.rs`'s inline `#[cfg(test)]` module
   - light
-  - parses `example-thaum-painter-file-v1.json` (two modules, intra-module groups, raster segments, property blocks, time assets, saved camera defaults, import/export bookkeeping) and validates kind/version/required-field rejection.
+  - parses `example-thaum-painter-file-v1.json` (raster segments, property blocks, time assets, saved camera defaults, import/export bookkeeping) and validates kind/version/required-field rejection; pre-reversal module-wrapped shape still, needs updating to flat `document.groups[]` alongside the code pass.
 
 ## data
 - none
@@ -71,7 +70,8 @@ via: rust fn
 - the manifest should stay explicit about which sections are saved truth versus which states are derived later for rendering.
 - preferred direction: keep saved camera defaults here, but keep live camera motion/focus outside the file.
 - if a future field exists mainly to help humans save, catalog, migrate, or reopen work, it likely belongs in this boundary rather than render-space.
-- `document.groups[]` moved to `document.modules[*].groups[]`: one saved module maps to exactly one renderer cell-group, and groups are intra-module content, not top-level document content; see `context/module-concept-audit.md`.
-- a group's `placement` field is now `local_placement`, relative to its owning module's local coordinate space; the module itself carries the global-board `placement`.
+- `document.groups[]` is flat: one saved group maps directly to exactly one renderer cell-group, no wrapper. See `context/module-concept-audit.md`'s "superseded" section — an earlier `document.modules[*].groups[]` wrapper shape was tried and reversed once the renderer's camera proved universal rather than module-local.
+- a group's `placement` field is the group's own global-board position, directly consumed by `domain/rendering/render-space/`.
+- **pending code pass:** `manifest.rs` and the v1 example/schema JSON still implement the pre-reversal `document.modules[*].groups[]` shape. This contract describes the target (post-reversal) shape.
 - implemented in Rust (`serde_json::Value` + manual field-by-field parsing with `anyhow::Context`, matching `thaum-renderer`'s own convention, e.g. its `thaum-renderer-test-user/src/main.rs` scene parser) rather than `serde` derive macros, for consistency with the sibling renderer repo.
 - this was written without a working `cargo`/`rustc` in the authoring environment, so it has not been compiler-verified here; run `cargo test -p thaum-painter-domain` locally to confirm before relying on it.

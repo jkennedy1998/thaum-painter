@@ -25,6 +25,8 @@ Own the bounded editing/session semantics that mutate a painter document over ti
   - default
 - `tool-state/`
   - default
+- `timeline-state/`
+  - default
 
 ## contents
 - `contract.md`

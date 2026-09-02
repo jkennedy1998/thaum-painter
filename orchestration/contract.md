@@ -16,7 +16,8 @@ Own the minimal boot/composition seam for standing up thaum-painter usage, wirin
 - UI module composition (deferred; see `context/roadmap.md`)
 
 ## children-encapsulations
-- none
+- `entrypoint/`
+  - default
 
 ## contents
 - none
@@ -25,12 +26,13 @@ Own the minimal boot/composition seam for standing up thaum-painter usage, wirin
 - `/home/j/Repos/thaum-painter/domain/`
 - `/home/j/Repos/thaum-painter/tools/`
 - `/home/j/Repos/thaum-painter/workers/`
+- `/home/j/Repos/thaum-renderer/orchestration/boot/`
 
 ## exposed interfaces
 - none
 
 ## interface consumers
-- future thaum-painter app entrypoint
+- humans and operators running thaum-painter locally, via `entrypoint/`
 
 ## artifacts
 - none
@@ -42,4 +44,4 @@ Own the minimal boot/composition seam for standing up thaum-painter usage, wirin
 - none
 
 ## notes
-- kept empty until real boot-composition pressure exists; matches `/home/j/Repos/thaum-renderer/orchestration/`'s own boot/asset-root split, which should not be copied wholesale until thaum-painter has concrete boot needs of its own.
+- `entrypoint/` is the first real boot-composition surface here — a runnable proof app, not yet real painter-file loading. This parent stays a pure boundary; concrete boot code lives in the child, matching `/home/j/Repos/thaum-renderer/orchestration/`'s own boot/asset-root split.

@@ -39,3 +39,6 @@ Own persistence surfaces for saving, loading, autosaving, and locating thaum-pai
 
 ## data
 - none
+
+## notes
+- `storage.rs`'s live `SharedDocumentLayer`/`SharedDocumentRuntime` runtime schema (used by the running app) now carries `visible`/`locked`/`start_breath`/`length_breaths` per layer, with `set_layer_visible`, `set_layer_locked`, `rename_layer`, `remove_layer`, and `set_layer_timing` on the runtime, and `composited_canvas_in_layer_order` skips invisible layers. `start_breath`/`length_breaths` are purely an authoring/UI concept surfaced by `domain/modules/individuals/layers-panel/` for now — they do not gate compositing. This is intentionally still a simpler live/collaborative schema than the richer canonical save schema in `domain/file/manifest/` (which also carries `opacity`, `placement`, full `timing`, and per-property blocks) — closing that full gap is future work, not part of this pass.

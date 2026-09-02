@@ -1,5 +1,8 @@
 # third pass encapsulation review
 
+## superseded note (26-08-31)
+This review's `domain/painter-document/modules/` verdict (below, and in the "module concept added" addendum) is stale: that seam has been removed and its duties folded into `domain/painter-document/groups/`, which now maps directly 1:1 to renderer `CellGroup`s. See `context/module-concept-audit.md`'s "superseded" section.
+
 ## purpose
 Review the current thaum-painter encapsulations after the old-feature ownership pass and decide which seams are ready as-is, which seams should split now, and which seams should intentionally wait for implementation pressure.
 

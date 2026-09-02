@@ -6,6 +6,9 @@ Validate the broader thaum-painter contracts against the first concrete saved-fi
 ## addendum: module restructuring
 The examples originally validated here modeled one flat `document.groups[]` list with each group mapping 1:1 to its own renderer cell-group. That has since been corrected: `document.modules[*].groups[]` now nests groups one level deeper, and render-space emits one `cell_groups[]` entry per module with intra-module groups composited into it, matching `thaum-renderer`'s own truth that a `CellGroup` is "an entire module and relevant contents." See `context/module-concept-audit.md` for the full reasoning. The confirmed boundaries below still hold; only the concrete shape of `domain/file/manifest/` and `domain/rendering/render-space/`'s examples changed.
 
+## addendum 2: module restructuring reversed (26-08-31)
+The module wrapper described directly above has itself been reversed. `document.groups[]` is flat again, one group mapping directly to one renderer `CellGroup` — same as the original pre-addendum-1 shape, but this time it's the intentional, permanent one. See `context/module-concept-audit.md`'s "superseded" section for why (the renderer's camera turned out to be universal, not module-local, so the bundling reason from addendum 1 no longer applies). The v1 example/schema JSON and `manifest.rs`/`render_space.rs` still need a code pass to catch up to this.
+
 ## validated examples
 - `/home/j/Repos/thaum-painter/domain/file/manifest/example-thaum-painter-file-v1.json`
 - `/home/j/Repos/thaum-painter/domain/rendering/render-space/example-render-space-v1.json`
