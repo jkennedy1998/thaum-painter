@@ -66,19 +66,20 @@ pub use paint_canvas_bounds_module::{DrawingSpaceWheelMode, PaintCanvasBoundsMod
 pub use paint_color::PaintColor;
 pub use paint_color_block_module::PaintColorBlockModule;
 pub use paint_color_picker_module::PaintColorPickerModule;
-pub use properties::block_covering_breath;
+pub use properties::{block_covering_breath, breath_in_span, clamped_breath_span, span_end_breath};
 pub use render_space::{build_composition, build_data_lanes, build_render_space, RenderSpace};
 pub use selection_state::{
     flood_select_points, PainterSelection, PlaneSelection, SelectionMode, WorldSelection,
 };
 pub use storage::{
     append_action_record, load_or_create_shared_document, save_shared_document_snapshot,
-    write_action_records_atomic, PersistedCellPoint, PersistedSharedGraphic,
-    PersistedSharedPaintColor, PersistedSharedPaintedCell, PropertyBlockMergeDirection,
-    SharedCellPatch, SharedDocumentAction, SharedDocumentActionRecord, SharedDocumentFile,
-    SharedDocumentLayer, SharedDocumentPaths, SharedDocumentPropertyBlock,
-    SharedDocumentPropertyTrack, SharedDocumentRuntime, SHARED_DOCUMENT_KIND,
-    SHARED_DOCUMENT_SCHEMA_VERSION,
+    write_action_records_atomic, DEFAULT_SELECTION_CHANNEL_ID, PersistedCellPoint,
+    PersistedSharedGraphic, PersistedSharedPaintColor, PersistedSharedPaintedCell,
+    PropertyBlockMergeDirection, SharedCellPatch, SharedDocumentAction,
+    SharedDocumentActionRecord, SharedDocumentFile, SharedDocumentLayer, SharedDocumentPaths,
+    SharedDocumentPropertyBlock, SharedDocumentPropertyTrack, SharedDocumentRuntime,
+    SharedDocumentSelection, SharedDocumentSelectionChannel, SharedSelectionWriteMode,
+    SHARED_DOCUMENT_KIND, SHARED_DOCUMENT_SCHEMA_VERSION, UNDO_HISTORY_DEPTH,
 };
 pub use timeline_state::TimelineState;
 pub use tool_state::{

@@ -1,5 +1,6 @@
 use std::{cell::RefCell, rc::Rc, time::{Duration, Instant}};
 
+
 use thaum_renderer_domain::{
     Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, GizmoBar, GizmoClickOutcome,
     GizmoKind, GizmoState, Module, ModulePointerButton, ModulePointerEvent, ModuleRect,
@@ -66,6 +67,8 @@ pub enum LayersPanelAction {
     SetCurrentBreath(u32),
     SetLayerTiming(String, u32, u32),
     SetPropertyBlockTiming(String, String, String, u32, u32),
+    SetPropertyBlockTimingPushed(String, String, String, u32, u32),
+    SetPropertyBlockTimingDestructive(String, String, String, u32, u32),
     SplitPropertyBlock(String, String, String, u32),
     BlankPropertyBlock(String, String, String),
     MergeBlankPropertyBlock(String, String, String, MergeDirection),
@@ -197,18 +200,34 @@ struct PropertyBlockHit {
 /// left/right-click raster drag modes (`resolve_groups_raster_drag_mode`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PropertyDragMode {
-    /// Left-click drag on the body: moves the whole block, keeping its length.
+    /// Drag on the body: moves the whole block, keeping its length (destructive when
+    /// sliding over neighbors).
     Move,
-    /// Left-click drag on the left edge: trims that edge, anchored at the other edge.
+    /// Drag on the left edge: reshapes that edge, anchored at the other edge.
     TrimStart,
-    /// Click-drag on the right edge (either button): trims that edge, anchored at the start.
+    /// Drag on the right edge: reshapes that edge, anchored at the start.
     TrimEnd,
-    /// Right-click drag on a single-breath block or the left edge: grows/shrinks from
-    /// whichever side the pointer moves toward, flipping freely through the block.
+    /// Drag on a single-breath block's body: grows/shrinks from whichever side the
+    /// pointer moves toward, flipping freely through the block.
     DynamicResize,
-    /// Right-click drag on the body (or a blank's center): previews swapping this block's
+    /// Drag on a multi-breath body (or a blank's center): previews swapping this block's
     /// breath range with whatever other block the pointer is over, committed on release.
     Swap,
+}
+
+/// Which mutation seam a property-block drag routes through. Both are legal by
+/// construction in `domain/painter-document/properties/`, and the runtime applies the
+/// queued action every drag frame — so the live document itself is the preview:
+/// pushed neighbors visibly ripple and destructive victims visibly yield.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PropertyTimingResolution {
+    /// Time-preserving: neighbors on the dragged side shift by the same delta
+    /// (`pushed_breath_span`) — nothing is overwritten, spacing is preserved.
+    Pushed,
+    /// Destructive: the block takes its full requested span and covered neighbors
+    /// truncate, vanish, or split around it (`destructive_breath_span`). A shrink
+    /// overlaps nothing, so it acts as a plain trim.
+    Destructive,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,46 +236,54 @@ struct PropertyBlockDrag {
     property_id: String,
     block_id: String,
     mode: PropertyDragMode,
+    resolution: PropertyTimingResolution,
     orig_start: u32,
     orig_length: u32,
     anchor_breath: u32,
     swap_target_block_id: Option<String>,
+    /// Most recent requested (start, length) computed during the drag. The drag never
+    /// mutates the document mid-flight — the panel only previews — and this final span
+    /// is committed exactly once on pointer-up through the queued timing action.
+    last_requested: Option<(u32, u32)>,
 }
 
 /// Resolves what a press-drag on `hit` should do, mirroring the old system's
 /// `resolve_groups_raster_drag_mode`: blanks only drag via a right-click swap on their
-/// center; content blocks move/trim on left-click and get dynamic-resize/swap behavior on
-/// right-click. Right-click on the right edge behaves the same as left-click (no dynamic
-/// flip-through on that side), matching the old system as authored.
+/// center; edge drags are time-preserving (push) on left-click and destructive
+/// (overwrite) on right-click; a multi-breath body swaps on left-click and destructively
+/// slides over neighbors on right-click; a single-breath block destructively repositions
+/// on left-click and destructively resizes from whichever side the pointer moves toward
+/// on right-click.
 fn resolve_property_drag_mode(
     hit: &PropertyBlockHit,
     button: ModulePointerButton,
-) -> Option<PropertyDragMode> {
+) -> Option<(PropertyDragMode, PropertyTimingResolution)> {
     if hit.is_blank {
         return if button == ModulePointerButton::Right && hit.mode == PropertyBlockHitMode::BlankCenter
         {
-            Some(PropertyDragMode::Swap)
+            Some((PropertyDragMode::Swap, PropertyTimingResolution::Destructive))
         } else {
             None
         };
     }
     let is_right = button == ModulePointerButton::Right;
+    let edge_resolution = if is_right {
+        PropertyTimingResolution::Destructive
+    } else {
+        PropertyTimingResolution::Pushed
+    };
     match hit.mode {
         PropertyBlockHitMode::BodySingle => Some(if is_right {
-            PropertyDragMode::DynamicResize
+            (PropertyDragMode::DynamicResize, PropertyTimingResolution::Destructive)
         } else {
-            PropertyDragMode::Move
+            (PropertyDragMode::Move, PropertyTimingResolution::Destructive)
         }),
-        PropertyBlockHitMode::EdgeStart => Some(if is_right {
-            PropertyDragMode::DynamicResize
-        } else {
-            PropertyDragMode::TrimStart
-        }),
-        PropertyBlockHitMode::EdgeEnd => Some(PropertyDragMode::TrimEnd),
+        PropertyBlockHitMode::EdgeStart => Some((PropertyDragMode::TrimStart, edge_resolution)),
+        PropertyBlockHitMode::EdgeEnd => Some((PropertyDragMode::TrimEnd, edge_resolution)),
         PropertyBlockHitMode::BodyMove => Some(if is_right {
-            PropertyDragMode::Swap
+            (PropertyDragMode::Move, PropertyTimingResolution::Destructive)
         } else {
-            PropertyDragMode::Move
+            (PropertyDragMode::Swap, PropertyTimingResolution::Destructive)
         }),
         PropertyBlockHitMode::BlankStart
         | PropertyBlockHitMode::BlankEnd
@@ -484,16 +511,18 @@ impl LayersPanelModule {
             LayerPropertyKind::Raster => self.palette.get(UiColorRole::Bright),
             LayerPropertyKind::Move => self.palette.get(UiColorRole::Medium),
         };
+        // Bars rest at weight one; any highlight (hover or active drag) steps the
+        // whole bar up to weight two.
         if drag_matches_block {
             return (
                 self.palette.get(UiColorRole::Vivid),
-                thaum_renderer_domain::CellWeight::from_index_clamped(3),
+                thaum_renderer_domain::CellWeight::from_index_clamped(2),
             );
         }
         if hover_matches_breath {
             return (
                 self.palette.get(UiColorRole::Vivid),
-                thaum_renderer_domain::CellWeight::from_index_clamped(3),
+                thaum_renderer_domain::CellWeight::from_index_clamped(2),
             );
         }
         if hover_matches_block {
@@ -596,7 +625,7 @@ impl LayersPanelModule {
             return;
         }
 
-        let Some(mode) = resolve_property_drag_mode(&hit, button) else {
+        let Some((mode, resolution)) = resolve_property_drag_mode(&hit, button) else {
             return;
         };
         let Some(block) = self.find_property_block(&hit) else {
@@ -607,10 +636,12 @@ impl LayersPanelModule {
             property_id: hit.property_id,
             block_id: hit.block_id,
             mode,
+            resolution,
             orig_start: block.start_breath,
             orig_length: block.length_breaths.max(1),
             anchor_breath: hit.breath,
             swap_target_block_id: None,
+            last_requested: None,
         });
     }
 }
@@ -933,10 +964,30 @@ impl Module for LayersPanelModule {
                             ..Cell::default()
                         });
                     }
+                    let drag_preview = self
+                        .property_block_drag
+                        .as_ref()
+                        .filter(|drag| {
+                            drag.layer_id == property.layer_id
+                                && drag.property_id == property.property_id
+                                && drag.mode != PropertyDragMode::Swap
+                        })
+                        .map(|drag| (drag.block_id.as_str(), drag.last_requested));
                     for block in &property.blocks {
-                        let block_start_x = self.x_for_breath(block.start_breath);
-                        for local_index in 0..block.length_breaths.max(1) {
-                            let breath = block.start_breath + local_index;
+                        // While a timing drag is in flight the document is untouched,
+                        // so the dragged bar previews at its requested span instead of
+                        // its stored one; victims stay intact until the release commit.
+                        let (draw_start, draw_length) = match drag_preview {
+                            Some((drag_block_id, Some((start, length))))
+                                if drag_block_id == block.id.as_str() =>
+                            {
+                                (start, length)
+                            }
+                            _ => (block.start_breath, block.length_breaths.max(1)),
+                        };
+                        let block_start_x = self.x_for_breath(draw_start);
+                        for local_index in 0..draw_length {
+                            let breath = draw_start + local_index;
                             let x = block_start_x + local_index as i32;
                             if x > timeline_end {
                                 break;
@@ -948,7 +999,7 @@ impl Module for LayersPanelModule {
                                 graphic: CellGraphic::Glyph(property_track_cell_graphic(
                                     block.is_blank,
                                     is_visible,
-                                    block.length_breaths.max(1),
+                                    draw_length,
                                     local_index,
                                 )),
                                 color,
@@ -1122,7 +1173,14 @@ impl Module for LayersPanelModule {
                             })
                             .map(|hover| hover.block_id.clone());
                     } else {
-                        let (new_start, new_length) = match drag.mode {
+                        // The pushed/destructive rules live in
+                        // `domain/painter-document/properties/` and are legal by
+                        // construction, but the drag itself never mutates the document:
+                        // it only tracks the requested span so the bar can preview at
+                        // the pointer, and one commit action is queued on pointer-up.
+                        // Per-frame destructive applies would chop every bar the
+                        // pointer passed over, so nothing is written until release.
+                        let (requested_start, requested_length) = match drag.mode {
                             PropertyDragMode::Move => {
                                 let new_start = (drag.orig_start as i64 + delta).max(0) as u32;
                                 (new_start, drag.orig_length)
@@ -1147,20 +1205,14 @@ impl Module for LayersPanelModule {
                                     let new_start = (drag.orig_start as i64 + delta).max(0) as u32;
                                     (new_start, orig_end - new_start + 1)
                                 } else {
-                                    let new_end =
-                                        (orig_end as i64 + delta).max(drag.orig_start as i64) as u32;
+                                    let new_end = (orig_end as i64 + delta)
+                                        .max(drag.orig_start as i64) as u32;
                                     (drag.orig_start, new_end - drag.orig_start + 1)
                                 }
                             }
                             PropertyDragMode::Swap => unreachable!(),
                         };
-                        self.state.borrow_mut().queue_action(LayersPanelAction::SetPropertyBlockTiming(
-                            drag.layer_id.clone(),
-                            drag.property_id.clone(),
-                            drag.block_id.clone(),
-                            new_start,
-                            new_length,
-                        ));
+                        drag.last_requested = Some((requested_start, requested_length));
                     }
                 }
             }
@@ -1178,6 +1230,31 @@ impl Module for LayersPanelModule {
                                 target_block_id,
                             ));
                         }
+                    } else if let Some((start, length)) = drag.last_requested {
+                        // One commit per drag: the previewed span is applied exactly
+                        // here, so destructive drags only yield the bars under the
+                        // release position instead of everything crossed mid-flight.
+                        let action = match drag.resolution {
+                            PropertyTimingResolution::Pushed => {
+                                LayersPanelAction::SetPropertyBlockTimingPushed(
+                                    drag.layer_id,
+                                    drag.property_id,
+                                    drag.block_id,
+                                    start,
+                                    length,
+                                )
+                            }
+                            PropertyTimingResolution::Destructive => {
+                                LayersPanelAction::SetPropertyBlockTimingDestructive(
+                                    drag.layer_id,
+                                    drag.property_id,
+                                    drag.block_id,
+                                    start,
+                                    length,
+                                )
+                            }
+                        };
+                        self.state.borrow_mut().queue_action(action);
                     }
                 }
                 self.hovered_property_block = self.property_block_hit_at(x, y);
@@ -1395,18 +1472,18 @@ mod tests {
             .unwrap();
 
         assert_eq!(cell.color, UiPalette::default().get(UiColorRole::Vivid));
-        assert_eq!(cell.weight, thaum_renderer_domain::CellWeight::from_index_clamped(3));
+        assert_eq!(cell.weight, thaum_renderer_domain::CellWeight::from_index_clamped(2));
     }
 
     #[test]
-    fn clicking_and_dragging_a_raster_block_moves_its_timing() {
+    fn left_click_dragging_an_edge_previews_then_commits_the_pushed_timing_on_release() {
         let state = state_with_rows();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
         let y = panel.row_y(4);
 
         panel.on_pointer_event(ModulePointerEvent::Click {
-            x: timeline_start + 2,
+            x: timeline_start,
             y,
             button: ModulePointerButton::Left,
         });
@@ -1419,17 +1496,86 @@ mod tests {
         );
         assert!(panel.wants_pointer_capture());
 
+        // Mid-drag frames only preview: the document is untouched, so no action is
+        // queued until release.
         panel.on_pointer_event(ModulePointerEvent::Move {
-            x: timeline_start + 4,
+            x: timeline_start + 2,
+            y,
+        });
+        assert_eq!(state.borrow_mut().take_pending_action(), None);
+
+        panel.on_pointer_event(ModulePointerEvent::Up {
+            x: timeline_start + 2,
             y,
         });
         assert_eq!(
             state.borrow_mut().take_pending_action(),
-            Some(LayersPanelAction::SetPropertyBlockTiming(
+            Some(LayersPanelAction::SetPropertyBlockTimingPushed(
                 "layer-1".to_string(),
                 "raster".to_string(),
                 "block-1".to_string(),
                 2,
+                3,
+            ))
+        );
+        assert!(!panel.wants_pointer_capture());
+    }
+
+    fn state_with_two_gapped_content_blocks() -> Rc<RefCell<LayersPanelState>> {
+        let state = Rc::new(RefCell::new(LayersPanelState::default()));
+        state.borrow_mut().sync(
+            vec![row("layer-1", "Layer 1", 0, 20)],
+            vec![property(
+                "layer-1",
+                "raster",
+                "RASTER",
+                LayerPropertyKind::Raster,
+                vec![
+                    PropertyTrackBlock { id: "block-1".to_string(), start_breath: 0, length_breaths: 5, is_blank: false },
+                    PropertyTrackBlock { id: "block-2".to_string(), start_breath: 10, length_breaths: 5, is_blank: false },
+                ],
+            )],
+            Some("layer-1".to_string()),
+            Some("raster".to_string()),
+            0,
+            false,
+        );
+        state
+    }
+
+    #[test]
+    fn right_click_dragging_the_body_destructively_moves_and_commits_once_on_release() {
+        let state = state_with_two_gapped_content_blocks();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(4);
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 2,
+            y,
+            button: ModulePointerButton::Right,
+        });
+        state.borrow_mut().take_pending_action();
+
+        // Drag block-1 over block-2: mid-drag frames stay preview-only so nothing is
+        // chopped until the release commit resolves the covered victim.
+        panel.on_pointer_event(ModulePointerEvent::Move {
+            x: timeline_start + 12,
+            y,
+        });
+        assert_eq!(state.borrow_mut().take_pending_action(), None);
+
+        panel.on_pointer_event(ModulePointerEvent::Up {
+            x: timeline_start + 12,
+            y,
+        });
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::SetPropertyBlockTimingDestructive(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-1".to_string(),
+                10,
                 5,
             ))
         );
@@ -1629,7 +1775,7 @@ mod tests {
     }
 
     #[test]
-    fn right_click_dragging_the_body_previews_and_commits_a_swap_with_the_hovered_block() {
+    fn left_click_dragging_the_body_previews_and_commits_a_swap_with_the_hovered_block() {
         let state = state_with_two_adjacent_content_blocks();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
@@ -1638,7 +1784,7 @@ mod tests {
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 2,
             y,
-            button: ModulePointerButton::Right,
+            button: ModulePointerButton::Left,
         });
         state.borrow_mut().take_pending_action();
         assert!(panel.wants_pointer_capture());
@@ -1666,7 +1812,103 @@ mod tests {
     }
 
     #[test]
-    fn right_click_dragging_the_left_edge_can_flip_to_resizing_the_end() {
+    fn right_click_dragging_a_single_bar_resizes_destructively_in_both_directions() {
+        let state = state_with_two_single_breath_blocks();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(4);
+
+        // Right-drag block-1 (breath 3) leftward: it grows left destructively.
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 3,
+            y,
+            button: ModulePointerButton::Right,
+        });
+        state.borrow_mut().take_pending_action();
+        panel.on_pointer_event(ModulePointerEvent::Move {
+            x: timeline_start + 1,
+            y,
+        });
+        assert_eq!(state.borrow_mut().take_pending_action(), None);
+        panel.on_pointer_event(ModulePointerEvent::Up {
+            x: timeline_start + 1,
+            y,
+        });
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::SetPropertyBlockTimingDestructive(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-1".to_string(),
+                1,
+                3,
+            ))
+        );
+
+        // Right-drag block-2 (breath 6) rightward: it grows right destructively.
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 6,
+            y,
+            button: ModulePointerButton::Right,
+        });
+        state.borrow_mut().take_pending_action();
+        panel.on_pointer_event(ModulePointerEvent::Move {
+            x: timeline_start + 8,
+            y,
+        });
+        panel.on_pointer_event(ModulePointerEvent::Up {
+            x: timeline_start + 8,
+            y,
+        });
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::SetPropertyBlockTimingDestructive(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-2".to_string(),
+                6,
+                3,
+            ))
+        );
+    }
+
+    #[test]
+    fn left_click_dragging_a_single_bar_destructively_moves_and_commits_once_on_release() {
+        let state = state_with_two_single_breath_blocks();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(4);
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 3,
+            y,
+            button: ModulePointerButton::Left,
+        });
+        state.borrow_mut().take_pending_action();
+
+        panel.on_pointer_event(ModulePointerEvent::Move {
+            x: timeline_start + 8,
+            y,
+        });
+        assert_eq!(state.borrow_mut().take_pending_action(), None);
+
+        panel.on_pointer_event(ModulePointerEvent::Up {
+            x: timeline_start + 8,
+            y,
+        });
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::SetPropertyBlockTimingDestructive(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-1".to_string(),
+                8,
+                1,
+            ))
+        );
+    }
+
+    fn state_with_two_single_breath_blocks() -> Rc<RefCell<LayersPanelState>> {
         let state = Rc::new(RefCell::new(LayersPanelState::default()));
         state.borrow_mut().sync(
             vec![row("layer-1", "Layer 1", 0, 10)],
@@ -1675,53 +1917,17 @@ mod tests {
                 "raster",
                 "RASTER",
                 LayerPropertyKind::Raster,
-                vec![PropertyTrackBlock { id: "block-1".to_string(), start_breath: 3, length_breaths: 5, is_blank: false }],
+                vec![
+                    PropertyTrackBlock { id: "block-1".to_string(), start_breath: 3, length_breaths: 1, is_blank: false },
+                    PropertyTrackBlock { id: "block-2".to_string(), start_breath: 6, length_breaths: 1, is_blank: false },
+                ],
             )],
             Some("layer-1".to_string()),
             Some("raster".to_string()),
             0,
             false,
         );
-        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
-        let (timeline_start, _) = panel.timeline_bounds();
-        let y = panel.row_y(4);
-
-        panel.on_pointer_event(ModulePointerEvent::Click {
-            x: timeline_start + 3,
-            y,
-            button: ModulePointerButton::Right,
-        });
-        state.borrow_mut().take_pending_action();
-
-        panel.on_pointer_event(ModulePointerEvent::Move {
-            x: timeline_start + 1,
-            y,
-        });
-        assert_eq!(
-            state.borrow_mut().take_pending_action(),
-            Some(LayersPanelAction::SetPropertyBlockTiming(
-                "layer-1".to_string(),
-                "raster".to_string(),
-                "block-1".to_string(),
-                1,
-                7,
-            ))
-        );
-
-        panel.on_pointer_event(ModulePointerEvent::Move {
-            x: timeline_start + 6,
-            y,
-        });
-        assert_eq!(
-            state.borrow_mut().take_pending_action(),
-            Some(LayersPanelAction::SetPropertyBlockTiming(
-                "layer-1".to_string(),
-                "raster".to_string(),
-                "block-1".to_string(),
-                3,
-                8,
-            ))
-        );
+        state
     }
 
     #[test]

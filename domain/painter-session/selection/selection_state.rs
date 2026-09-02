@@ -19,6 +19,9 @@ pub enum SelectionMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaneSelection {
+    /// The active interaction plane. Bounds gate where strokes/select-all/invert
+    /// land, but the cell set itself is 3D: cells selected on other planes or at
+    /// other depths stay selected and keep rendering across camera moves.
     bounds: CanvasBounds,
     cells: BTreeSet<CellPoint>,
 }
@@ -35,27 +38,34 @@ impl PlaneSelection {
         self.bounds
     }
 
+    /// Retargets the active interaction plane without touching selected cells —
+    /// selections are 3D and survive camera plane changes. New strokes and
+    /// plane-scoped commands land on the new bounds instead.
     pub fn set_bounds(&mut self, bounds: CanvasBounds) {
         self.bounds = bounds;
-        self.cells.retain(|point| bounds.contains(*point));
     }
 
     pub fn clear(&mut self) {
         self.cells.clear();
     }
 
+    /// Selects the whole active interaction plane, keeping any cells already
+    /// selected outside it (other depths/planes).
     pub fn select_all(&mut self) {
-        self.cells = self.bounds.iter_points().into_iter().collect();
+        self.cells.extend(self.bounds.iter_points());
     }
 
+    /// Flips membership inside the active interaction plane only; cells selected
+    /// outside it (other depths/planes) are untouched.
     pub fn invert(&mut self) {
         let previous = self.cells.clone();
-        self.cells = self
-            .bounds
-            .iter_points()
-            .into_iter()
-            .filter(|point| !previous.contains(point))
-            .collect();
+        for point in self.bounds.iter_points() {
+            if previous.contains(&point) {
+                self.cells.remove(&point);
+            } else {
+                self.cells.insert(point);
+            }
+        }
     }
 
     pub fn has_selection(&self) -> bool {
@@ -100,9 +110,20 @@ impl PlaneSelection {
             .into_iter()
             .filter(|point| self.bounds.contains(*point))
             .collect();
+        // Every mode is plane-scoped: cells selected outside the active
+        // interaction plane (other depths/planes) always survive.
+        let outside = self
+            .cells
+            .iter()
+            .filter(|point| !self.bounds.contains(**point))
+            .copied()
+            .collect::<BTreeSet<CellPoint>>();
 
         match mode {
-            SelectionMode::Replace => self.cells = incoming,
+            SelectionMode::Replace => {
+                self.cells = outside;
+                self.cells.extend(incoming);
+            }
             SelectionMode::Additive => self.cells.extend(incoming),
             SelectionMode::Subtract => {
                 for point in incoming {
@@ -110,9 +131,28 @@ impl PlaneSelection {
                 }
             }
             SelectionMode::Intersect => {
-                self.cells = self.cells.intersection(&incoming).copied().collect();
+                self.cells = outside
+                    .union(
+                        &self
+                            .cells
+                            .intersection(&incoming)
+                            .copied()
+                            .collect::<BTreeSet<CellPoint>>(),
+                    )
+                    .copied()
+                    .collect();
             }
         }
+    }
+
+    /// Inserts points without plane filtering. Used by boot-time restore from the
+    /// document's selection channel, which legitimately holds cells outside the
+    /// current interaction plane.
+    pub fn restore_points<I>(&mut self, points: I)
+    where
+        I: IntoIterator<Item = CellPoint>,
+    {
+        self.cells.extend(points);
     }
 
     pub fn iter(&self) -> impl Iterator<Item = CellPoint> + '_ {
@@ -278,6 +318,16 @@ impl PainterSelection {
     {
         self.world.apply_points(points, mode);
     }
+
+    /// Restores selection cells from the document's selection channel at boot.
+    /// Not plane-filtered: the channel is 3D and legitimately holds cells outside
+    /// the current interaction plane.
+    pub fn restore_points<I>(&mut self, points: I)
+    where
+        I: IntoIterator<Item = CellPoint>,
+    {
+        self.plane.restore_points(points);
+    }
 }
 
 fn plane_neighbors(bounds: CanvasBounds, point: CellPoint) -> Vec<CellPoint> {
@@ -431,7 +481,7 @@ mod tests {
     }
 
     #[test]
-    fn set_plane_bounds_prunes_any_out_of_bounds_selection_cells() {
+    fn set_plane_bounds_retargets_the_interaction_plane_without_losing_selections() {
         let mut selection = PainterSelection::new(bounds());
         selection.apply_plane_points_with_mode([point(1, 1), point(4, 4)], SelectionMode::Replace);
 
@@ -444,8 +494,84 @@ mod tests {
             plane_axis: crate::fill::CanvasPlaneAxis::Z,
         });
 
+        // The cell set is 3D: retargeting the interaction plane never prunes it.
         assert!(selection.plane().contains(point(1, 1)));
-        assert!(!selection.plane().contains(point(4, 4)));
+        assert!(selection.plane().contains(point(4, 4)));
+    }
+
+    #[test]
+    fn selections_persist_across_depth_changes_and_render_from_any_plane() {
+        let mut selection = PainterSelection::new(bounds());
+        selection.apply_plane_points_with_mode([point(1, 1)], SelectionMode::Replace);
+
+        // Simulate the camera moving to a different depth and plane axis: the
+        // selection set must survive untouched.
+        selection.set_plane_bounds(CanvasBounds {
+            x0: -10,
+            y0: -10,
+            x1: 10,
+            y1: 10,
+            z: 3,
+            plane_axis: crate::fill::CanvasPlaneAxis::Y,
+        });
+
+        assert!(selection.plane().contains(point(1, 1)));
+
+        // A stroke on the new plane (axis Y, fixed y = 3) coexists with the old
+        // depth's cells.
+        let depth_point = CellPoint { x: 0, y: 3, z: 5 };
+        selection.apply_plane_points_with_mode([depth_point], SelectionMode::Additive);
+        assert!(selection.plane().contains(point(1, 1)));
+        assert!(selection.plane().contains(depth_point));
+    }
+
+    #[test]
+    fn replace_strokes_only_rewrite_the_active_plane_slice() {
+        let mut selection = PainterSelection::new(bounds());
+        selection.apply_plane_points_with_mode([point(1, 1)], SelectionMode::Additive);
+        let deep = CellPoint { x: 8, y: 8, z: 7 };
+        selection.restore_points([deep]);
+
+        // A replace stroke on the active plane clears that plane's slice but must
+        // never touch cells selected at other depths/planes.
+        selection.apply_plane_points_with_mode([point(2, 2)], SelectionMode::Replace);
+
+        assert!(!selection.plane().contains(point(1, 1)));
+        assert!(selection.plane().contains(point(2, 2)));
+        assert!(selection.plane().contains(deep));
+    }
+
+    #[test]
+    fn select_all_and_invert_are_scoped_to_the_active_plane_slice() {
+        let mut selection = PainterSelection::new(bounds());
+        let deep = CellPoint { x: 8, y: 8, z: 7 };
+        selection.restore_points([deep]);
+
+        selection.invert_plane();
+        // Invert flips the slice around the empty selection, deep cell untouched.
+        assert!(selection.plane().contains(point(0, 0)));
+        assert!(selection.plane().contains(deep));
+
+        selection.select_all_plane();
+        assert!(selection.plane().contains(point(4, 4)));
+        assert!(selection.plane().contains(deep));
+
+        selection.clear_plane();
+        assert!(!selection.plane().contains(deep));
+    }
+
+    #[test]
+    fn restore_points_seeds_cells_outside_the_current_plane() {
+        let mut selection = PainterSelection::new(bounds());
+        selection.restore_points([
+            point(1, 1),
+            CellPoint { x: -3, y: -3, z: -2 },
+        ]);
+
+        assert!(selection.plane().contains(point(1, 1)));
+        assert!(selection
+            .plane()
+            .contains(CellPoint { x: -3, y: -3, z: -2 }));
     }
 
     #[test]

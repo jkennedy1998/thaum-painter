@@ -19,7 +19,8 @@ use thaum_painter_domain::{
     PaintTarget, PaintTool, PainterSelection, PainterUserSessionState, PersistedPainterUiState,
     PropertyBlockMergeDirection, PropertyTrackBlock, PropertyTrackRow, SelectionMode,
     SharedCellPatch, SharedDocumentActionRecord, SharedDocumentFile, SharedDocumentPaths,
-    SharedDocumentRuntime, TimelineState, ToolDef, ToolState, ToolboxModule,
+    SharedDocumentRuntime, SharedSelectionWriteMode, TimelineState,
+    ToolDef, ToolState, ToolboxModule, DEFAULT_SELECTION_CHANNEL_ID,
 };
 use thaum_renderer_boot::{
     boot_renderer, cell_clip_size_for_state, run_renderer_window_with_state_frame_provider,
@@ -379,11 +380,11 @@ fn create_layer(runtime: &mut SharedDocumentRuntime) -> String {
     layer_id
 }
 
-fn build_document_layer_cell_groups(runtime: &SharedDocumentRuntime) -> Vec<CellGroup> {
+fn build_document_layer_cell_groups(runtime: &SharedDocumentRuntime, current_breath: u32) -> Vec<CellGroup> {
     runtime
         .layers()
         .iter()
-        .filter_map(|layer| runtime.canvas_for_layer(&layer.layer_id))
+        .filter_map(|layer| runtime.canvas_for_layer(&layer.layer_id, current_breath))
         .map(build_paint_canvas_cell_group)
         .collect()
 }
@@ -454,10 +455,10 @@ fn build_plane_selection_cell_group(
     };
 
     let mut group = CellGroup::new(WorldPoint { x: 0, y: 0, z: 0 });
+    // Render every selected cell, not just a plane slice or border: selection is a
+    // 3D bitmap shared across depths, so cells light up at any depth the camera can
+    // see (the composition already shows whatever falls inside the camera window).
     for position in preview.iter() {
-        if !preview.is_border(position) {
-            continue;
-        }
         group.insert(Cell {
             position,
             graphic: CellGraphic::Glyph(glyph),
@@ -757,27 +758,42 @@ fn build_selected_layer_property_rows(
 fn apply_layers_panel_action(
     action: Option<LayersPanelAction>,
     shared_document: &mut SharedDocumentRuntime,
+    shared_document_paths: &SharedDocumentPaths,
+    shared_action_counter: &mut u64,
+    session_user_id: &str,
     active_layer_id: &mut String,
     selected_property_id: &mut Option<String>,
     canvas: &mut Canvas,
     timeline_state: &Rc<RefCell<TimelineState>>,
 ) {
     let Some(action) = action else { return };
+    let current_breath = timeline_state.borrow().current_breath;
+    // Pure-UI actions (selection, playhead, auto-key) never touch the document;
+    // everything else mutates document metadata, so the snapshot is rewritten right
+    // after applying. Without this, block/layer edits only reached disk on an explicit
+    // file:save and were lost whenever the app closed first.
+    let document_mutated = !matches!(
+        action,
+        LayersPanelAction::Select(_)
+            | LayersPanelAction::SelectProperty(..)
+            | LayersPanelAction::ToggleAutoKey
+            | LayersPanelAction::SetCurrentBreath(_)
+    );
     match action {
         LayersPanelAction::Select(layer_id) => {
             *active_layer_id = resolved_active_layer_id(shared_document, Some(&layer_id));
             *selected_property_id = None;
-            sync_canvas_from_active_layer(shared_document, active_layer_id, canvas);
+            sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
         }
         LayersPanelAction::SelectProperty(layer_id, property_id) => {
             *active_layer_id = resolved_active_layer_id(shared_document, Some(&layer_id));
             *selected_property_id = Some(property_id);
-            sync_canvas_from_active_layer(shared_document, active_layer_id, canvas);
+            sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
         }
         LayersPanelAction::AddRequested => {
             *active_layer_id = create_layer(shared_document);
             *selected_property_id = None;
-            sync_canvas_from_active_layer(shared_document, active_layer_id, canvas);
+            sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
         }
         LayersPanelAction::ToggleVisible(layer_id) => {
             if let Some(layer) = shared_document
@@ -805,7 +821,7 @@ fn apply_layers_panel_action(
                     *active_layer_id = resolved_active_layer_id(shared_document, None);
                     *selected_property_id = None;
                 }
-                sync_canvas_from_active_layer(shared_document, active_layer_id, canvas);
+                sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
             }
         }
         LayersPanelAction::ToggleAutoKey => {
@@ -813,6 +829,8 @@ fn apply_layers_panel_action(
         }
         LayersPanelAction::SetCurrentBreath(breath) => {
             timeline_state.borrow_mut().set_current_breath(breath);
+            // Scrubbing the playhead switches which raster block the edit surface shows.
+            sync_canvas_from_active_layer(shared_document, active_layer_id, breath, canvas);
         }
         LayersPanelAction::SetLayerTiming(layer_id, start_breath, length_breaths) => {
             shared_document.set_layer_timing(&layer_id, start_breath, length_breaths);
@@ -832,9 +850,57 @@ fn apply_layers_panel_action(
                 length_breaths,
             );
         }
+        LayersPanelAction::SetPropertyBlockTimingPushed(
+            layer_id,
+            property_id,
+            block_id,
+            start_breath,
+            length_breaths,
+        ) => {
+            shared_document.set_property_block_timing_pushed(
+                &layer_id,
+                &property_id,
+                &block_id,
+                start_breath,
+                length_breaths,
+            );
+        }
+        LayersPanelAction::SetPropertyBlockTimingDestructive(
+            layer_id,
+            property_id,
+            block_id,
+            start_breath,
+            length_breaths,
+        ) => {
+            shared_document.set_property_block_timing_destructive(
+                &layer_id,
+                &property_id,
+                &block_id,
+                start_breath,
+                length_breaths,
+            );
+        }
         LayersPanelAction::SplitPropertyBlock(layer_id, property_id, block_id, split_breath) => {
-            shared_document.split_property_block(&layer_id, &property_id, &block_id, split_breath);
-            *selected_property_id = Some(property_id);
+            let Some(new_block_id) = shared_document
+                .split_property_block(&layer_id, &property_id, &block_id, split_breath)
+            else {
+                return;
+            };
+            *selected_property_id = Some(property_id.clone());
+            // Propagate the split block's channel data onto the new half as a recorded
+            // patch: both halves start as identical copies and replay rebuilds the copy.
+            if let Some(record) = shared_document.split_data_propagation_record(
+                &layer_id,
+                &block_id,
+                &new_block_id,
+                next_action_id(shared_action_counter),
+                session_user_id,
+                action_timestamp_string(),
+            ) {
+                let _ =
+                    append_and_apply_shared_action(shared_document, shared_document_paths, record);
+            }
+            sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
         }
         LayersPanelAction::BlankPropertyBlock(layer_id, property_id, block_id) => {
             shared_document.blank_property_block(&layer_id, &property_id, &block_id);
@@ -848,6 +914,11 @@ fn apply_layers_panel_action(
         }
         LayersPanelAction::SwapPropertyBlocks(layer_id, property_id, source_block_id, target_block_id) => {
             shared_document.swap_property_blocks(&layer_id, &property_id, &source_block_id, &target_block_id);
+        }
+    }
+    if document_mutated {
+        if let Err(error) = save_shared_document_snapshot(shared_document_paths, shared_document) {
+            eprintln!("failed to save document snapshot: {error}");
         }
     }
 }
@@ -884,6 +955,7 @@ fn handle_command_bar_button(
     active_layer_id: &mut String,
     selected_property_id: &mut Option<String>,
     shared_action_counter: &mut u64,
+    current_breath: u32,
     canvas: &mut Canvas,
     selection: &Rc<RefCell<PainterSelection>>,
 ) -> Result<()> {
@@ -902,7 +974,7 @@ fn handle_command_bar_button(
             *active_layer_id = resolved_active_layer_id(shared_document, None);
             *selected_property_id = None;
             *shared_action_counter = 0;
-            sync_canvas_from_active_layer(shared_document, active_layer_id, canvas);
+            sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
             selection.borrow_mut().clear_plane();
         }
         "file:open" => {
@@ -914,7 +986,7 @@ fn handle_command_bar_button(
                 *active_layer_id = resolved_active_layer_id(shared_document, Some(active_layer_id));
                 *selected_property_id = None;
                 *shared_action_counter = shared_document.actions.len() as u64;
-                sync_canvas_from_active_layer(shared_document, active_layer_id, canvas);
+                sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
                 selection.borrow_mut().clear_plane();
             }
         }
@@ -1027,10 +1099,11 @@ fn append_and_apply_shared_action(
 fn sync_canvas_from_active_layer(
     runtime: &SharedDocumentRuntime,
     active_layer_id: &str,
+    current_breath: u32,
     canvas: &mut Canvas,
 ) {
     *canvas = runtime
-        .canvas_for_layer(active_layer_id)
+        .canvas_for_layer(active_layer_id, current_breath)
         .cloned()
         .unwrap_or_default();
 }
@@ -1047,10 +1120,16 @@ fn apply_image_edits_to_shared_document<I>(
     positions: I,
     hand: PaintHand,
     bounds: CanvasBounds,
+    current_breath: u32,
 ) -> Result<()>
 where
     I: IntoIterator<Item = CellPoint>,
 {
+    // Paint strokes land on the raster block covering the playhead breath. A breath in a
+    // gap between blocks has no canvas to land on, so the stroke is rejected.
+    let Some(block_id) = runtime.active_raster_block_id(active_layer_id, current_breath) else {
+        return Ok(());
+    };
     let before = canvas.clone();
     let mut candidate = before.clone();
     for position in positions {
@@ -1070,9 +1149,10 @@ where
             user_id,
             action_timestamp_string(),
             patches,
+            Some(block_id),
         ),
     )?;
-    sync_canvas_from_active_layer(runtime, active_layer_id, canvas);
+    sync_canvas_from_active_layer(runtime, active_layer_id, current_breath, canvas);
     Ok(())
 }
 
@@ -1088,6 +1168,7 @@ fn apply_image_edit_to_shared_document(
     position: CellPoint,
     hand: PaintHand,
     bounds: CanvasBounds,
+    current_breath: u32,
 ) -> Result<()> {
     apply_image_edits_to_shared_document(
         runtime,
@@ -1101,7 +1182,33 @@ fn apply_image_edit_to_shared_document(
         [position],
         hand,
         bounds,
+        current_breath,
     )
+}
+
+/// Mirrors a committed selection change into the document's selection channel and
+/// persists it. Selection is document-owned (per file, one shared 3D bitmap on the
+/// canvas coordinate system), so the plane cache inside `PainterSelection` is only
+/// the interaction surface; the channel is the truth. No-ops skip the snapshot save.
+fn commit_selection_channel<I>(
+    runtime: &mut SharedDocumentRuntime,
+    paths: &SharedDocumentPaths,
+    points: I,
+    mode: SelectionMode,
+) where
+    I: IntoIterator<Item = CellPoint>,
+{
+    let write_mode = match mode {
+        SelectionMode::Replace => SharedSelectionWriteMode::Replace,
+        SelectionMode::Additive => SharedSelectionWriteMode::Additive,
+        SelectionMode::Subtract => SharedSelectionWriteMode::Subtract,
+        SelectionMode::Intersect => SharedSelectionWriteMode::Intersect,
+    };
+    if runtime.apply_selection_points(DEFAULT_SELECTION_CHANNEL_ID, points, write_mode) {
+        if let Err(error) = save_shared_document_snapshot(paths, runtime) {
+            eprintln!("failed to save document snapshot: {error}");
+        }
+    }
 }
 
 fn apply_shared_history_action(
@@ -1112,6 +1219,7 @@ fn apply_shared_history_action(
     active_layer_id: &str,
     canvas: &mut Canvas,
     undo: bool,
+    current_breath: u32,
 ) -> Result<()> {
     let action = if undo {
         SharedDocumentActionRecord::undo(
@@ -1131,13 +1239,14 @@ fn apply_shared_history_action(
         )
     };
     append_and_apply_shared_action(runtime, paths, action)?;
-    sync_canvas_from_active_layer(runtime, active_layer_id, canvas);
+    sync_canvas_from_active_layer(runtime, active_layer_id, current_breath, canvas);
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use thaum_painter_domain::SharedDocumentSelection;
     use thaum_renderer_boot::BootState;
     use thaum_renderer_domain::{
         project_world_to_view_plane, Camera, CameraRoll, CameraSwing, DataLanes,
@@ -1290,6 +1399,7 @@ mod tests {
                     property_tracks: vec![],
                 },
             ],
+            selection: SharedDocumentSelection::default(),
         });
 
         assert_eq!(resolved_active_layer_id(&runtime, Some("missing")), "layer-a");
@@ -1322,6 +1432,7 @@ mod tests {
                     property_tracks: vec![],
                 },
             ],
+            selection: SharedDocumentSelection::default(),
         });
 
         assert_eq!(create_layer(&mut runtime), "layer-2");
@@ -1408,6 +1519,11 @@ fn main() -> Result<()> {
     let selection = Rc::new(RefCell::new(PainterSelection::new(
         *paint_canvas_bounds.borrow(),
     )));
+    // Restore the document-owned 3D selection into the UI cache at boot. The set is
+    // not plane-pruned, so cells at other depths/planes survive camera moves.
+    selection.borrow_mut().restore_points(
+        shared_document.selection_points(DEFAULT_SELECTION_CHANNEL_ID),
+    );
 
     modules.register(Box::new(
         ToolboxModule::new(
@@ -1564,7 +1680,7 @@ fn main() -> Result<()> {
     );
     let mut selected_property_id: Option<String> = None;
     let mut canvas = shared_document
-        .canvas_for_layer(&active_layer_id)
+        .canvas_for_layer(&active_layer_id, timeline_state.borrow().current_breath)
         .cloned()
         .unwrap_or_default();
     let mut command_bar = CommandBar::new("painter_command_bar", ui_palette.clone())
@@ -1665,9 +1781,37 @@ fn main() -> Result<()> {
                 KeyCode::Digit2 => selection.borrow_mut().set_mode(SelectionMode::Additive),
                 KeyCode::Digit3 => selection.borrow_mut().set_mode(SelectionMode::Subtract),
                 KeyCode::Digit4 => selection.borrow_mut().set_mode(SelectionMode::Intersect),
-                KeyCode::KeyC => selection.borrow_mut().clear_plane(),
-                KeyCode::KeyI => selection.borrow_mut().invert_plane(),
-                KeyCode::KeyX => selection.borrow_mut().select_all_plane(),
+                KeyCode::KeyC => {
+                    selection.borrow_mut().clear_plane();
+                    commit_selection_channel(
+                        &mut shared_document,
+                        &shared_document_paths,
+                        std::iter::empty(),
+                        SelectionMode::Replace,
+                    );
+                }
+                KeyCode::KeyI => {
+                    selection.borrow_mut().invert_plane();
+                    let points: Vec<CellPoint> =
+                        selection.borrow().plane().iter().collect();
+                    commit_selection_channel(
+                        &mut shared_document,
+                        &shared_document_paths,
+                        points,
+                        SelectionMode::Replace,
+                    );
+                }
+                KeyCode::KeyX => {
+                    selection.borrow_mut().select_all_plane();
+                    let points: Vec<CellPoint> =
+                        selection.borrow().plane().iter().collect();
+                    commit_selection_channel(
+                        &mut shared_document,
+                        &shared_document_paths,
+                        points,
+                        SelectionMode::Replace,
+                    );
+                }
                 KeyCode::KeyZ => apply_shared_history_action(
                     &mut shared_document,
                     &shared_document_paths,
@@ -1676,6 +1820,7 @@ fn main() -> Result<()> {
                     &active_layer_id,
                     &mut canvas,
                     true,
+                    timeline_state.borrow().current_breath,
                 )?,
                 KeyCode::KeyY => apply_shared_history_action(
                     &mut shared_document,
@@ -1685,6 +1830,7 @@ fn main() -> Result<()> {
                     &active_layer_id,
                     &mut canvas,
                     false,
+                    timeline_state.borrow().current_breath,
                 )?,
                 _ => {}
             }
@@ -1754,6 +1900,7 @@ fn main() -> Result<()> {
                     &mut active_layer_id,
                     &mut selected_property_id,
                     &mut shared_action_counter,
+                    timeline_state.borrow().current_breath,
                     &mut canvas,
                     &selection,
                 )?;
@@ -1773,6 +1920,9 @@ fn main() -> Result<()> {
             apply_layers_panel_action(
                 layers_panel_state.borrow_mut().take_pending_action(),
                 &mut shared_document,
+                &shared_document_paths,
+                &mut shared_action_counter,
+                &session_user_id,
                 &mut active_layer_id,
                 &mut selected_property_id,
                 &mut canvas,
@@ -1824,6 +1974,7 @@ fn main() -> Result<()> {
                                 position,
                                 PaintHand::Left,
                                 bounds,
+                                timeline_state.borrow().current_breath,
                             )?;
                         } else {
                             tool_state.borrow_mut().apply_at_for_hand(
@@ -1856,6 +2007,9 @@ fn main() -> Result<()> {
             apply_layers_panel_action(
                 layers_panel_state.borrow_mut().take_pending_action(),
                 &mut shared_document,
+                &shared_document_paths,
+                &mut shared_action_counter,
+                &session_user_id,
                 &mut active_layer_id,
                 &mut selected_property_id,
                 &mut canvas,
@@ -1907,6 +2061,7 @@ fn main() -> Result<()> {
                                 position,
                                 PaintHand::Right,
                                 bounds,
+                                timeline_state.borrow().current_breath,
                             )?;
                         } else {
                             tool_state.borrow_mut().apply_at_for_hand(
@@ -1928,6 +2083,9 @@ fn main() -> Result<()> {
                 apply_layers_panel_action(
                     layers_panel_state.borrow_mut().take_pending_action(),
                     &mut shared_document,
+                    &shared_document_paths,
+                    &mut shared_action_counter,
+                    &session_user_id,
                     &mut active_layer_id,
                     &mut selected_property_id,
                     &mut canvas,
@@ -1975,6 +2133,7 @@ fn main() -> Result<()> {
                                     stroke_positions,
                                     PaintHand::Left,
                                     bounds,
+                                    timeline_state.borrow().current_breath,
                                 )?;
                             } else {
                                 for anchor in stroke_positions {
@@ -2039,6 +2198,7 @@ fn main() -> Result<()> {
                                     stroke_positions,
                                     PaintHand::Right,
                                     bounds,
+                                    timeline_state.borrow().current_breath,
                                 )?;
                             } else {
                                 for anchor in stroke_positions {
@@ -2066,6 +2226,16 @@ fn main() -> Result<()> {
                 selection
                     .borrow_mut()
                     .apply_plane_points_with_mode(stroke.points, stroke.mode);
+                // Mirror the full 3D set into the document channel as an exact
+                // replacement — the channel is the shared truth, the plane cache
+                // is the interaction surface.
+                let points: Vec<CellPoint> = selection.borrow().plane().iter().collect();
+                commit_selection_channel(
+                    &mut shared_document,
+                    &shared_document_paths,
+                    points,
+                    SelectionMode::Replace,
+                );
             }
         }
 
@@ -2123,6 +2293,25 @@ fn main() -> Result<()> {
                 .unwrap_or_else(|| to_screen([0.0, 0.0]));
             modules.dispatch_captured_pointer_up(screen.x, screen.y);
         }
+        // The pointer-up dispatch is where a layers-panel drag commits its single
+        // timing action (or block swap), so the pending action must be applied right
+        // here — waiting for the next click/drag frame would leave the commit stranded
+        // in the queue.
+        if (left_pointer_was_down && !frame.input.pointer_down)
+            || (right_pointer_was_down && !frame.input.right_pointer_down)
+        {
+            apply_layers_panel_action(
+                layers_panel_state.borrow_mut().take_pending_action(),
+                &mut shared_document,
+                &shared_document_paths,
+                &mut shared_action_counter,
+                &session_user_id,
+                &mut active_layer_id,
+                &mut selected_property_id,
+                &mut canvas,
+                &timeline_state,
+            );
+        }
         left_pointer_was_down = frame.input.pointer_down;
         right_pointer_was_down = frame.input.right_pointer_down;
 
@@ -2161,7 +2350,7 @@ fn main() -> Result<()> {
         }
 
         let raw_breath = state.data_lanes.breath().unwrap_or(0).max(0) as u32;
-        let mut groups = build_document_layer_cell_groups(&shared_document);
+        let mut groups = build_document_layer_cell_groups(&shared_document, timeline_state.borrow().current_breath);
         groups.extend(modules.iter().map(|module| module.draw()));
         let flash_on = (raw_breath / 6) % 2 == 0;
         groups.push(build_plane_selection_cell_group(
