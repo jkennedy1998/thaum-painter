@@ -1,3 +1,7 @@
 /target
 **/target
 Cargo.lock
+
+# runtime user documents and session state (never version these)
+context/painter/painter-files/
+orchestration/artifacts/
