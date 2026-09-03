@@ -73,3 +73,4 @@ effects: none — reads state only, never commits
 - A press with no raster block under the playhead breath begins nothing.
 - Overlay previews must show exactly what the release commit will paint: the overlay target dispatch mirrors `finish_pointer_stroke`'s image/selection dispatch.
 - Text-tool presses return the typing session instead of owning it here so keyboard routing stays with the entrypoint's input ownership seams.
+- Multiplayer: every commit carries the session's `user_id`, and drag state is memory-local until that single release commit — the shared document never sees a partial stroke. The entrypoint's screen-space routing (renderer-owned pointer state → chrome vs canvas vs ignored) stays in `orchestration/entrypoint`; only the `Canvas` route reaches this seam, so chrome drags (captured modules, command bar) can never write to the shared document.
