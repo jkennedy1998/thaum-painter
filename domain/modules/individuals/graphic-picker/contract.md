@@ -7,7 +7,7 @@ Own painter's graphic picker panel: one painter-facing module for choosing eithe
 - the `GraphicPickerModule` type
 - the picker presentation for sprite choices and glyph choices
 - left/right click assignment from picker hits into live painter `tool-state`
-- glyph section ordering sourced from Thaum Mono's supported-character sections
+- glyph section ordering sourced from Thaum Mono's supported-character sections; parsing must stay in lockstep with the renderer's sprite-section parser (`glyph_graphic.rs::parse_glyph_sprite_sections`) — a section title may sit on its own line or be glued to its glyph line (`borders:━┃…`), and a stricter parser here silently drops whole sections from the picker
 - the space-glyph display placeholder while still assigning the real `' '` glyph
 
 ## does not own

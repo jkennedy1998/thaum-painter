@@ -44,13 +44,33 @@ fn parse_supported_glyph_sections(text: &str) -> Vec<GlyphSection> {
     let mut pending_title: Option<String> = None;
 
     for line in text.lines() {
-        if line.trim().is_empty() {
+        if line.is_empty() {
             continue;
         }
 
-        if let Some(title) = line.strip_suffix(':') {
-            pending_title = Some(title.to_string());
-            continue;
+        // A section title may sit on its own line (`symbols:`) or be glued to
+        // its glyph line (`borders:━┃…`) — the renderer's sprite-section
+        // parser accepts both, and this picker must stay in lockstep with it
+        // or whole sections silently disappear from the glyph list. Only an
+        // ASCII-identifier head counts as a title, so glyph lines that merely
+        // contain ':' (like the dots section's `.,:;…`) still parse as
+        // glyphs of the current section.
+        if let Some((head, tail)) = line.split_once(':') {
+            let is_title = !head.is_empty()
+                && head
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_');
+            if is_title {
+                if tail.is_empty() {
+                    pending_title = Some(head.trim().to_string());
+                } else {
+                    sections.push(GlyphSection {
+                        title: head.trim().to_string(),
+                        glyphs: tail.chars().collect(),
+                    });
+                }
+                continue;
+            }
         }
 
         let Some(title) = pending_title.take() else {
@@ -483,6 +503,65 @@ mod tests {
         let sections = parse_supported_glyph_sections("ascii:\n ABC\n");
         assert_eq!(sections[0].title, "ascii");
         assert_eq!(sections[0].glyphs, vec![' ', 'A', 'B', 'C']);
+    }
+
+    #[test]
+    fn glyph_sections_parse_glued_title_lines_like_the_renderer() {
+        // The shipped sections.txt glues some titles to their glyph lines
+        // (`borders:━┃…`); the renderer's sprite parser accepts both shapes,
+        // so the picker must too — otherwise whole sections vanish.
+        let sections = parse_supported_glyph_sections("ascii:\n ABC\n\nborders:━┃\n");
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[1].title, "borders");
+        assert_eq!(sections[1].glyphs, vec!['━', '┃']);
+    }
+
+    #[test]
+    fn glyph_lines_containing_colons_still_parse_as_glyphs() {
+        // The dots section contains ':' as a glyph (`.,:;…`); a colon inside
+        // the glyph line must not be mistaken for a new section title.
+        let sections = parse_supported_glyph_sections("dots:\n.,:;·\n");
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].title, "dots");
+        assert_eq!(sections[0].glyphs, vec!['.', ',', ':', ';', '·']);
+    }
+
+    #[test]
+    fn shipped_glyph_sections_include_every_atlas_batch_including_borders_and_ornaments() {
+        let sections = supported_glyph_sections();
+        let titles: Vec<&str> = sections
+            .iter()
+            .map(|section| section.title.as_str())
+            .collect();
+        for expected in [
+            "ascii",
+            "faces",
+            "symbols",
+            "dots",
+            "dashes",
+            "arrows",
+            "borders",
+            "blocks",
+            "latinext",
+            "ornaments",
+            "games",
+        ] {
+            assert!(titles.contains(&expected), "missing section: {expected}");
+        }
+        // The atlas symbols sheet has one more column than a pre-fix
+        // sections.txt declared: the generator's `°` between `≈` and `✝`.
+        // Without it every later symbols glyph painted the wrong sprite.
+        let symbols = sections
+            .iter()
+            .find(|section| section.title == "symbols")
+            .expect("symbols section");
+        let degree = symbols
+            .glyphs
+            .iter()
+            .position(|glyph| *glyph == '°')
+            .expect("degree sign present in symbols");
+        assert_eq!(symbols.glyphs[degree - 1], '≈');
+        assert_eq!(symbols.glyphs[degree + 1], '✝');
     }
 
     #[test]
