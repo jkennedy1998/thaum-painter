@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use thaum_renderer_domain::{CellGraphic, CellPoint};
+use thaum_renderer_domain::{CameraViewOrientation, CellGraphic, CellPoint};
 
 use crate::paint_color::PaintColor;
 
@@ -17,19 +17,29 @@ pub struct PaintedCell {
 /// headless data `painter-session` mutates during a live editing session.
 pub type Canvas = BTreeMap<CellPoint, PaintedCell>;
 
-/// Returns the square footprint for a brush tip of `size` centered on `position`.
-pub fn brush_points(position: CellPoint, size: i32) -> Vec<CellPoint> {
+/// Returns the square footprint for a brush tip of `size` centered on `position`,
+/// lying flat in the camera's active view plane: offsets grow along the view
+/// orientation's right/up axes and the view's depth axis never moves, so the tip
+/// always faces the camera at every swing and roll. The default PosZ swing
+/// (right = East, up = Top) reproduces the original x/y-expansion behavior.
+pub fn brush_points(
+    position: CellPoint,
+    size: i32,
+    orientation: CameraViewOrientation,
+) -> Vec<CellPoint> {
     let size = size.clamp(1, 5);
     let left_radius = (size - 1) / 2;
     let right_radius = size - 1 - left_radius;
+    let right = orientation.right.unit_vector();
+    let up = orientation.up.unit_vector();
     let mut points = BTreeSet::new();
 
-    for y in (position.y - left_radius)..=(position.y + right_radius) {
-        for x in (position.x - left_radius)..=(position.x + right_radius) {
+    for dr in -left_radius..=right_radius {
+        for du in -left_radius..=right_radius {
             points.insert(CellPoint {
-                x,
-                y,
-                z: position.z,
+                x: position.x + right[0] * dr + up[0] * du,
+                y: position.y + right[1] * dr + up[1] * du,
+                z: position.z + right[2] * dr + up[2] * du,
             });
         }
     }
@@ -55,6 +65,12 @@ mod tests {
         CellPoint { x, y, z: 0 }
     }
 
+    fn default_view() -> CameraViewOrientation {
+        camera_view_orientation_for_camera(CameraSwing::PosZ, CameraRoll::Deg0)
+    }
+
+    use thaum_renderer_domain::{camera_view_orientation_for_camera, CameraRoll, CameraSwing};
+
     fn cell(glyph: char) -> PaintedCell {
         PaintedCell {
             graphic: CellGraphic::Glyph(glyph),
@@ -64,11 +80,25 @@ mod tests {
     }
 
     #[test]
-    fn brush_points_expand_to_the_requested_square_size() {
-        assert_eq!(brush_points(point(2, 2), 1), vec![point(2, 2)]);
-        assert_eq!(brush_points(point(2, 2), 2).len(), 4);
-        assert!(brush_points(point(2, 2), 3).contains(&point(1, 1)));
-        assert!(brush_points(point(2, 2), 3).contains(&point(3, 3)));
+    fn brush_points_expand_to_the_requested_square_size_in_the_default_view() {
+        let orientation = default_view();
+        assert_eq!(brush_points(point(2, 2), 1, orientation), vec![point(2, 2)]);
+        assert_eq!(brush_points(point(2, 2), 2, orientation).len(), 4);
+        assert!(brush_points(point(2, 2), 3, orientation).contains(&point(1, 2)));
+        assert!(brush_points(point(2, 2), 3, orientation).contains(&point(3, 2)));
+    }
+
+    #[test]
+    fn brush_points_lie_flat_in_the_active_view_plane_at_every_swing() {
+        // Looking down the x axis: the footprint must spread across z (screen
+        // right) and y (screen up) while x — the view's depth — stays fixed.
+        let orientation = camera_view_orientation_for_camera(CameraSwing::PosX, CameraRoll::Deg0);
+        let center = CellPoint { x: 4, y: 2, z: 2 };
+        let points = brush_points(center, 3, orientation);
+        assert!(points.iter().all(|p| p.x == 4));
+        assert!(points.contains(&CellPoint { x: 4, y: 2, z: 1 }));
+        assert!(points.contains(&CellPoint { x: 4, y: 2, z: 3 }));
+        assert!(points.contains(&CellPoint { x: 4, y: 3, z: 2 }));
     }
 
     #[test]

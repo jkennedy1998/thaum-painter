@@ -1,0 +1,8 @@
+{
+  "01": {
+    "path": "individuals/tai01_painter_binding_smoke/script.json",
+    "status": "canonical",
+    "purpose": "painter_binding_resolution_smoke",
+    "notes": "First painter TAI on the new system. Validates the registry-driven load -> replay -> expectation loop with painter-owned bindings."
+  }
+}

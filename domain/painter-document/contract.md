@@ -39,8 +39,7 @@ effects: none
 via: contract
 
 ## interface consumers
-- future painter session/runtime
-- future editor surfaces
+- `domain/painter-session/session_document.rs` and `orchestration/entrypoint/` via `layers_runtime`
 
 ## artifacts
 - future document-view fixtures derived from `domain/file/manifest/example-thaum-painter-file-v1.json`

@@ -379,6 +379,7 @@ impl SharedDocumentActionRecord {
 
     /// Builds a passive undo/redo revert record whose replay moves `reverts`
     /// between the applied and undone stacks (pop for undo, push-back for redo).
+    #[allow(clippy::too_many_arguments)] // record shape mirrors the on-disk kebab-case JSON; fields stay flat
     pub fn revert_patch_set(
         action_id: impl Into<String>,
         document_id: impl Into<String>,
@@ -1096,12 +1097,8 @@ impl SharedDocumentRuntime {
         block_id: &str,
         split_breath: u32,
     ) -> Option<String> {
-        let Some(track) = self.ensure_property_track_mut(layer_id, property_id) else {
-            return None;
-        };
-        let Some(index) = track.blocks.iter().position(|block| block.id == block_id) else {
-            return None;
-        };
+        let track = self.ensure_property_track_mut(layer_id, property_id)?;
+        let index = track.blocks.iter().position(|block| block.id == block_id)?;
         let block = track.blocks[index].clone();
         if block.length_breaths <= 1 {
             return None;
@@ -1544,6 +1541,18 @@ impl SharedDocumentRuntime {
         self.squashed_through = new_cut;
     }
 
+    /// Reload this runtime from disk, adopting the on-disk truth wholesale and
+    /// discarding local in-memory state (undo/redo stacks, staged patches, and any
+    /// local edits not yet saved). This is the recovery path for a `changed on
+    /// disk` revision conflict: the other writer's version wins, this session
+    /// re-seeds its revision so the next save works again.
+    pub fn reload_from_disk(&mut self, paths: &SharedDocumentPaths) -> Result<()> {
+        let document = load_document_file(&paths.document_file_path)?;
+        let actions = load_action_records(&paths.actions_file_path)?;
+        *self = SharedDocumentRuntime::replay(document, actions);
+        Ok(())
+    }
+
     /// The records that belong in the saved log: squash baselines followed by every
     /// record not yet folded.
     pub fn actions_for_file(&self) -> Vec<SharedDocumentActionRecord> {
@@ -1628,6 +1637,25 @@ pub fn write_document_atomic(path: &Path, document: &SharedDocumentFile) -> Resu
     })
 }
 
+/// Counts non-empty action records currently on disk. Cheap divergence check for
+/// `save_shared_document_snapshot`: another writer appends stroke/undo records
+/// without snapshot saves, so the on-disk log can grow behind this runtime's back.
+pub fn count_action_records(path: &Path) -> Result<usize> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let file = File::open(path)
+        .with_context(|| format!("failed to open shared actions file at {}", path.display()))?;
+    Ok(BufReader::new(file)
+        .lines()
+        .filter(|line| {
+            line.as_ref()
+                .map(|line| !line.trim().is_empty())
+                .unwrap_or(false)
+        })
+        .count())
+}
+
 pub fn load_action_records(path: &Path) -> Result<Vec<SharedDocumentActionRecord>> {
     if !path.exists() {
         return Ok(Vec::new());
@@ -1674,7 +1702,15 @@ pub fn append_action_record(path: &Path, action: &SharedDocumentActionRecord) ->
         .open(path)
         .with_context(|| format!("failed to open shared actions file at {}", path.display()))?;
     let line = serde_json::to_string(action).context("failed to serialize shared action record")?;
-    writeln!(file, "{line}")
+    // O_APPEND only makes the offset update atomic per write(2) syscall, and
+    // `writeln!` on an unbuffered File issues one syscall per format piece (the
+    // record bytes, then the newline). A rival writer appending inside that window
+    // splices both records onto one line and corrupts the JSONL log. Serialize the
+    // full line first so one `write_all` issues a single append syscall; local
+    // filesystems serialize that write against other writers via the inode lock.
+    let mut bytes = line.into_bytes();
+    bytes.push(b'\n');
+    file.write_all(&bytes)
         .with_context(|| format!("failed to append shared action to {}", path.display()))
 }
 
@@ -1737,6 +1773,24 @@ pub fn save_shared_document_snapshot(
                 runtime.revision
             ));
         }
+    }
+
+    // The action log needs its own guard: strokes/undos are appended to
+    // actions.jsonl WITHOUT a snapshot save, so another writer can add records
+    // without touching document.json — and this function rewrites the whole log
+    // from this writer's view. If the on-disk log holds records this runtime never
+    // replayed, rewriting it here would silently drop the other writer's edits.
+    // A revision bump from the other writer is caught above; this catches the
+    // append-only case where the revision did not move.
+    let on_disk_record_count = count_action_records(&paths.actions_file_path)?;
+    let expected_record_count = runtime.actions_for_file().len();
+    if on_disk_record_count != expected_record_count {
+        return Err(anyhow::anyhow!(
+            "shared action log changed on disk (disk has {} records, this session accounts for {}); \
+             refusing to overwrite — reload the document to pick up the other writer's changes",
+            on_disk_record_count,
+            expected_record_count
+        ));
     }
 
     let next_revision = runtime.revision + 1;
@@ -1999,7 +2053,7 @@ mod tests {
         let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
             "doc-1", "Doc", "layer-1", "Layer 1",
         ));
-        runtime.apply_action_record(SharedDocumentActionRecord::cell_patch_set(
+        let stroke = SharedDocumentActionRecord::cell_patch_set(
             "a1",
             "doc-1",
             "layer-1",
@@ -2007,7 +2061,9 @@ mod tests {
             "1",
             vec![SharedCellPatch::new(point(1, 1), None, Some(&cell('#')))],
             Some("block-1".to_string()),
-        ));
+        );
+        append_action_record(&paths.actions_file_path, &stroke).unwrap();
+        runtime.apply_action_record(stroke);
 
         save_shared_document_snapshot(&paths, &mut runtime).unwrap();
 
@@ -2290,6 +2346,179 @@ mod tests {
         assert_eq!(recovered.revision(), 2);
         save_shared_document_snapshot(&paths, &mut recovered).unwrap();
         assert_eq!(recovered.revision(), 3);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reload_from_disk_adopts_the_other_writer_and_clears_local_history() {
+        let unique = format!(
+            "thaum-painter-reload-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let paths = SharedDocumentPaths::new(root.clone());
+        let mut writer = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        save_shared_document_snapshot(&paths, &mut writer).unwrap();
+
+        // Local session state that must not survive a reload: an applied stroke
+        // plus its undo/redo bookkeeping.
+        let stroke = SharedDocumentActionRecord::cell_patch_set(
+            "local-stroke",
+            "doc-1",
+            "layer-1",
+            "user-1",
+            "stroke",
+            vec![SharedCellPatch::new(point(1, 1), None, Some(&cell('X')))],
+            None,
+        );
+        writer.apply_action_record(stroke);
+        assert!(writer.undo_top_action("layer-1").is_some());
+
+        // A rival writer appends its record to the shared log, applies it, and
+        // snapshot-saves — the real writer flow.
+        let mut rival = SharedDocumentRuntime::replay(
+            load_document_file(&paths.document_file_path).unwrap(),
+            load_action_records(&paths.actions_file_path).unwrap(),
+        );
+        let rival_stroke = SharedDocumentActionRecord::cell_patch_set(
+            "rival-stroke",
+            "doc-1",
+            "layer-1",
+            "user-2",
+            "stroke",
+            vec![SharedCellPatch::new(point(2, 2), None, Some(&cell('Y')))],
+            None,
+        );
+        append_action_record(&paths.actions_file_path, &rival_stroke).unwrap();
+        rival.apply_action_record(rival_stroke);
+        save_shared_document_snapshot(&paths, &mut rival).unwrap();
+
+        // The local save hits the conflict, then reload adopts the rival's state.
+        assert!(save_shared_document_snapshot(&paths, &mut writer).is_err());
+        writer.reload_from_disk(&paths).unwrap();
+        assert_eq!(writer.revision(), rival.revision());
+        assert_eq!(writer.actions.len(), 1);
+        assert_eq!(writer.actions[0].action_id, "rival-stroke");
+
+        // Local undo history is gone: the rival's content is live, and the next
+        // save succeeds from the re-seeded revision.
+        assert_eq!(
+            writer.canvas_for_layer("layer-1", 0).unwrap().get(&point(2, 2)).map(|c| c.graphic.clone()),
+            Some(cell('Y').graphic)
+        );
+        assert!(writer.canvas_for_layer("layer-1", 0).unwrap().get(&point(1, 1)).is_none());
+        save_shared_document_snapshot(&paths, &mut writer).unwrap();
+        assert_eq!(writer.revision(), rival.revision() + 1);
+
+        // One undo reverts the rival's stroke; a second undo finds nothing, so the
+        // local session's pre-reload history did not survive the reload.
+        assert!(writer.undo_top_action("layer-1").is_some());
+        assert!(writer.canvas_for_layer("layer-1", 0).unwrap().get(&point(2, 2)).is_none());
+        assert!(writer.undo_top_action("layer-1").is_none());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn snapshot_save_refuses_to_clobber_records_appended_without_a_snapshot() {
+        let unique = format!(
+            "thaum-painter-append-conflict-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let paths = SharedDocumentPaths::new(root.clone());
+        let mut writer = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        save_shared_document_snapshot(&paths, &mut writer).unwrap();
+
+        // A rival appends a stroke to the shared log without snapshot-saving, so
+        // document.json's revision does not move.
+        let rival_stroke = SharedDocumentActionRecord::cell_patch_set(
+            "rival-stroke",
+            "doc-1",
+            "layer-1",
+            "user-2",
+            "stroke",
+            vec![SharedCellPatch::new(point(2, 2), None, Some(&cell('Y')))],
+            None,
+        );
+        append_action_record(&paths.actions_file_path, &rival_stroke).unwrap();
+
+        // The stale writer's snapshot save must refuse — rewriting the log from its
+        // stale view would silently drop the rival's appended record.
+        let error = save_shared_document_snapshot(&paths, &mut writer)
+            .expect_err("stale writer must not rewrite a log holding unknown records");
+        assert!(error.to_string().contains("changed on disk"));
+
+        // Reload adopts the rival's record and the next save succeeds.
+        writer.reload_from_disk(&paths).unwrap();
+        assert_eq!(writer.actions.len(), 1);
+        assert_eq!(writer.actions[0].action_id, "rival-stroke");
+        save_shared_document_snapshot(&paths, &mut writer).unwrap();
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn large_record_appends_stay_whole_records() {
+        // The append seam must never tear a record across write syscalls: a record
+        // far past the 4KB folklore-atomicity threshold is serialized into one
+        // buffer, so two writers appending to the same log still leave every line
+        // a whole JSON object.
+        let unique = format!(
+            "append-atomicity-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let paths = SharedDocumentPaths::new(root.join("doc"));
+        let patch_count = 2000;
+        let patches: Vec<SharedCellPatch> = (0..patch_count)
+            .map(|i| {
+                SharedCellPatch::new(
+                    point(i as i32 % 64, i as i32 / 64),
+                    None,
+                    Some(&cell('X')),
+                )
+            })
+            .collect();
+        let record_for = |writer: &str| {
+            SharedDocumentActionRecord::cell_patch_set(
+                format!("stroke-{writer}"),
+                "doc-1",
+                "layer-1",
+                writer,
+                "stroke",
+                patches.clone(),
+                None,
+            )
+        };
+
+        append_action_record(&paths.actions_file_path, &record_for("writer-1")).unwrap();
+        append_action_record(&paths.actions_file_path, &record_for("writer-2")).unwrap();
+
+        let actions = load_action_records(&paths.actions_file_path).unwrap();
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions[0].action_id, "stroke-writer-1");
+        assert_eq!(actions[1].action_id, "stroke-writer-2");
+        for action in &actions {
+            let SharedDocumentAction::CellPatchSet { patches, .. } = &action.action else {
+                panic!("unexpected record shape {:?}", action.action_id);
+            };
+            assert_eq!(patches.len(), patch_count);
+        }
 
         let _ = fs::remove_dir_all(root);
     }

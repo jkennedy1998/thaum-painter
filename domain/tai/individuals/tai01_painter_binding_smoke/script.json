@@ -1,0 +1,14 @@
+{
+  "id": "painter_binding_smoke",
+  "description": "smoke: painter hotkey bindings (pencil/bucket) and wheel zoom each resolve to their named action on the expected breath",
+  "actions": [
+    { "at": 1, "input": { "type": "key", "code": "P" } },
+    { "at": 3, "input": { "type": "key", "code": "B" } },
+    { "at": 5, "input": { "type": "wheel_up" } }
+  ],
+  "expect": [
+    { "at": 1, "action": "painter_select_pencil" },
+    { "at": 3, "action": "painter_select_bucket" },
+    { "at": 5, "action": "painter_zoom_in" }
+  ]
+}

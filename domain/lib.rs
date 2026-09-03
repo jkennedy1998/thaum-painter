@@ -1,7 +1,21 @@
+#[path = "debug-log/debug_log.rs"]
+pub mod debug_log;
 #[path = "painter-operations/brush/brush.rs"]
 pub mod brush;
+#[path = "painter-operations/text/text.rs"]
+pub mod text;
 #[path = "rendering/camera/camera_viewport.rs"]
 pub mod camera_viewport;
+#[path = "file/document_locations.rs"]
+pub mod document_locations;
+#[path = "painter-session/session_document.rs"]
+pub mod session_document;
+#[path = "painter-session/selection/selection_stroke.rs"]
+pub mod selection_stroke;
+#[path = "painter-session/text-entry/text_entry.rs"]
+pub mod text_entry;
+#[path = "painter-document/layers/layers_runtime.rs"]
+pub mod layers_runtime;
 #[path = "painter-operations/fill/fill.rs"]
 pub mod fill;
 #[path = "modules/individuals/graphic-picker/graphic_picker_module.rs"]
@@ -44,6 +58,8 @@ pub mod toolbar_module;
 pub mod toolbox_module;
 #[path = "persistence/user-session-state/user_session_state.rs"]
 pub mod user_session_state;
+#[path = "tai/tai.rs"]
+pub mod tai;
 
 pub use brush::{apply_brush, brush_points, erase, Canvas, PaintedCell};
 pub use fill::{

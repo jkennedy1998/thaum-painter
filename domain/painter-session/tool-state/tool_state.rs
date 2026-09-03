@@ -1,10 +1,11 @@
-use thaum_renderer_domain::{CellGraphic, CellMaterialId, CellPoint};
+use thaum_renderer_domain::{CameraViewOrientation, CellGraphic, CellMaterialId, CellPoint};
 
 use crate::{
     brush::{self, Canvas, PaintedCell},
     fill::{self, CanvasBounds, FillConnectivity},
     paint_color::PaintColor,
     selection_state::{flood_select_points, PainterSelection, SelectionMode},
+    text::{TextLayoutOptions, DEFAULT_TEXT_LAYOUT_OPTIONS},
 };
 /// Which pointer hand is acting right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,6 +20,9 @@ pub enum PaintTool {
     Brush,
     Erase,
     Fill,
+    /// Live typing mode: edits flow through the session's
+    /// `TextEntryState`, never through `apply_at_for_hand`.
+    Text,
 }
 
 /// Which authored channel a hand may paint, select through, or lock.
@@ -146,6 +150,11 @@ pub struct ToolState {
     pub active_hand: PaintHand,
     pub left_hand: HandState,
     pub right_hand: HandState,
+    /// Text tool layout properties (old-painter spacing/charlead/enterlead/
+    /// enterspace), live-session state per the tool-state contract.
+    pub text_options: TextLayoutOptions,
+    /// Whether Space during typing clears the cell under the cursor.
+    pub text_space_replace: bool,
 }
 
 impl Default for ToolState {
@@ -156,6 +165,8 @@ impl Default for ToolState {
             active_hand: PaintHand::Left,
             left_hand: HandState::default(),
             right_hand: HandState::default(),
+            text_options: DEFAULT_TEXT_LAYOUT_OPTIONS,
+            text_space_replace: true,
         }
     }
 }
@@ -252,6 +263,18 @@ impl ToolState {
         self.active_hand = hand;
     }
 
+    /// The captured brush cell for a typing session: the hand's current
+    /// graphic/color/weight frozen at click time (old
+    /// `getBrushForButton(text_mode_button)` capture).
+    pub fn text_brush_cell_for_hand(&self, hand: PaintHand) -> PaintedCell {
+        let hand_state = self.hand_state(hand);
+        PaintedCell {
+            graphic: hand_state.graphic,
+            color: hand_state.color,
+            weight_index: hand_state.weight_index,
+        }
+    }
+
     fn resolved_painted_cell(
         &self,
         existing: Option<&PaintedCell>,
@@ -292,8 +315,13 @@ impl ToolState {
         }
     }
 
-    fn brush_points_for_hand(&self, position: CellPoint, hand: PaintHand) -> Vec<CellPoint> {
-        brush::brush_points(position, self.hand_state(hand).brush_size)
+    fn brush_points_for_hand(
+        &self,
+        position: CellPoint,
+        hand: PaintHand,
+        orientation: CameraViewOrientation,
+    ) -> Vec<CellPoint> {
+        brush::brush_points(position, self.hand_state(hand).brush_size, orientation)
     }
 
     fn edit_points_for_hand(
@@ -302,15 +330,21 @@ impl ToolState {
         position: CellPoint,
         hand: PaintHand,
         bounds: CanvasBounds,
+        orientation: CameraViewOrientation,
     ) -> Vec<CellPoint> {
         match self.tool_for_hand(hand) {
-            PaintTool::Brush | PaintTool::Erase => self.brush_points_for_hand(position, hand),
+            PaintTool::Brush | PaintTool::Erase => {
+                self.brush_points_for_hand(position, hand, orientation)
+            }
             PaintTool::Fill => fill::flood_fill_points_with_connectivity(
                 canvas,
                 position,
                 bounds,
                 self.fill_connectivity_for_hand(hand),
             ),
+            // Text never paints through this seam; typing stages through the
+            // session bridge (`stage_text_entry_change`) instead.
+            PaintTool::Text => Vec::new(),
         }
     }
 
@@ -321,10 +355,16 @@ impl ToolState {
         position: CellPoint,
         hand: PaintHand,
         bounds: CanvasBounds,
+        orientation: CameraViewOrientation,
     ) {
         let hand_state = self.hand_state(hand);
-        let points = selection
-            .filter_plane_edit_points(self.edit_points_for_hand(canvas, position, hand, bounds));
+        let points = selection.filter_plane_edit_points(self.edit_points_for_hand(
+            canvas,
+            position,
+            hand,
+            bounds,
+            orientation,
+        ));
         match self.tool_for_hand(hand) {
             PaintTool::Brush => {
                 if !hand_state.edit_channels.any_enabled() {
@@ -349,6 +389,8 @@ impl ToolState {
                     brush::apply_brush(canvas, point, painted);
                 }
             }
+            // Text edits flow through the live typing session, not here.
+            PaintTool::Text => {}
         }
     }
 
@@ -358,6 +400,7 @@ impl ToolState {
         position: CellPoint,
         hand: PaintHand,
         bounds: CanvasBounds,
+        orientation: CameraViewOrientation,
     ) -> Vec<CellPoint> {
         let hand_state = self.hand_state(hand);
         match self.tool_for_hand(hand) {
@@ -365,15 +408,16 @@ impl ToolState {
                 if !hand_state.select_channels.any_enabled() {
                     return Vec::new();
                 }
-                self.brush_points_for_hand(position, hand)
+                self.brush_points_for_hand(position, hand, orientation)
             }
-            PaintTool::Erase => self.brush_points_for_hand(position, hand),
+            PaintTool::Erase => self.brush_points_for_hand(position, hand, orientation),
             PaintTool::Fill => {
                 if !hand_state.select_channels.any_enabled() {
                     return Vec::new();
                 }
                 flood_select_points(canvas, position, bounds, hand_state.select_channels)
             }
+            PaintTool::Text => Vec::new(),
         }
     }
 
@@ -384,11 +428,12 @@ impl ToolState {
         position: CellPoint,
         hand: PaintHand,
         bounds: CanvasBounds,
+        orientation: CameraViewOrientation,
     ) {
-        let points = self.selection_points_for_hand(canvas, position, hand, bounds);
+        let points = self.selection_points_for_hand(canvas, position, hand, bounds, orientation);
         let mode = match self.tool_for_hand(hand) {
             PaintTool::Erase => SelectionMode::Subtract,
-            PaintTool::Brush | PaintTool::Fill => selection.mode(),
+            PaintTool::Brush | PaintTool::Fill | PaintTool::Text => selection.mode(),
         };
         selection.apply_plane_points_with_mode(points, mode);
     }
@@ -402,15 +447,26 @@ impl ToolState {
         position: CellPoint,
         hand: PaintHand,
         bounds: CanvasBounds,
+        orientation: CameraViewOrientation,
     ) {
         self.active_hand = hand;
         match self.hand_state(hand).target {
-            PaintTarget::Image => {
-                self.apply_canvas_at_for_hand(canvas, selection, position, hand, bounds)
-            }
-            PaintTarget::Selection => {
-                self.apply_selection_at_for_hand(canvas, selection, position, hand, bounds)
-            }
+            PaintTarget::Image => self.apply_canvas_at_for_hand(
+                canvas,
+                selection,
+                position,
+                hand,
+                bounds,
+                orientation,
+            ),
+            PaintTarget::Selection => self.apply_selection_at_for_hand(
+                canvas,
+                selection,
+                position,
+                hand,
+                bounds,
+                orientation,
+            ),
         }
     }
 }
@@ -418,6 +474,12 @@ impl ToolState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use thaum_renderer_domain::{camera_view_orientation_for_camera, CameraRoll, CameraSwing};
+
+    fn flat_view() -> thaum_renderer_domain::CameraViewOrientation {
+        camera_view_orientation_for_camera(CameraSwing::PosZ, CameraRoll::Deg0)
+    }
 
     fn point(x: i32, y: i32) -> CellPoint {
         CellPoint { x, y, z: 0 }
@@ -476,6 +538,7 @@ mod tests {
             point(4, 4),
             PaintHand::Left,
             bounds(),
+            flat_view(),
         );
 
         let painted = canvas.get(&point(4, 4)).unwrap();
@@ -494,6 +557,7 @@ mod tests {
             point(2, 2),
             PaintHand::Left,
             bounds(),
+            flat_view(),
         );
 
         tool_state.apply_at_for_hand(
@@ -502,6 +566,7 @@ mod tests {
             point(2, 2),
             PaintHand::Right,
             bounds(),
+            flat_view(),
         );
 
         assert!(canvas.get(&point(2, 2)).is_none());
@@ -521,6 +586,7 @@ mod tests {
             point(4, 4),
             PaintHand::Left,
             bounds(),
+            flat_view(),
         );
         assert_eq!(canvas.len(), 4);
 
@@ -530,6 +596,7 @@ mod tests {
             point(4, 4),
             PaintHand::Right,
             bounds(),
+            flat_view(),
         );
         assert!(canvas.is_empty());
     }
@@ -557,6 +624,7 @@ mod tests {
             point(0, 0),
             PaintHand::Left,
             bounds(),
+            flat_view(),
         );
 
         assert_eq!(
@@ -597,6 +665,7 @@ mod tests {
             point(1, 1),
             PaintHand::Left,
             bounds(),
+            flat_view(),
         );
 
         assert_eq!(
@@ -626,6 +695,7 @@ mod tests {
             point(2, 2),
             PaintHand::Left,
             bounds(),
+            flat_view(),
         );
 
         assert_eq!(
@@ -682,6 +752,7 @@ mod tests {
             point(0, 0),
             PaintHand::Left,
             bounds(),
+            flat_view(),
         );
 
         assert_eq!(
@@ -729,6 +800,7 @@ mod tests {
             point(0, 0),
             PaintHand::Left,
             bounds(),
+            flat_view(),
         );
 
         assert_eq!(
@@ -756,6 +828,7 @@ mod tests {
             point(4, 4),
             PaintHand::Left,
             bounds(),
+            flat_view(),
         );
 
         assert_eq!(
@@ -777,6 +850,7 @@ mod tests {
             point(3, 3),
             PaintHand::Left,
             bounds(),
+            flat_view(),
         );
 
         assert!(selection.plane().contains(point(3, 3)));
@@ -816,6 +890,7 @@ mod tests {
             point(0, 0),
             PaintHand::Left,
             bounds(),
+            flat_view(),
         );
 
         assert_eq!(
@@ -871,6 +946,7 @@ mod tests {
             point(0, 0),
             PaintHand::Left,
             bounds(),
+            flat_view(),
         );
 
         assert_eq!(
@@ -933,6 +1009,7 @@ mod tests {
             point(0, 0),
             PaintHand::Left,
             bounds(),
+            flat_view(),
         );
 
         assert!(selection.plane().contains(point(0, 0)));

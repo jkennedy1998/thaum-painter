@@ -31,22 +31,30 @@ Own the bounded editing/session semantics that mutate a painter document over ti
 ## contents
 - `contract.md`
   - painter-session contract
+- `session_document.rs`
+  - session→document bridge: staged strokes, stroke commits, undo/redo records, selection channel commits, snapshot-conflict recovery (`recover_snapshot_conflict`), shared action ids
+  - the former `app_runtime.rs` headless-runtime draft (never wired into `lib.rs`, never compiled) was deleted — the entrypoint frame loop is the live implementation, and its pointer-stroke logic was superseded by the session_document bridge + tool_state
 
 ## dependencies
 - `/home/j/Repos/thaum-painter/domain/painter-document/`
 - `/home/j/Repos/thaum-painter/domain/painter-operations/`
 
 ## exposed interfaces
-- none
+### session→document bridge
+send: runtime + live session state (canvas, tool state, selection, action counter)
+returns: document mutations (staged patches, committed records, reverted history) + persisted snapshot/log writes
+effects: write-files (actions.jsonl, document.json via storage)
+via: `stage_image_edit_chunk`, `commit_staged_paint_stroke`, `commit_selection_channel`, `apply_shared_history_action`, `recover_snapshot_conflict`
 
 ## interface consumers
-- future painter app surfaces
+- `orchestration/entrypoint/` (the live app frame loop)
 
 ## artifacts
 - none
 
 ## tests
-- none
+- `session_document.rs` / `selection_state.rs` / `tool_state.rs` inline test modules
+  - session bridge + selection + tool semantics validated through `cargo test -p thaum-painter-domain`
 
 ## data
 - none

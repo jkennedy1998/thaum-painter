@@ -328,6 +328,17 @@ impl PainterSelection {
     {
         self.plane.restore_points(points);
     }
+
+    /// Replaces the whole mirrored selection cache with `points`. Used to resync
+    /// the interaction surface from the document-owned channel after the runtime
+    /// reloads another writer's version of the document.
+    pub fn replace_points<I>(&mut self, points: I)
+    where
+        I: IntoIterator<Item = CellPoint>,
+    {
+        self.clear_plane();
+        self.restore_points(points);
+    }
 }
 
 fn plane_neighbors(bounds: CanvasBounds, point: CellPoint) -> Vec<CellPoint> {

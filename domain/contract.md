@@ -25,8 +25,12 @@ Own the painter-specific semantic boundaries for authoring ASCII scenes without 
   - default
 - `painter-operations/`
   - default
+- `debug-log/`
+  - process-global leveled debug logging seam (THAUM_PAINTER_DEBUG)
 - `modules/`
   - default
+- `tai/`
+  - painter tool-assisted input test seam consuming the renderer's TAI runner
 
 ## contents
 - `contract.md`
@@ -46,7 +50,9 @@ Own the painter-specific semantic boundaries for authoring ASCII scenes without 
 - none
 
 ## tests
-- none
+- `tai/`'s inline test module
+  - light
+  - registry-driven: loads every registered painter TAI and validates parse + replay against painter bindings.
 
 ## data
 - none

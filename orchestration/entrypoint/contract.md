@@ -12,6 +12,7 @@ Own the real, runnable consumer entrypoint that boots `thaum-renderer` for thaum
 - the render-space boot proof: parsing the bundled `example-thaum-painter-file-v1.json` once at startup and calling `domain/rendering/render-space/`'s `build_composition` every frame, driven by the renderer's own auto-ticking fallback breath clock (`state.data_lanes.breath()`), so `render-space`'s timing/move-block resolution is provably exercised live, not only under `cargo test`
 - the first real hand-based paint loop: left/right clicks and drags over the paint canvas apply the left-hand/right-hand tools from `domain/painter-session/tool-state/`, so toolbox selection immediately affects live painting
 - live scene-space canvas + selection proof rendering: the paint canvas cells and plane-selection border are emitted as regular composition groups in the renderer's world/3D intake path, while toolbox/indexed-color-picker/color-block/material-picker/graphic-picker/hand-settings remain flat 2D modules
+- registry-backed hotkey dispatch: physical key presses resolve through the TAI registry's `painter_bindings()` (`domain/tai/`) by binding name before any live-only match arm runs; registry-owned keys (P/B tool select) never fall through to the hand-written arms, and wheel-bound registry actions (zoom) stay wheel-handled
 
 ## does not own
 - renderer domain truth or boot internals, owned by `thaum-renderer`
@@ -56,7 +57,7 @@ Own the real, runnable consumer entrypoint that boots `thaum-renderer` for thaum
   - cargo build output for this crate, redirected here via `CARGO_TARGET_DIR` so build accumulation stays owned by this encapsulation instead of the shared workspace `target/`; regenerated on every `run.sh` invocation and git-ignored
 
 ## tests
-- none — this is a manual proof app, not a place for domain test coverage
+- `src/main.rs` inline `#[cfg(test)]` module (light): cell-path interpolation, file-root resolution, dialog-path normalization, and the registry/live hotkey agreement tests — every registry key binding resolves to live dispatch, every action the dispatch fires exists in `painter_bindings()`, and wheel-bound actions never resolve through the key path
 
 ## data
 - none

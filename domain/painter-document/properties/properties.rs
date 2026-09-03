@@ -40,9 +40,7 @@ pub fn clamped_breath_span(
         let end = span_end_breath(start, length);
         if end <= original.0 {
             left_limit = left_limit.max(end);
-        } else if start >= original_end {
-            right_limit = right_limit.min(start);
-        } else if original_middle < start + length / 2 {
+        } else if start >= original_end || original_middle < start + length / 2 {
             right_limit = right_limit.min(start);
         } else {
             left_limit = left_limit.max(end);

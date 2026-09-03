@@ -76,7 +76,7 @@ impl Module for ToolbarModule {
     }
 
     fn on_pointer_event(&mut self, event: ModulePointerEvent) {
-        let ModulePointerEvent::Click { x, y: _, .. } = event else {
+        let ModulePointerEvent::Click { x, .. } = event else {
             return;
         };
 

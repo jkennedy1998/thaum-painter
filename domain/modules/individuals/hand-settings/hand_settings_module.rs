@@ -68,6 +68,7 @@ impl HandSettingsModule {
             PaintTool::Brush => "Brush",
             PaintTool::Erase => "Erase",
             PaintTool::Fill => "Fill",
+            PaintTool::Text => "Text",
         }
     }
 

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use thaum_renderer_domain::{
-    CellGraphic, CellMaterialId, CommandBar, PersistedCommandBarState,
+    CellGraphic, CellMaterialId, CommandBar, ControlsProfile, PersistedCommandBarState,
     PersistedRendererUiSessionState, SpriteGraphic,
 };
 
@@ -18,6 +18,11 @@ pub struct PainterUserSessionState {
     pub workspace_id: String,
     pub renderer: PersistedRendererUiSessionState,
     pub painter: PersistedPainterUiState,
+    /// Per-user control-binding overrides over the painter's declared
+    /// defaults. Rides the user session (never the document) so a user's
+    /// remaps follow them across every document they open.
+    #[serde(default = "ControlsProfile::new")]
+    pub controls_profile: ControlsProfile,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -307,6 +312,7 @@ fn tool_name(tool: PaintTool) -> &'static str {
         PaintTool::Brush => "brush",
         PaintTool::Erase => "erase",
         PaintTool::Fill => "fill",
+        PaintTool::Text => "text",
     }
 }
 
@@ -315,6 +321,7 @@ fn tool_from_name(name: &str) -> Option<PaintTool> {
         "brush" => Some(PaintTool::Brush),
         "erase" => Some(PaintTool::Erase),
         "fill" => Some(PaintTool::Fill),
+        "text" => Some(PaintTool::Text),
         _ => None,
     }
 }
@@ -445,5 +452,6 @@ pub fn build_user_session_state(
             current_breath,
             tool_state,
         ),
+        controls_profile: ControlsProfile::new(),
     }
 }

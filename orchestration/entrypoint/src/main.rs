@@ -1,29 +1,35 @@
 use std::{
     cell::RefCell,
-    collections::BTreeSet,
     env, fs,
     io::{self, Write},
     path::{Path, PathBuf},
     rc::Rc,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
 use rfd::FileDialog;
 use thaum_painter_domain::{
-    append_action_record, camera_viewport::{
+    camera_viewport::{
         apply_drawing_space_scroll, apply_hud_scroll, pan_hud_and_focus_right,
         pan_hud_and_focus_up, reorient_camera_around_viewport_center, sync_canvas_bounds_to_camera,
         INITIAL_PAINT_CANVAS_BOUNDS, INITIAL_PAINT_CANVAS_VIEWPORT,
-    }, load_or_create_shared_document, save_shared_document_snapshot, Canvas,
-    CanvasBounds, DrawingSpaceWheelMode, GraphicPickerModule, HandSettingsModule,
-    LayerPropertyKind, LayerRow, LayersPanelAction, LayersPanelModule, LayersPanelState,
-    MaterialPickerModule, MergeDirection, PaintCanvasBoundsModule, PaintColorBlockModule,
+    }, document_locations::{
+        default_shared_document, load_document_from_root, new_unsaved_document,
+        resolve_painter_file_root, shared_document_id,
+    }, layers_runtime::{
+        apply_layers_panel_action, build_selected_layer_property_rows, resolved_active_layer_id,
+    }, load_or_create_shared_document, render_space::build_document_layer_cell_groups, save_shared_document_snapshot, selection_stroke::{
+        build_plane_selection_cell_group, interpolate_cell_path, SelectionStroke,
+    }, session_document::{
+        commit_selection_channel, commit_staged_paint_stroke,
+        apply_shared_history_action, recover_snapshot_conflict, stage_image_edit_chunk,
+        stage_text_entry_change, sync_canvas_from_active_layer,
+    }, text_entry::{TextEntryKey, TextEntryOutcome, TextEntryState}, Canvas, DrawingSpaceWheelMode, GraphicPickerModule, HandSettingsModule, LayerRow, LayersPanelModule, LayersPanelState,
+    MaterialPickerModule, PaintCanvasBoundsModule, PaintColorBlockModule,
     PaintColorPickerModule, PaintHand,
-    PaintTarget, PaintTool, PainterSelection, PainterUserSessionState, PersistedPainterUiState,
-    PropertyBlockMergeDirection, PropertyTrackBlock, PropertyTrackRow, SelectionMode,
-    SharedCellPatch, SharedDocumentActionRecord, SharedDocumentFile, SharedDocumentPaths,
-    SharedDocumentRuntime, SharedSelectionWriteMode, TimelineState,
+    PaintTarget, PaintTool, PainterSelection, PainterUserSessionState, PersistedPainterUiState, SelectionMode, SharedDocumentPaths,
+    SharedDocumentRuntime, TimelineState,
     ToolDef, ToolState, ToolboxModule, DEFAULT_SELECTION_CHANNEL_ID,
 };
 use thaum_renderer_boot::{
@@ -31,12 +37,12 @@ use thaum_renderer_boot::{
     BootConfig, BootState,
 };
 use thaum_renderer_domain::{
-    remap_surface_units_to_active_plane_world,
-    remap_surface_units_to_flat_2d_local, Cell, CellColor,
-    CellGraphic, CellGroup, CellPoint, CellWeight, CommandBar, CommandBarButton,
-    CommandBarClickOutcome, Composition, ModulePointerButton, ModulePointerEvent, ModuleRect,
-    ModuleRegistry, PersistedRendererUiSessionState, UiColorRole, UiCustomizationModule,
-    UiPalette, WorldPoint,
+    camera_view_orientation_for_camera, remap_surface_units_to_active_plane_world,
+    remap_surface_units_to_flat_2d_local, ActionBindingMap, ActionName, CellPoint, CommandBar,
+    CommandBarButton, CommandBarClickOutcome, Composition, ControlActionRow, ControlsPanelModule,
+    ControlsProfile, conflicting_actions, effective_bindings, format_raw_input,
+    ModulePointerButton, ModulePointerEvent, ModuleRect, ModuleRegistry, Module,
+    PersistedRendererUiSessionState, RawInput, UiColorRole, UiCustomizationModule, UiPalette,
 };
 use winit::keyboard::KeyCode;
 
@@ -61,10 +67,6 @@ fn painter_session_state_path(user_id: &str) -> PathBuf {
         .join(format!("{user_id}.json"))
 }
 
-fn shared_document_id() -> String {
-    env::var("THAUM_SHARED_DOCUMENT_ID").unwrap_or_else(|_| "local-document".to_string())
-}
-
 fn painter_shared_document_paths(document_id: &str) -> SharedDocumentPaths {
     SharedDocumentPaths::new(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -73,61 +75,16 @@ fn painter_shared_document_paths(document_id: &str) -> SharedDocumentPaths {
     )
 }
 
-fn default_shared_document(document_id: &str) -> SharedDocumentFile {
-    SharedDocumentFile::single_layer(
-        document_id,
-        "Untitled Document",
-        INITIAL_LAYER_ID,
-        INITIAL_LAYER_NAME,
-    )
-}
-
 fn painter_repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-fn legacy_painter_file_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../context/painter/painter-files")
-}
-
-fn migrate_legacy_painter_file_root(legacy_root: &Path, target_root: &Path) {
-    if target_root.exists() || !legacy_root.exists() {
-        return;
-    }
-    if let Some(parent) = target_root.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let _ = fs::rename(legacy_root, target_root);
-}
-
 fn painter_file_root() -> PathBuf {
-    if let Ok(path) = env::var("THAUM_PAINTER_FILE_ROOT") {
-        return PathBuf::from(path);
-    }
-
-    let target_root = painter_repo_root().join("context/painter/painter-files");
-    migrate_legacy_painter_file_root(&legacy_painter_file_root(), &target_root);
-    target_root
+    resolve_painter_file_root(&painter_repo_root())
 }
 
 fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
-}
-
-fn load_document_from_root(root: &Path) -> Result<(SharedDocumentPaths, SharedDocumentRuntime)> {
-    let document_id = root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("untitled-document")
-        .to_string();
-    let paths = SharedDocumentPaths::new(root.to_path_buf());
-    let runtime = load_or_create_shared_document(&paths, default_shared_document(&document_id))?;
-    Ok((paths, runtime))
-}
-
-fn new_unsaved_document() -> SharedDocumentRuntime {
-    let document_id = format!("document-{}", action_timestamp_string());
-    SharedDocumentRuntime::new(default_shared_document(&document_id))
 }
 
 fn slugify_file_stem(text: &str) -> String {
@@ -173,14 +130,18 @@ fn display_path(path: &Path) -> String {
 }
 
 fn log_missing_dialog_selection(action: &str, file_root: &Path) {
-    eprintln!(
-        "thaum-painter: {action} dialog returned no selection. backend={}. root={}",
-        native_file_dialog_backend_name(),
-        display_path(file_root)
+    thaum_painter_domain::debug_log::warn(
+        "dialogs",
+        &format!(
+            "{action} dialog returned no selection. backend={}. root={}",
+            native_file_dialog_backend_name(),
+            display_path(file_root)
+        ),
     );
     #[cfg(target_os = "linux")]
-    eprintln!(
-        "thaum-painter: on Linux this backend depends on a live desktop-portal session; if no dialog appears, check xdg-desktop-portal / DBus availability in the current desktop session."
+    thaum_painter_domain::debug_log::warn(
+        "dialogs",
+        "on Linux this backend depends on a live desktop-portal session; if no dialog appears, check xdg-desktop-portal / DBus availability in the current desktop session.",
     );
 }
 
@@ -313,148 +274,6 @@ fn save_painter_user_session_state(path: &Path, state: &PainterUserSessionState)
     })
 }
 
-const INITIAL_LAYER_ID: &str = "layer-1";
-const INITIAL_LAYER_NAME: &str = "Layer 1";
-
-/// Renders `canvas`'s live-painted cells as one `CellGroup` in the renderer's
-/// real rotating 3D intake path, not as module chrome, so the painter canvas
-/// lives in scene space while the UI panels stay in the flat 2D layer.
-fn build_paint_canvas_cell_group(canvas: &Canvas) -> CellGroup {
-    let mut group = CellGroup::new(WorldPoint { x: 0, y: 0, z: 0 });
-    for (position, painted) in canvas {
-        group.insert(Cell {
-            position: *position,
-            graphic: painted.graphic.clone(),
-            color: painted.color.to_cell_color(),
-            weight: CellWeight::from_index_clamped(painted.weight_index as i32),
-            ..Cell::default()
-        });
-    }
-    group
-}
-
-fn resolved_active_layer_id(
-    runtime: &SharedDocumentRuntime,
-    preferred_layer_id: Option<&str>,
-) -> String {
-    if let Some(layer_id) = preferred_layer_id.filter(|layer_id| runtime.document.has_layer(layer_id)) {
-        return layer_id.to_string();
-    }
-    runtime
-        .document
-        .first_layer_id()
-        .unwrap_or(INITIAL_LAYER_ID)
-        .to_string()
-}
-
-fn next_layer_number(runtime: &SharedDocumentRuntime) -> usize {
-    let mut number = 1;
-    loop {
-        if !runtime.document.has_layer(&format!("layer-{number}")) {
-            return number;
-        }
-        number += 1;
-    }
-}
-
-fn create_layer(runtime: &mut SharedDocumentRuntime) -> String {
-    let number = next_layer_number(runtime);
-    let layer_id = format!("layer-{number}");
-    let layer_name = format!("Layer {number}");
-    runtime.add_layer(layer_id.clone(), layer_name);
-    layer_id
-}
-
-fn build_document_layer_cell_groups(runtime: &SharedDocumentRuntime, current_breath: u32) -> Vec<CellGroup> {
-    runtime
-        .layers()
-        .iter()
-        .filter_map(|layer| runtime.canvas_for_layer(&layer.layer_id, current_breath))
-        .map(build_paint_canvas_cell_group)
-        .collect()
-}
-
-#[derive(Debug, Clone)]
-struct SelectionStroke {
-    hand: PaintHand,
-    mode: SelectionMode,
-    points: BTreeSet<CellPoint>,
-}
-
-impl SelectionStroke {
-    fn new(hand: PaintHand, mode: SelectionMode) -> Self {
-        Self {
-            hand,
-            mode,
-            points: BTreeSet::new(),
-        }
-    }
-
-    fn extend<I>(&mut self, points: I)
-    where
-        I: IntoIterator<Item = CellPoint>,
-    {
-        self.points.extend(points);
-    }
-}
-
-fn interpolate_cell_path(start: CellPoint, end: CellPoint) -> Vec<CellPoint> {
-    let dx = end.x - start.x;
-    let dy = end.y - start.y;
-    let dz = end.z - start.z;
-    let steps = dx.abs().max(dy.abs()).max(dz.abs());
-    if steps == 0 {
-        return vec![start];
-    }
-
-    let mut points = Vec::with_capacity(steps as usize + 1);
-    for step in 0..=steps {
-        let t = step as f32 / steps as f32;
-        points.push(CellPoint {
-            x: start.x + (dx as f32 * t).round() as i32,
-            y: start.y + (dy as f32 * t).round() as i32,
-            z: start.z + (dz as f32 * t).round() as i32,
-        });
-    }
-    points.dedup();
-    points
-}
-
-fn build_plane_selection_cell_group(
-    selection: &PainterSelection,
-    stroke: Option<&SelectionStroke>,
-    flash_on: bool,
-) -> CellGroup {
-    let preview = match stroke {
-        Some(stroke) => {
-            selection.preview_plane_with_mode(stroke.points.iter().copied(), stroke.mode)
-        }
-        None => selection.plane().clone(),
-    };
-
-    let glyph = if flash_on { '□' } else { '■' };
-    let color = if flash_on {
-        [1.0, 0.9, 0.25, 1.0]
-    } else {
-        [0.8, 0.6, 0.1, 1.0]
-    };
-
-    let mut group = CellGroup::new(WorldPoint { x: 0, y: 0, z: 0 });
-    // Render every selected cell, not just a plane slice or border: selection is a
-    // 3D bitmap shared across depths, so cells light up at any depth the camera can
-    // see (the composition already shows whatever falls inside the camera window).
-    for position in preview.iter() {
-        group.insert(Cell {
-            position,
-            graphic: CellGraphic::Glyph(glyph),
-            color: CellColor::Flat(color),
-            weight: CellWeight::from_index_clamped(3),
-            ..Cell::default()
-        });
-    }
-    group
-}
-
 fn file_menu_buttons() -> Vec<CommandBarButton> {
     vec![
         CommandBarButton::new("file:new", "NEW"),
@@ -462,244 +281,6 @@ fn file_menu_buttons() -> Vec<CommandBarButton> {
         CommandBarButton::new("file:save", "SAVE"),
         CommandBarButton::new("file:save-as", "SAVE AS"),
     ]
-}
-
-fn build_selected_layer_property_rows(
-    shared_document: &SharedDocumentRuntime,
-    active_layer_id: &str,
-) -> Vec<PropertyTrackRow> {
-    let Some(layer) = shared_document
-        .layers()
-        .iter()
-        .find(|layer| layer.layer_id == active_layer_id)
-    else {
-        return Vec::new();
-    };
-    let raster_blocks = shared_document
-        .property_track(active_layer_id, "raster")
-        .map(|track| {
-            track
-                .blocks
-                .iter()
-                .map(|block| PropertyTrackBlock {
-                    id: block.id.clone(),
-                    start_breath: block.start_breath,
-                    length_breaths: block.length_breaths,
-                    is_blank: block.is_blank,
-                })
-                .collect()
-        })
-        .unwrap_or_else(|| {
-            vec![PropertyTrackBlock {
-                id: format!("{}:raster:0", layer.layer_id),
-                start_breath: layer.start_breath,
-                length_breaths: layer.length_breaths,
-                is_blank: false,
-            }]
-        });
-    let move_blocks = shared_document
-        .property_track(active_layer_id, "move")
-        .map(|track| {
-            track
-                .blocks
-                .iter()
-                .map(|block| PropertyTrackBlock {
-                    id: block.id.clone(),
-                    start_breath: block.start_breath,
-                    length_breaths: block.length_breaths,
-                    is_blank: block.is_blank,
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    vec![
-        PropertyTrackRow {
-            layer_id: layer.layer_id.clone(),
-            property_id: "raster".to_string(),
-            label: "RASTER".to_string(),
-            kind: LayerPropertyKind::Raster,
-            blocks: raster_blocks,
-        },
-        PropertyTrackRow {
-            layer_id: layer.layer_id.clone(),
-            property_id: "move".to_string(),
-            label: "MOVE".to_string(),
-            kind: LayerPropertyKind::Move,
-            blocks: move_blocks,
-        },
-    ]
-}
-
-/// Applies one pending `LayersPanelModule` action (if any) to the real document/session. Called
-/// both after a click and after every captured drag-move frame, since ruler scrubbing queues a
-/// new action on each frame it is dragged.
-fn apply_layers_panel_action(
-    action: Option<LayersPanelAction>,
-    shared_document: &mut SharedDocumentRuntime,
-    shared_document_paths: &SharedDocumentPaths,
-    shared_action_counter: &mut u64,
-    session_user_id: &str,
-    active_layer_id: &mut String,
-    selected_property_id: &mut Option<String>,
-    canvas: &mut Canvas,
-    timeline_state: &Rc<RefCell<TimelineState>>,
-) {
-    let Some(action) = action else { return };
-    let current_breath = timeline_state.borrow().current_breath;
-    // Pure-UI actions (selection, playhead, auto-key) never touch the document;
-    // everything else mutates document metadata, so the snapshot is rewritten right
-    // after applying. Without this, block/layer edits only reached disk on an explicit
-    // file:save and were lost whenever the app closed first.
-    let document_mutated = !matches!(
-        action,
-        LayersPanelAction::Select(_)
-            | LayersPanelAction::SelectProperty(..)
-            | LayersPanelAction::ToggleAutoKey
-            | LayersPanelAction::SetCurrentBreath(_)
-    );
-    match action {
-        LayersPanelAction::Select(layer_id) => {
-            *active_layer_id = resolved_active_layer_id(shared_document, Some(&layer_id));
-            *selected_property_id = None;
-            sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
-        }
-        LayersPanelAction::SelectProperty(layer_id, property_id) => {
-            *active_layer_id = resolved_active_layer_id(shared_document, Some(&layer_id));
-            *selected_property_id = Some(property_id);
-            sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
-        }
-        LayersPanelAction::AddRequested => {
-            *active_layer_id = create_layer(shared_document);
-            *selected_property_id = None;
-            sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
-        }
-        LayersPanelAction::ToggleVisible(layer_id) => {
-            if let Some(layer) = shared_document
-                .layers()
-                .iter()
-                .find(|layer| layer.layer_id == layer_id)
-            {
-                let next_visible = !layer.visible;
-                shared_document.set_layer_visible(&layer_id, next_visible);
-            }
-        }
-        LayersPanelAction::ToggleLocked(layer_id) => {
-            if let Some(layer) = shared_document
-                .layers()
-                .iter()
-                .find(|layer| layer.layer_id == layer_id)
-            {
-                let next_locked = !layer.locked;
-                shared_document.set_layer_locked(&layer_id, next_locked);
-            }
-        }
-        LayersPanelAction::Delete(layer_id) => {
-            if shared_document.layers().len() > 1 && shared_document.remove_layer(&layer_id) {
-                if *active_layer_id == layer_id {
-                    *active_layer_id = resolved_active_layer_id(shared_document, None);
-                    *selected_property_id = None;
-                }
-                sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
-            }
-        }
-        LayersPanelAction::ToggleAutoKey => {
-            timeline_state.borrow_mut().toggle_auto_key();
-        }
-        LayersPanelAction::SetCurrentBreath(breath) => {
-            timeline_state.borrow_mut().set_current_breath(breath);
-            // Scrubbing the playhead switches which raster block the edit surface shows.
-            sync_canvas_from_active_layer(shared_document, active_layer_id, breath, canvas);
-        }
-        LayersPanelAction::SetLayerTiming(layer_id, start_breath, length_breaths) => {
-            shared_document.set_layer_timing(&layer_id, start_breath, length_breaths);
-        }
-        LayersPanelAction::SetPropertyBlockTiming(
-            layer_id,
-            property_id,
-            block_id,
-            start_breath,
-            length_breaths,
-        ) => {
-            shared_document.set_property_block_timing(
-                &layer_id,
-                &property_id,
-                &block_id,
-                start_breath,
-                length_breaths,
-            );
-        }
-        LayersPanelAction::SetPropertyBlockTimingPushed(
-            layer_id,
-            property_id,
-            block_id,
-            start_breath,
-            length_breaths,
-        ) => {
-            shared_document.set_property_block_timing_pushed(
-                &layer_id,
-                &property_id,
-                &block_id,
-                start_breath,
-                length_breaths,
-            );
-        }
-        LayersPanelAction::SetPropertyBlockTimingDestructive(
-            layer_id,
-            property_id,
-            block_id,
-            start_breath,
-            length_breaths,
-        ) => {
-            shared_document.set_property_block_timing_destructive(
-                &layer_id,
-                &property_id,
-                &block_id,
-                start_breath,
-                length_breaths,
-            );
-        }
-        LayersPanelAction::SplitPropertyBlock(layer_id, property_id, block_id, split_breath) => {
-            let Some(new_block_id) = shared_document
-                .split_property_block(&layer_id, &property_id, &block_id, split_breath)
-            else {
-                return;
-            };
-            *selected_property_id = Some(property_id.clone());
-            // Propagate the split block's channel data onto the new half as a recorded
-            // patch: both halves start as identical copies and replay rebuilds the copy.
-            if let Some(record) = shared_document.split_data_propagation_record(
-                &layer_id,
-                &block_id,
-                &new_block_id,
-                next_action_id(shared_action_counter),
-                session_user_id,
-                action_timestamp_string(),
-            ) {
-                let _ =
-                    append_and_apply_shared_action(shared_document, shared_document_paths, record);
-            }
-            sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
-        }
-        LayersPanelAction::BlankPropertyBlock(layer_id, property_id, block_id) => {
-            shared_document.blank_property_block(&layer_id, &property_id, &block_id);
-        }
-        LayersPanelAction::MergeBlankPropertyBlock(layer_id, property_id, block_id, direction) => {
-            let direction = match direction {
-                MergeDirection::Left => PropertyBlockMergeDirection::Left,
-                MergeDirection::Right => PropertyBlockMergeDirection::Right,
-            };
-            shared_document.merge_blank_property_block(&layer_id, &property_id, &block_id, direction);
-        }
-        LayersPanelAction::SwapPropertyBlocks(layer_id, property_id, source_block_id, target_block_id) => {
-            shared_document.swap_property_blocks(&layer_id, &property_id, &source_block_id, &target_block_id);
-        }
-    }
-    if document_mutated {
-        if let Err(error) = save_shared_document_snapshot(shared_document_paths, shared_document) {
-            eprintln!("failed to save document snapshot: {error}");
-        }
-    }
 }
 
 fn module_menu_buttons(modules: &ModuleRegistry) -> Vec<CommandBarButton> {
@@ -778,7 +359,18 @@ fn handle_command_bar_button(
                     return Ok(());
                 }
             }
-            save_shared_document_snapshot(shared_document_paths, shared_document)?;
+            if let Err(error) = save_shared_document_snapshot(shared_document_paths, shared_document) {
+                recover_snapshot_conflict(
+                    &error,
+                    shared_document,
+                    shared_document_paths,
+                    active_layer_id,
+                    current_breath,
+                    canvas,
+                    selection,
+                    shared_action_counter,
+                );
+            }
         }
         "file:save-as" => {
             if let Some(next_root) = prompt_save_document_root(&file_root, &shared_document.document.title) {
@@ -805,6 +397,7 @@ fn build_user_session_state(
     drawing_space_wheel_mode: DrawingSpaceWheelMode,
     selection_mode: SelectionMode,
     tool_state: &ToolState,
+    controls_profile: &ControlsProfile,
 ) -> PainterUserSessionState {
     PainterUserSessionState {
         schema_version: 1,
@@ -825,6 +418,7 @@ fn build_user_session_state(
             current_breath,
             tool_state,
         ),
+        controls_profile: controls_profile.clone(),
     }
 }
 
@@ -838,184 +432,9 @@ fn sync_renderer_background_from_ui_palette(state: &mut BootState, ui_palette: &
     ];
 }
 
-fn action_timestamp_string() -> String {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .to_string()
-}
-
-fn next_action_id(counter: &mut u64) -> String {
-    *counter += 1;
-    format!("action-{}-{counter}", action_timestamp_string())
-}
-
-fn collect_canvas_patches(before: &Canvas, after: &Canvas) -> Vec<SharedCellPatch> {
-    let positions: BTreeSet<_> = before.keys().chain(after.keys()).copied().collect();
-    positions
-        .into_iter()
-        .filter_map(|position| {
-            let before_cell = before.get(&position);
-            let after_cell = after.get(&position);
-            if before_cell == after_cell {
-                None
-            } else {
-                Some(SharedCellPatch::new(position, before_cell, after_cell))
-            }
-        })
-        .collect()
-}
-
-fn append_and_apply_shared_action(
-    runtime: &mut SharedDocumentRuntime,
-    paths: &SharedDocumentPaths,
-    action: SharedDocumentActionRecord,
-) -> Result<()> {
-    append_action_record(&paths.actions_file_path, &action)?;
-    runtime.apply_action_record(action);
-    Ok(())
-}
-
-fn sync_canvas_from_active_layer(
-    runtime: &SharedDocumentRuntime,
-    active_layer_id: &str,
-    current_breath: u32,
-    canvas: &mut Canvas,
-) {
-    *canvas = runtime
-        .canvas_for_layer(active_layer_id, current_breath)
-        .cloned()
-        .unwrap_or_default();
-}
-
-/// Stages one paint chunk onto the live canvases WITHOUT creating an action record.
-/// Strokes commit once at release (one undo per stroke); the runtime canvas is staged
-/// so per-frame compositing shows the work in progress.
-fn stage_image_edit_chunk(
-    runtime: &mut SharedDocumentRuntime,
-    canvas: &mut Canvas,
-    tool_state: &mut ToolState,
-    selection: &mut PainterSelection,
-    positions: impl IntoIterator<Item = CellPoint>,
-    hand: PaintHand,
-    bounds: CanvasBounds,
-    layer_id: &str,
-    block_id: &str,
-) {
-    let before = canvas.clone();
-    let mut candidate = before.clone();
-    for position in positions {
-        tool_state.apply_at_for_hand(&mut candidate, selection, position, hand, bounds);
-    }
-    let patches = collect_canvas_patches(&before, &candidate);
-    if patches.is_empty() {
-        return;
-    }
-    runtime.stage_canvas_patches(layer_id, block_id, &patches);
-    // Adopt the candidate instead of re-cloning from the runtime: the staged
-    // canvas now holds exactly this content.
-    *canvas = candidate;
-}
-
-/// Commits one finished stroke as a single `CellPatchSet` record — one undo per
-/// stroke. The runtime canvas already holds the staged content, so applying the
-/// record is idempotent; it only registers the undo bookkeeping.
-fn commit_staged_paint_stroke(
-    runtime: &mut SharedDocumentRuntime,
-    paths: &SharedDocumentPaths,
-    action_counter: &mut u64,
-    user_id: &str,
-    active_layer_id: &str,
-    canvas: &mut Canvas,
-    stroke_start: Option<(Canvas, String)>,
-) -> Result<()> {
-    let Some((start_canvas, block_id)) = stroke_start else {
-        return Ok(());
-    };
-    let patches = collect_canvas_patches(&start_canvas, canvas);
-    if patches.is_empty() {
-        return Ok(());
-    }
-    let record = SharedDocumentActionRecord::cell_patch_set(
-        next_action_id(action_counter),
-        runtime.document.document_id.clone(),
-        active_layer_id,
-        user_id,
-        action_timestamp_string(),
-        patches,
-        Some(block_id),
-    );
-    append_action_record(&paths.actions_file_path, &record)?;
-    runtime.apply_action_record(record);
-    Ok(())
-}
-
-/// Mirrors a committed selection change into the document's selection channel and
-/// persists it. Selection is document-owned (per file, one shared 3D bitmap on the
-/// canvas coordinate system), so the plane cache inside `PainterSelection` is only
-/// the interaction surface; the channel is the truth. No-ops skip the snapshot save.
-fn commit_selection_channel<I>(
-    runtime: &mut SharedDocumentRuntime,
-    paths: &SharedDocumentPaths,
-    points: I,
-    mode: SelectionMode,
-) where
-    I: IntoIterator<Item = CellPoint>,
-{
-    let write_mode = match mode {
-        SelectionMode::Replace => SharedSelectionWriteMode::Replace,
-        SelectionMode::Additive => SharedSelectionWriteMode::Additive,
-        SelectionMode::Subtract => SharedSelectionWriteMode::Subtract,
-        SelectionMode::Intersect => SharedSelectionWriteMode::Intersect,
-    };
-    if runtime.apply_selection_points(DEFAULT_SELECTION_CHANNEL_ID, points, write_mode) {
-        if let Err(error) = save_shared_document_snapshot(paths, runtime) {
-            eprintln!("failed to save document snapshot: {error}");
-        }
-    }
-}
-
-fn apply_shared_history_action(
-    runtime: &mut SharedDocumentRuntime,
-    paths: &SharedDocumentPaths,
-    action_counter: &mut u64,
-    user_id: &str,
-    active_layer_id: &str,
-    canvas: &mut Canvas,
-    undo: bool,
-    current_breath: u32,
-) -> Result<()> {
-    // Undo/redo are persisted as passive revert records (normal CellPatchSets that
-    // paint content but skip the undo stacks) — the all-forward-edits log keeps
-    // squash safe and matches the undo-as-operation multiplayer model.
-    let revert = if undo {
-        runtime.undo_top_action(active_layer_id)
-    } else {
-        runtime.redo_top_action(active_layer_id)
-    };
-    if let Some(revert) = revert {
-        let record = SharedDocumentActionRecord::revert_patch_set(
-            next_action_id(action_counter),
-            runtime.document.document_id.clone(),
-            active_layer_id,
-            user_id,
-            action_timestamp_string(),
-            revert.patches,
-            Some(revert.block_id),
-            revert.action_id,
-        );
-        append_action_record(&paths.actions_file_path, &record)?;
-        runtime.push_history_record(record);
-    }
-    sync_canvas_from_active_layer(runtime, active_layer_id, current_breath, canvas);
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use thaum_painter_domain::SharedDocumentSelection;
 
     #[test]
     fn interpolate_cell_path_fills_every_step_between_two_points() {
@@ -1032,74 +451,6 @@ mod tests {
                 CellPoint { x: 4, y: 4, z: 0 },
             ]
         );
-    }
-
-    #[test]
-    fn resolved_active_layer_id_falls_back_to_first_document_layer() {
-        let runtime = SharedDocumentRuntime::new(SharedDocumentFile {
-            file_kind: thaum_painter_domain::SHARED_DOCUMENT_KIND.to_string(),
-            schema_version: thaum_painter_domain::SHARED_DOCUMENT_SCHEMA_VERSION,
-            document_id: "doc-1".to_string(),
-            title: "Doc".to_string(),
-            layers: vec![
-                thaum_painter_domain::SharedDocumentLayer {
-                    layer_id: "layer-a".to_string(),
-                    name: "Layer A".to_string(),
-                    visible: true,
-                    locked: false,
-                    start_breath: 0,
-                    length_breaths: 24,
-                    property_tracks: vec![],
-                },
-                thaum_painter_domain::SharedDocumentLayer {
-                    layer_id: "layer-b".to_string(),
-                    name: "Layer B".to_string(),
-                    visible: true,
-                    locked: false,
-                    start_breath: 0,
-                    length_breaths: 24,
-                    property_tracks: vec![],
-                },
-            ],
-            revision: 0,
-            selection: SharedDocumentSelection::default(),
-        });
-
-        assert_eq!(resolved_active_layer_id(&runtime, Some("missing")), "layer-a");
-    }
-
-    #[test]
-    fn create_layer_picks_the_next_open_layer_number() {
-        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile {
-            file_kind: thaum_painter_domain::SHARED_DOCUMENT_KIND.to_string(),
-            schema_version: thaum_painter_domain::SHARED_DOCUMENT_SCHEMA_VERSION,
-            document_id: "doc-1".to_string(),
-            title: "Doc".to_string(),
-            layers: vec![
-                thaum_painter_domain::SharedDocumentLayer {
-                    layer_id: "layer-1".to_string(),
-                    name: "Layer 1".to_string(),
-                    visible: true,
-                    locked: false,
-                    start_breath: 0,
-                    length_breaths: 24,
-                    property_tracks: vec![],
-                },
-                thaum_painter_domain::SharedDocumentLayer {
-                    layer_id: "layer-3".to_string(),
-                    name: "Layer 3".to_string(),
-                    visible: true,
-                    locked: false,
-                    start_breath: 0,
-                    length_breaths: 24,
-                    property_tracks: vec![],
-                },
-            ],
-            revision: 0,
-            selection: SharedDocumentSelection::default(),
-        });
-
-        assert_eq!(create_layer(&mut runtime), "layer-2");
     }
 
     #[test]
@@ -1132,9 +483,287 @@ mod tests {
         let root = normalize_open_document_root(Path::new("/tmp/example-folder"));
         assert_eq!(root, PathBuf::from("/tmp/example-folder"));
     }
+
+    #[test]
+    fn raw_key_labels_cover_the_keys_the_registry_binds() {
+        assert_eq!(raw_key_label(KeyCode::KeyP).as_deref(), Some("P"));
+        assert_eq!(raw_key_label(KeyCode::KeyB).as_deref(), Some("B"));
+        assert_eq!(raw_key_label(KeyCode::KeyZ).as_deref(), Some("Z"));
+        assert_eq!(raw_key_label(KeyCode::Numpad4).as_deref(), Some("NUMPAD4"));
+        assert_eq!(
+            raw_key_label(KeyCode::NumpadAdd).as_deref(),
+            Some("NUMPAD_ADD")
+        );
+    }
+
+    #[test]
+    fn live_painter_actions_stay_in_sync_with_the_registry() {
+        let bindings = thaum_painter_domain::tai::painter_bindings();
+        let registry_names: Vec<&str> = bindings
+            .actions()
+            .map(|action| action.0.as_str())
+            .collect();
+        for name in LIVE_PAINTER_ACTIONS {
+            assert!(
+                registry_names.contains(name),
+                "live action {name} must stay registered in painter_bindings()"
+            );
+        }
+        for name in &registry_names {
+            assert!(
+                LIVE_PAINTER_ACTIONS.contains(&name),
+                "registry action {name} must stay handled by the live dispatch"
+            );
+        }
+    }
+
+    #[test]
+    fn registry_painter_hotkeys_resolve_to_live_tool_dispatch() {
+        let bindings = thaum_painter_domain::tai::painter_bindings();
+        let pencil_actions = painter_key_actions_for_label(&bindings, "P");
+        assert_eq!(pencil_actions.len(), 1, "P resolves to exactly one action");
+        assert_eq!(
+            painter_tool_for_action(&pencil_actions[0]),
+            Some(PaintTool::Brush)
+        );
+        let bucket_actions = painter_key_actions_for_label(&bindings, "B");
+        assert_eq!(bucket_actions.len(), 1, "B resolves to exactly one action");
+        assert_eq!(
+            painter_tool_for_action(&bucket_actions[0]),
+            Some(PaintTool::Fill)
+        );
+        // The zoom key resolves through the registry too (remappable), and
+        // only the wheel binding stays off the key path.
+        assert_eq!(
+            painter_key_actions_for_label(&bindings, "-")[0].0.as_str(),
+            "painter_zoom_out"
+        );
+        assert!(
+            painter_key_actions_for_label(&bindings, "wheel_only").is_empty(),
+            "unbound labels resolve to nothing"
+        );
+    }
+
+    #[test]
+    fn every_action_the_key_dispatch_fires_exists_in_the_registry() {
+        let bindings = thaum_painter_domain::tai::painter_bindings();
+        for name in ["painter_select_pencil", "painter_select_bucket"] {
+            assert!(
+                !bindings
+                    .bindings_for(&ActionName::new(name))
+                    .is_empty(),
+                "dispatch action {name} must stay registered in painter_bindings()"
+            );
+        }
+    }
+}
+
+/// Physical-key label used by the renderer's `RawInput::Key` bindings, for the
+/// key classes the painter dispatches on. Unmapped keys simply resolve to no
+/// registry action and fall through to the live-only match arms.
+fn raw_key_label(key: KeyCode) -> Option<String> {
+    let label = match key {
+        KeyCode::KeyA => "A",
+        KeyCode::KeyB => "B",
+        KeyCode::KeyC => "C",
+        KeyCode::KeyD => "D",
+        KeyCode::KeyE => "E",
+        KeyCode::KeyF => "F",
+        KeyCode::KeyG => "G",
+        KeyCode::KeyH => "H",
+        KeyCode::KeyI => "I",
+        KeyCode::KeyJ => "J",
+        KeyCode::KeyK => "K",
+        KeyCode::KeyL => "L",
+        KeyCode::KeyM => "M",
+        KeyCode::KeyN => "N",
+        KeyCode::KeyO => "O",
+        KeyCode::KeyP => "P",
+        KeyCode::KeyQ => "Q",
+        KeyCode::KeyR => "R",
+        KeyCode::KeyS => "S",
+        KeyCode::KeyT => "T",
+        KeyCode::KeyU => "U",
+        KeyCode::KeyV => "V",
+        KeyCode::KeyW => "W",
+        KeyCode::KeyX => "X",
+        KeyCode::KeyY => "Y",
+        KeyCode::KeyZ => "Z",
+        KeyCode::Digit0 => "0",
+        KeyCode::Digit1 => "1",
+        KeyCode::Digit2 => "2",
+        KeyCode::Digit3 => "3",
+        KeyCode::Digit4 => "4",
+        KeyCode::Digit5 => "5",
+        KeyCode::Digit6 => "6",
+        KeyCode::Digit7 => "7",
+        KeyCode::Digit8 => "8",
+        KeyCode::Digit9 => "9",
+        KeyCode::Minus => "-",
+        KeyCode::Equal => "=",
+        KeyCode::Numpad0 => "NUMPAD0",
+        KeyCode::Numpad1 => "NUMPAD1",
+        KeyCode::Numpad2 => "NUMPAD2",
+        KeyCode::Numpad3 => "NUMPAD3",
+        KeyCode::Numpad4 => "NUMPAD4",
+        KeyCode::Numpad5 => "NUMPAD5",
+        KeyCode::Numpad6 => "NUMPAD6",
+        KeyCode::Numpad7 => "NUMPAD7",
+        KeyCode::Numpad8 => "NUMPAD8",
+        KeyCode::Numpad9 => "NUMPAD9",
+        KeyCode::NumpadAdd => "NUMPAD_ADD",
+        KeyCode::NumpadSubtract => "NUMPAD_SUB",
+        _ => return None,
+    };
+    Some(label.to_string())
+}
+
+/// Registry actions bound to one physical key label, resolved through the TAI
+/// registry's `painter_bindings()`. Wheel-bound actions (`painter_zoom_in` on
+/// `MouseWheelUp`) never resolve here, so the zoom keys (Minus/Equal) stay
+/// live-only until they are registered as key bindings.
+fn painter_key_actions_for_label(bindings: &ActionBindingMap, label: &str) -> Vec<ActionName> {
+    bindings
+        .actions_for(RawInput::Key(label.to_string()))
+        .into_iter()
+        .cloned()
+        .collect()
+}
+
+/// Registry actions bound to one physical key press.
+fn painter_key_actions(bindings: &ActionBindingMap, key: KeyCode) -> Vec<ActionName> {
+    raw_key_label(key)
+        .map(|label| painter_key_actions_for_label(bindings, &label))
+        .unwrap_or_default()
+}
+
+/// Translates a physical key press into a text-entry key while typing. Single-
+/// character labels (letters, digits, `-`, `=`) become chars; multi-character
+/// labels (numpad keys) have no glyph, so they fall through as suppressed.
+fn text_entry_key_for_key(key: KeyCode) -> Option<TextEntryKey> {
+    match key {
+        KeyCode::Space => Some(TextEntryKey::Space),
+        KeyCode::Enter | KeyCode::NumpadEnter => Some(TextEntryKey::Enter),
+        KeyCode::Escape => Some(TextEntryKey::Escape),
+        KeyCode::Backspace => Some(TextEntryKey::Backspace),
+        KeyCode::Delete => Some(TextEntryKey::Delete),
+        KeyCode::ArrowLeft => Some(TextEntryKey::ArrowLeft),
+        KeyCode::ArrowRight => Some(TextEntryKey::ArrowRight),
+        KeyCode::ArrowUp => Some(TextEntryKey::ArrowUp),
+        KeyCode::ArrowDown => Some(TextEntryKey::ArrowDown),
+        _ => raw_key_label(key).and_then(|label| {
+            let mut chars = label.chars();
+            let ch = chars.next()?;
+            if chars.next().is_some() {
+                return None;
+            }
+            Some(TextEntryKey::Char(ch.to_ascii_lowercase()))
+        }),
+    }
+}
+
+/// Reserved keys that stay live while a typing session owns the keyboard:
+/// camera swing/roll (numpad 4/6/8/2/7/9) and depth step (numpad 1/3) only —
+/// every other shortcut is suppressed during typing (the old
+/// `handle_text_mode_reserved_shortcut` allowlist).
+fn is_text_mode_reserved_key(key: KeyCode) -> bool {
+    matches!(
+        key,
+        KeyCode::Numpad4
+            | KeyCode::Numpad6
+            | KeyCode::Numpad8
+            | KeyCode::Numpad2
+            | KeyCode::Numpad7
+            | KeyCode::Numpad9
+            | KeyCode::Numpad1
+            | KeyCode::Numpad3
+    )
+}
+
+/// Live painter behavior for one registry action. One entry per action the
+/// dispatcher handles; `LIVE_PAINTER_ACTIONS` and the dispatch match below
+/// must stay in sync, which the drift tests assert in both directions.
+fn painter_tool_for_action(action: &ActionName) -> Option<PaintTool> {
+    match action.0.as_str() {
+        "painter_select_pencil" => Some(PaintTool::Brush),
+        "painter_select_bucket" => Some(PaintTool::Fill),
+        _ => None,
+    }
+}
+
+/// Every named action the entrypoint's live dispatch handles. The effective
+/// binding map (declared defaults + per-user profile) must declare exactly
+/// these actions; anything declared-but-unhandled or handled-but-undeclared
+/// fails the hotkey drift tests.
+pub const LIVE_PAINTER_ACTIONS: &[&str] = &[
+    "painter_select_pencil",
+    "painter_select_bucket",
+    "painter_pan_left",
+    "painter_pan_right",
+    "painter_pan_up",
+    "painter_pan_down",
+    "painter_swing_left",
+    "painter_swing_right",
+    "painter_swing_up",
+    "painter_swing_down",
+    "painter_roll_counter_clockwise",
+    "painter_roll_clockwise",
+    "painter_focus_depth_toward",
+    "painter_focus_depth_away",
+    "painter_zoom_out",
+    "painter_zoom_in",
+    "painter_selection_mode_replace",
+    "painter_selection_mode_additive",
+    "painter_selection_mode_subtract",
+    "painter_selection_mode_intersect",
+    "painter_selection_clear",
+    "painter_selection_invert",
+    "painter_selection_all",
+    "painter_undo",
+    "painter_redo",
+];
+
+/// Presentation rows for the controls panel: the declared action list with
+/// human labels. Drift tests keep these names locked to the registry.
+fn painter_control_rows() -> Vec<ControlActionRow> {
+    let rows = [
+        ("tools", "Select Pencil", "painter_select_pencil"),
+        ("tools", "Select Bucket", "painter_select_bucket"),
+        ("pan", "Pan Left", "painter_pan_left"),
+        ("pan", "Pan Right", "painter_pan_right"),
+        ("pan", "Pan Up", "painter_pan_up"),
+        ("pan", "Pan Down", "painter_pan_down"),
+        ("camera", "Swing Left", "painter_swing_left"),
+        ("camera", "Swing Right", "painter_swing_right"),
+        ("camera", "Swing Up", "painter_swing_up"),
+        ("camera", "Swing Down", "painter_swing_down"),
+        ("camera", "Roll Counter-Clockwise", "painter_roll_counter_clockwise"),
+        ("camera", "Roll Clockwise", "painter_roll_clockwise"),
+        ("camera", "Focus Depth Toward", "painter_focus_depth_toward"),
+        ("camera", "Focus Depth Away", "painter_focus_depth_away"),
+        ("camera", "Zoom Out", "painter_zoom_out"),
+        ("camera", "Zoom In", "painter_zoom_in"),
+        ("selection", "Mode: Replace", "painter_selection_mode_replace"),
+        ("selection", "Mode: Additive", "painter_selection_mode_additive"),
+        ("selection", "Mode: Subtract", "painter_selection_mode_subtract"),
+        ("selection", "Mode: Intersect", "painter_selection_mode_intersect"),
+        ("selection", "Clear Plane", "painter_selection_clear"),
+        ("selection", "Invert Plane", "painter_selection_invert"),
+        ("selection", "Select All Plane", "painter_selection_all"),
+        ("history", "Undo", "painter_undo"),
+        ("history", "Redo", "painter_redo"),
+    ];
+    rows.into_iter()
+        .map(|(category, label, action)| ControlActionRow {
+            action: ActionName::new(action),
+            label: label.to_string(),
+            category: category.to_string(),
+        })
+        .collect()
 }
 
 fn main() -> Result<()> {
+    thaum_painter_domain::debug_log::configure_from_env();
     let mut config = BootConfig::default();
     config.asset_root = development_asset_root();
     config.window.title = "thaum-painter".to_string();
@@ -1175,6 +804,20 @@ fn main() -> Result<()> {
 
     let mut modules = ModuleRegistry::new();
     let ui_palette = UiPalette::default();
+    // Per-user controls profile (overrides only), restored from the saved
+    // session. Effective bindings are the declared defaults merged with it;
+    // live dispatch and the controls panel both resolve through this map.
+    let painter_bindings = thaum_painter_domain::tai::painter_bindings();
+    let controls_profile = Rc::new(RefCell::new(
+        persisted_session
+            .as_ref()
+            .map(|session| session.controls_profile.clone())
+            .unwrap_or_default(),
+    ));
+    let effective_painter_bindings = Rc::new(RefCell::new(effective_bindings(
+        &painter_bindings,
+        &controls_profile.borrow(),
+    )));
     let tool_state = Rc::new(RefCell::new(ToolState::default()));
     let timeline_state = Rc::new(RefCell::new(TimelineState::default()));
     let paint_canvas_viewport = Rc::new(RefCell::new(INITIAL_PAINT_CANVAS_VIEWPORT));
@@ -1214,6 +857,11 @@ fn main() -> Result<()> {
                     tool: PaintTool::Fill,
                     icon: '▧',
                     label: "Fill",
+                },
+                ToolDef {
+                    tool: PaintTool::Text,
+                    icon: 'T',
+                    label: "Text",
                 },
             ],
         )
@@ -1325,6 +973,53 @@ fn main() -> Result<()> {
             }
         },
     )));
+    modules.register(Box::new(ControlsPanelModule::new(
+        "painter_controls_panel",
+        ModuleRect {
+            x0: 4,
+            y0: 13,
+            x1: 44,
+            y1: 47,
+        },
+        ui_palette.clone(),
+        painter_control_rows(),
+        {
+            let effective = effective_painter_bindings.clone();
+            move |action| {
+                effective
+                    .borrow()
+                    .bindings_for(action)
+                    .first()
+                    .map(format_raw_input)
+                    .unwrap_or_else(|| "unbound".to_string())
+            }
+        },
+        {
+            let effective = effective_painter_bindings.clone();
+            move |action| {
+                conflicting_actions(&effective.borrow(), action)
+                    .iter()
+                    .filter_map(|other| {
+                        effective
+                            .borrow()
+                            .bindings_for(other)
+                            .first()
+                            .map(format_raw_input)
+                    })
+                    .collect()
+            }
+        },
+        {
+            let profile = controls_profile.clone();
+            let effective = effective_painter_bindings.clone();
+            let defaults = painter_bindings.clone();
+            move |action, binding| {
+                profile.borrow_mut().set_override(action, binding);
+                *effective.borrow_mut() =
+                    effective_bindings(&defaults, &profile.borrow());
+            }
+        },
+    )));
     if let Some(session) = &persisted_session {
         session.renderer.palette.apply_to_runtime(&ui_palette);
         modules.apply_persisted_ui_state(&session.renderer.modules);
@@ -1339,6 +1034,11 @@ fn main() -> Result<()> {
     // the whole drag as one record (one undo per stroke).
     let mut left_stroke_start: Option<(Canvas, String)> = None;
     let mut right_stroke_start: Option<(Canvas, String)> = None;
+    // Live text-entry session: begun by a Text-tool canvas click, ended by
+    // Escape/exit. Pending keystrokes commit as one 'Type Text' record per
+    // segment (Enter starts a new segment), the old commit granularity.
+    let mut text_entry: Option<TextEntryState> = None;
+    let mut text_stroke_start: Option<(Canvas, String)> = None;
     let mut selection_stroke: Option<SelectionStroke> = None;
     let mut active_layer_id = resolved_active_layer_id(
         &shared_document,
@@ -1412,113 +1112,253 @@ fn main() -> Result<()> {
             .is_some_and(|module| module.id() == "paint_canvas_bounds");
 
         for key in &frame.input.pressed_keys {
-            match key {
-                // Inverted from the camera's own right/up so the content
-                // visually moves the way the key points, not the way the
-                // camera's aim point moves.
-                KeyCode::KeyA if hovering_canvas_bounds => state.camera.pan_focus_right(1),
-                KeyCode::KeyD if hovering_canvas_bounds => state.camera.pan_focus_right(-1),
-                KeyCode::KeyW if hovering_canvas_bounds => state.camera.pan_focus_up(-1),
-                KeyCode::KeyS if hovering_canvas_bounds => state.camera.pan_focus_up(1),
-                KeyCode::KeyA => pan_hud_and_focus_right(&mut state.camera, 1),
-                KeyCode::KeyD => pan_hud_and_focus_right(&mut state.camera, -1),
-                KeyCode::KeyW => pan_hud_and_focus_up(&mut state.camera, -1),
-                KeyCode::KeyS => pan_hud_and_focus_up(&mut state.camera, 1),
-                _ => {}
+            // Held pan resolves through the effective binding map too, so a
+            // remap moves the continuous pan behavior along with the press.
+            let held_actions = painter_key_actions(&effective_painter_bindings.borrow(), *key);
+            let binds = |name: &str| {
+                held_actions
+                    .iter()
+                    .any(|action| action.0.as_str() == name)
+            };
+            // Inverted from the camera's own right/up so the content
+            // visually moves the way the key points, not the way the
+            // camera's aim point moves.
+            if binds("painter_pan_left") {
+                if hovering_canvas_bounds {
+                    state.camera.pan_focus_right(1);
+                } else {
+                    pan_hud_and_focus_right(&mut state.camera, 1);
+                }
+            }
+            if binds("painter_pan_right") {
+                if hovering_canvas_bounds {
+                    state.camera.pan_focus_right(-1);
+                } else {
+                    pan_hud_and_focus_right(&mut state.camera, -1);
+                }
+            }
+            if binds("painter_pan_up") {
+                if hovering_canvas_bounds {
+                    state.camera.pan_focus_up(-1);
+                } else {
+                    pan_hud_and_focus_up(&mut state.camera, -1);
+                }
+            }
+            if binds("painter_pan_down") {
+                if hovering_canvas_bounds {
+                    state.camera.pan_focus_up(1);
+                } else {
+                    pan_hud_and_focus_up(&mut state.camera, 1);
+                }
             }
         }
         for key in &frame.input.just_pressed_keys {
-            match key {
-                KeyCode::Numpad4 => reorient_camera_around_viewport_center(
-                    &mut state.camera,
-                    *paint_canvas_viewport.borrow(),
-                    |camera| camera.swing_left(),
-                ),
-                KeyCode::Numpad6 => reorient_camera_around_viewport_center(
-                    &mut state.camera,
-                    *paint_canvas_viewport.borrow(),
-                    |camera| camera.swing_right(),
-                ),
-                KeyCode::Numpad8 => reorient_camera_around_viewport_center(
-                    &mut state.camera,
-                    *paint_canvas_viewport.borrow(),
-                    |camera| camera.swing_up(),
-                ),
-                KeyCode::Numpad2 => reorient_camera_around_viewport_center(
-                    &mut state.camera,
-                    *paint_canvas_viewport.borrow(),
-                    |camera| camera.swing_down(),
-                ),
-                KeyCode::Numpad7 => reorient_camera_around_viewport_center(
-                    &mut state.camera,
-                    *paint_canvas_viewport.borrow(),
-                    |camera| camera.roll = camera.roll.rotate_counter_clockwise(),
-                ),
-                KeyCode::Numpad9 => reorient_camera_around_viewport_center(
-                    &mut state.camera,
-                    *paint_canvas_viewport.borrow(),
-                    |camera| camera.roll = camera.roll.rotate_clockwise(),
-                ),
-                KeyCode::Numpad1 => state.camera.pan_focus_depth(-1),
-                KeyCode::Numpad3 => state.camera.pan_focus_depth(1),
-                KeyCode::Minus | KeyCode::NumpadSubtract => state.camera.zoom_out(),
-                KeyCode::Equal | KeyCode::NumpadAdd => state.camera.zoom_in(),
-                KeyCode::Digit1 => selection.borrow_mut().set_mode(SelectionMode::Replace),
-                KeyCode::Digit2 => selection.borrow_mut().set_mode(SelectionMode::Additive),
-                KeyCode::Digit3 => selection.borrow_mut().set_mode(SelectionMode::Subtract),
-                KeyCode::Digit4 => selection.borrow_mut().set_mode(SelectionMode::Intersect),
-                KeyCode::KeyC => {
-                    selection.borrow_mut().clear_plane();
-                    commit_selection_channel(
+            // While a controls-panel row waits for a captured key, the press
+            // becomes that row's new binding and never dispatches a command.
+            if let Some(label) = raw_key_label(*key) {
+                if modules.dispatch_key_capture(&label).is_some() {
+                    continue;
+                }
+ }
+            // While a typing session is active it owns the keyboard: reserved
+            // camera/depth bindings fall through, session keys route into the
+            // session, and everything else is suppressed.
+            if text_entry.as_ref().is_some_and(|entry| entry.is_active()) {
+                if is_text_mode_reserved_key(*key) {
+                    continue;
+                }
+                let Some(entry_key) = text_entry_key_for_key(*key) else {
+                    continue;
+                };
+                match text_entry.as_mut().unwrap().handle_key(entry_key) {
+                    TextEntryOutcome::Applied { point, cell } => {
+                        if let Some((_, block_id)) = text_stroke_start.as_ref() {
+                            stage_text_entry_change(
+                                &mut shared_document,
+                                &mut canvas,
+                                (point, cell),
+                                &active_layer_id,
+                                block_id,
+                            );
+                        }
+                    }
+                    TextEntryOutcome::Committed => {
+                        // Enter: the pending segment becomes one 'Type Text'
+                        // record; typing continues on the next line as a new
+                        // undo segment.
+                        commit_staged_paint_stroke(
+                            &mut shared_document,
+                            &shared_document_paths,
+                            &mut shared_action_counter,
+                            &session_user_id,
+                            &active_layer_id,
+                            &mut canvas,
+                            text_stroke_start.take(),
+                        )?;
+                        let current_breath = timeline_state.borrow().current_breath;
+                        text_stroke_start = shared_document
+                            .active_raster_block_id(&active_layer_id, current_breath)
+                            .map(|block_id| (canvas.clone(), block_id.clone()));
+                    }
+                    TextEntryOutcome::Finished => {
+                        commit_staged_paint_stroke(
+                            &mut shared_document,
+                            &shared_document_paths,
+                            &mut shared_action_counter,
+                            &session_user_id,
+                            &active_layer_id,
+                            &mut canvas,
+                            text_stroke_start.take(),
+                        )?;
+                        text_entry = None;
+                    }
+                    TextEntryOutcome::Idle | TextEntryOutcome::Ignored => {}
+                }
+                continue;
+            }
+            // Registry-owned keys dispatch by binding name through the
+            // effective map (declared defaults + user profile), one live
+            // behavior per action, so a remap moves the behavior with it.
+            // Unbound keys do nothing: there are no hidden live-only arms.
+            let binding_actions =
+                painter_key_actions(&effective_painter_bindings.borrow(), *key);
+            for action in &binding_actions {
+                if let Some(tool) = painter_tool_for_action(action) {
+                    let hand = tool_state.borrow().active_hand;
+                    tool_state.borrow_mut().set_tool_for_hand(hand, tool);
+                    continue;
+                }
+                match action.0.as_str() {
+                    "painter_pan_left" if hovering_canvas_bounds => {
+                        state.camera.pan_focus_right(1)
+                    }
+                    "painter_pan_left" => pan_hud_and_focus_right(&mut state.camera, 1),
+                    "painter_pan_right" if hovering_canvas_bounds => {
+                        state.camera.pan_focus_right(-1)
+                    }
+                    "painter_pan_right" => pan_hud_and_focus_right(&mut state.camera, -1),
+                    "painter_pan_up" if hovering_canvas_bounds => {
+                        state.camera.pan_focus_up(-1)
+                    }
+                    "painter_pan_up" => pan_hud_and_focus_up(&mut state.camera, -1),
+                    "painter_pan_down" if hovering_canvas_bounds => {
+                        state.camera.pan_focus_up(1)
+                    }
+                    "painter_pan_down" => pan_hud_and_focus_up(&mut state.camera, 1),
+                    "painter_swing_left" => reorient_camera_around_viewport_center(
+                        &mut state.camera,
+                        *paint_canvas_viewport.borrow(),
+                        |camera| camera.swing_left(),
+                    ),
+                    "painter_swing_right" => reorient_camera_around_viewport_center(
+                        &mut state.camera,
+                        *paint_canvas_viewport.borrow(),
+                        |camera| camera.swing_right(),
+                    ),
+                    "painter_swing_up" => reorient_camera_around_viewport_center(
+                        &mut state.camera,
+                        *paint_canvas_viewport.borrow(),
+                        |camera| camera.swing_up(),
+                    ),
+                    "painter_swing_down" => reorient_camera_around_viewport_center(
+                        &mut state.camera,
+                        *paint_canvas_viewport.borrow(),
+                        |camera| camera.swing_down(),
+                    ),
+                    "painter_roll_counter_clockwise" => reorient_camera_around_viewport_center(
+                        &mut state.camera,
+                        *paint_canvas_viewport.borrow(),
+                        |camera| camera.roll = camera.roll.rotate_counter_clockwise(),
+                    ),
+                    "painter_roll_clockwise" => reorient_camera_around_viewport_center(
+                        &mut state.camera,
+                        *paint_canvas_viewport.borrow(),
+                        |camera| camera.roll = camera.roll.rotate_clockwise(),
+                    ),
+                    "painter_focus_depth_toward" => state.camera.pan_focus_depth(-1),
+                    "painter_focus_depth_away" => state.camera.pan_focus_depth(1),
+                    "painter_zoom_out" => state.camera.zoom_out(),
+                    "painter_zoom_in" => state.camera.zoom_in(),
+                    "painter_selection_mode_replace" => {
+                        selection.borrow_mut().set_mode(SelectionMode::Replace)
+                    }
+                    "painter_selection_mode_additive" => {
+                        selection.borrow_mut().set_mode(SelectionMode::Additive)
+                    }
+                    "painter_selection_mode_subtract" => {
+                        selection.borrow_mut().set_mode(SelectionMode::Subtract)
+                    }
+                    "painter_selection_mode_intersect" => {
+                        selection.borrow_mut().set_mode(SelectionMode::Intersect)
+                    }
+                    "painter_selection_clear" => {
+                        selection.borrow_mut().clear_plane();
+                        commit_selection_channel(
+                            &mut shared_document,
+                            &shared_document_paths,
+                            std::iter::empty(),
+                            SelectionMode::Replace,
+                            &mut active_layer_id,
+                            timeline_state.borrow().current_breath,
+                            &mut canvas,
+                            &selection,
+                            &mut shared_action_counter,
+                        );
+                    }
+                    "painter_selection_invert" => {
+                        selection.borrow_mut().invert_plane();
+                        let points: Vec<CellPoint> =
+                            selection.borrow().plane().iter().collect();
+                        commit_selection_channel(
+                            &mut shared_document,
+                            &shared_document_paths,
+                            points,
+                            SelectionMode::Replace,
+                            &mut active_layer_id,
+                            timeline_state.borrow().current_breath,
+                            &mut canvas,
+                            &selection,
+                            &mut shared_action_counter,
+                        );
+                    }
+                    "painter_selection_all" => {
+                        selection.borrow_mut().select_all_plane();
+                        let points: Vec<CellPoint> =
+                            selection.borrow().plane().iter().collect();
+                        commit_selection_channel(
+                            &mut shared_document,
+                            &shared_document_paths,
+                            points,
+                            SelectionMode::Replace,
+                            &mut active_layer_id,
+                            timeline_state.borrow().current_breath,
+                            &mut canvas,
+                            &selection,
+                            &mut shared_action_counter,
+                        );
+                    }
+                    "painter_undo" => apply_shared_history_action(
                         &mut shared_document,
                         &shared_document_paths,
-                        std::iter::empty(),
-                        SelectionMode::Replace,
-                    );
-                }
-                KeyCode::KeyI => {
-                    selection.borrow_mut().invert_plane();
-                    let points: Vec<CellPoint> =
-                        selection.borrow().plane().iter().collect();
-                    commit_selection_channel(
+                        &mut shared_action_counter,
+                        &session_user_id,
+                        &active_layer_id,
+                        &mut canvas,
+                        true,
+                        timeline_state.borrow().current_breath,
+                    )?,
+                    "painter_redo" => apply_shared_history_action(
                         &mut shared_document,
                         &shared_document_paths,
-                        points,
-                        SelectionMode::Replace,
-                    );
+                        &mut shared_action_counter,
+                        &session_user_id,
+                        &active_layer_id,
+                        &mut canvas,
+                        false,
+                        timeline_state.borrow().current_breath,
+                    )?,
+                    _ => {}
                 }
-                KeyCode::KeyX => {
-                    selection.borrow_mut().select_all_plane();
-                    let points: Vec<CellPoint> =
-                        selection.borrow().plane().iter().collect();
-                    commit_selection_channel(
-                        &mut shared_document,
-                        &shared_document_paths,
-                        points,
-                        SelectionMode::Replace,
-                    );
-                }
-                KeyCode::KeyZ => apply_shared_history_action(
-                    &mut shared_document,
-                    &shared_document_paths,
-                    &mut shared_action_counter,
-                    &session_user_id,
-                    &active_layer_id,
-                    &mut canvas,
-                    true,
-                    timeline_state.borrow().current_breath,
-                )?,
-                KeyCode::KeyY => apply_shared_history_action(
-                    &mut shared_document,
-                    &shared_document_paths,
-                    &mut shared_action_counter,
-                    &session_user_id,
-                    &active_layer_id,
-                    &mut canvas,
-                    false,
-                    timeline_state.borrow().current_breath,
-                )?,
-                _ => {}
             }
         }
 
@@ -1530,6 +1370,7 @@ fn main() -> Result<()> {
         );
 
         let camera = state.camera;
+        let view_orientation = camera_view_orientation_for_camera(camera.swing, camera.roll);
         let cell_clip_size = cell_clip_size_for_state(state, frame.surface_size);
         let to_world = move |surface_units: [f32; 2]| {
             remap_surface_units_to_active_plane_world(camera, surface_units, cell_clip_size)
@@ -1591,8 +1432,10 @@ fn main() -> Result<()> {
                     &selection,
                 )?;
             }
-            let handled_module = !handled_command_bar
-                && modules
+            let module_hit = if handled_command_bar {
+                None
+            } else {
+                modules
                     .dispatch_pointer_event_at(
                         screen.x,
                         screen.y,
@@ -1602,7 +1445,18 @@ fn main() -> Result<()> {
                             button: ModulePointerButton::Left,
                         },
                     )
-                    .is_some();
+                    .map(str::to_string)
+            };
+            // The drawing-space module sits under the whole paint surface, so its hit
+            // must not swallow canvas clicks: only clicks on its gizmo bar or wheel
+            // chip count as handled; everything else falls through to painting.
+            let handled_module = match module_hit.as_deref() {
+                Some("paint_canvas_bounds") => {
+                    PaintCanvasBoundsModule::is_gizmo_hit(paint_viewport, screen.x, screen.y)
+                }
+                Some(_) => true,
+                None => false,
+            };
             apply_layers_panel_action(
                 layers_panel_state.borrow_mut().take_pending_action(),
                 &mut shared_document,
@@ -1613,6 +1467,7 @@ fn main() -> Result<()> {
                 &mut selected_property_id,
                 &mut canvas,
                 &timeline_state,
+                &selection,
             );
             if handled_command_bar || handled_module || modules.is_pointer_captured() {
                 selection_stroke = None;
@@ -1627,6 +1482,7 @@ fn main() -> Result<()> {
                 if paint_surface.contains(screen.x, screen.y)
                     && bounds.contains(position)
                     && !PaintCanvasBoundsModule::is_gizmo_hit(paint_viewport, screen.x, screen.y)
+                    && text_entry.as_ref().map_or(true, |entry| !entry.is_active())
                 {
                     left_drag_position = Some(position);
                     if tool_state.borrow().hand_state(PaintHand::Left).target
@@ -1634,7 +1490,9 @@ fn main() -> Result<()> {
                     {
                         let mode = match tool_state.borrow().tool_for_hand(PaintHand::Left) {
                             PaintTool::Erase => SelectionMode::Subtract,
-                            PaintTool::Brush | PaintTool::Fill => selection.borrow().mode(),
+                            PaintTool::Brush | PaintTool::Fill | PaintTool::Text => {
+                                selection.borrow().mode()
+                            }
                         };
                         let mut stroke = SelectionStroke::new(PaintHand::Left, mode);
                         stroke.extend(tool_state.borrow().selection_points_for_hand(
@@ -1642,12 +1500,38 @@ fn main() -> Result<()> {
                             position,
                             PaintHand::Left,
                             bounds,
+                            view_orientation,
                         ));
                         selection_stroke = Some(stroke);
                     } else {
                         let target = tool_state.borrow().hand_state(PaintHand::Left).target;
                         let mut selection_state = selection.borrow_mut();
                         if target == PaintTarget::Image {
+                            // Text tool: the click begins a typing session anchored at
+                            // the click cell with the hand's brush captured; typing then
+                            // owns the keyboard until Escape/exit.
+                            if tool_state.borrow().tool_for_hand(PaintHand::Left) == PaintTool::Text {
+                                let current_breath = timeline_state.borrow().current_breath;
+                                if let Some(block_id) = shared_document
+                                    .active_raster_block_id(&active_layer_id, current_breath)
+                                {
+                                    let brush_cell = tool_state
+                                        .borrow()
+                                        .text_brush_cell_for_hand(PaintHand::Left);
+                                    let (options, space_replace) = {
+                                        let ts = tool_state.borrow();
+                                        (ts.text_options, ts.text_space_replace)
+                                    };
+                                    text_entry = Some(TextEntryState::begin(
+                                        position,
+                                        view_orientation,
+                                        options,
+                                        space_replace,
+                                        brush_cell,
+                                    ));
+                                    text_stroke_start = Some((canvas.clone(), block_id.clone()));
+                                }
+                            } else {
                             // Paint strokes land on the raster block covering the playhead
                             // breath; a breath in a gap has no canvas, so the stroke is rejected.
                             let current_breath = timeline_state.borrow().current_breath;
@@ -1663,9 +1547,11 @@ fn main() -> Result<()> {
                                     [position],
                                     PaintHand::Left,
                                     bounds,
+                                    view_orientation,
                                     &active_layer_id,
                                     &block_id,
                                 );
+                            }
                             }
                         } else {
                             tool_state.borrow_mut().apply_at_for_hand(
@@ -1674,17 +1560,21 @@ fn main() -> Result<()> {
                                 position,
                                 PaintHand::Left,
                                 bounds,
+                                view_orientation,
                             );
                         }
                     }
+                } else {
                 }
             }
         } else if let Some(click) = frame.input.just_right_clicked {
             let world = to_world(click);
             let screen = to_screen(click);
             let handled_command_bar = command_bar.contains(screen.x, screen.y);
-            let handled_module = !handled_command_bar
-                && modules
+            // Same drawing-space passthrough as the left-click path: only gizmo
+            // bar and wheel chip hits count as handled; the rest fall through.
+            let handled_module = match (!handled_command_bar).then(|| {
+                modules
                     .dispatch_pointer_event_at(
                         screen.x,
                         screen.y,
@@ -1694,7 +1584,14 @@ fn main() -> Result<()> {
                             button: ModulePointerButton::Right,
                         },
                     )
-                    .is_some();
+                    .map(str::to_string)
+            }) {
+                Some(Some(id)) if id == "paint_canvas_bounds" => {
+                    PaintCanvasBoundsModule::is_gizmo_hit(paint_viewport, screen.x, screen.y)
+                }
+                Some(Some(_)) => true,
+                _ => false,
+            };
             apply_layers_panel_action(
                 layers_panel_state.borrow_mut().take_pending_action(),
                 &mut shared_document,
@@ -1705,6 +1602,7 @@ fn main() -> Result<()> {
                 &mut selected_property_id,
                 &mut canvas,
                 &timeline_state,
+                &selection,
             );
             if handled_command_bar || handled_module || modules.is_pointer_captured() {
                 selection_stroke = None;
@@ -1719,6 +1617,7 @@ fn main() -> Result<()> {
                 if paint_surface.contains(screen.x, screen.y)
                     && bounds.contains(position)
                     && !PaintCanvasBoundsModule::is_gizmo_hit(paint_viewport, screen.x, screen.y)
+                    && text_entry.as_ref().map_or(true, |entry| !entry.is_active())
                 {
                     right_drag_position = Some(position);
                     if tool_state.borrow().hand_state(PaintHand::Right).target
@@ -1726,7 +1625,9 @@ fn main() -> Result<()> {
                     {
                         let mode = match tool_state.borrow().tool_for_hand(PaintHand::Right) {
                             PaintTool::Erase => SelectionMode::Subtract,
-                            PaintTool::Brush | PaintTool::Fill => selection.borrow().mode(),
+                            PaintTool::Brush | PaintTool::Fill | PaintTool::Text => {
+                                selection.borrow().mode()
+                            }
                         };
                         let mut stroke = SelectionStroke::new(PaintHand::Right, mode);
                         stroke.extend(tool_state.borrow().selection_points_for_hand(
@@ -1734,12 +1635,36 @@ fn main() -> Result<()> {
                             position,
                             PaintHand::Right,
                             bounds,
+                            view_orientation,
                         ));
                         selection_stroke = Some(stroke);
                     } else {
                         let target = tool_state.borrow().hand_state(PaintHand::Right).target;
                         let mut selection_state = selection.borrow_mut();
                         if target == PaintTarget::Image {
+                            // Text tool: same typing-session begin as the left hand.
+                            if tool_state.borrow().tool_for_hand(PaintHand::Right) == PaintTool::Text {
+                                let current_breath = timeline_state.borrow().current_breath;
+                                if let Some(block_id) = shared_document
+                                    .active_raster_block_id(&active_layer_id, current_breath)
+                                {
+                                    let brush_cell = tool_state
+                                        .borrow()
+                                        .text_brush_cell_for_hand(PaintHand::Right);
+                                    let (options, space_replace) = {
+                                        let ts = tool_state.borrow();
+                                        (ts.text_options, ts.text_space_replace)
+                                    };
+                                    text_entry = Some(TextEntryState::begin(
+                                        position,
+                                        view_orientation,
+                                        options,
+                                        space_replace,
+                                        brush_cell,
+                                    ));
+                                    text_stroke_start = Some((canvas.clone(), block_id.clone()));
+                                }
+                            } else {
                             let current_breath = timeline_state.borrow().current_breath;
                             if let Some(block_id) = shared_document
                                 .active_raster_block_id(&active_layer_id, current_breath)
@@ -1753,9 +1678,11 @@ fn main() -> Result<()> {
                                     [position],
                                     PaintHand::Right,
                                     bounds,
+                                    view_orientation,
                                     &active_layer_id,
                                     &block_id,
                                 );
+                            }
                             }
                         } else {
                             tool_state.borrow_mut().apply_at_for_hand(
@@ -1764,6 +1691,7 @@ fn main() -> Result<()> {
                                 position,
                                 PaintHand::Right,
                                 bounds,
+                                view_orientation,
                             );
                         }
                     }
@@ -1784,6 +1712,7 @@ fn main() -> Result<()> {
                     &mut selected_property_id,
                     &mut canvas,
                     &timeline_state,
+                    &selection,
                 );
                 if command_bar.contains(screen.x, screen.y) || modules.is_pointer_captured() {
                     selection_stroke = None;
@@ -1795,7 +1724,10 @@ fn main() -> Result<()> {
                         y: world.y,
                         z: world.z,
                     };
-                    if paint_surface.contains(screen.x, screen.y) && bounds.contains(position) {
+                    if paint_surface.contains(screen.x, screen.y)
+                        && bounds.contains(position)
+                        && text_entry.as_ref().map_or(true, |entry| !entry.is_active())
+                    {
                         let stroke_positions = left_drag_position
                             .map(|last| interpolate_cell_path(last, position))
                             .unwrap_or_else(|| vec![position]);
@@ -1808,6 +1740,7 @@ fn main() -> Result<()> {
                                         *anchor,
                                         PaintHand::Left,
                                         bounds,
+                                        view_orientation,
                                     ));
                                 }
                             }
@@ -1824,6 +1757,7 @@ fn main() -> Result<()> {
                                         stroke_positions,
                                         PaintHand::Left,
                                         bounds,
+                                        view_orientation,
                                         &active_layer_id,
                                         block_id,
                                     );
@@ -1836,6 +1770,7 @@ fn main() -> Result<()> {
                                         anchor,
                                         PaintHand::Left,
                                         bounds,
+                                        view_orientation,
                                     );
                                 }
                             }
@@ -1859,7 +1794,10 @@ fn main() -> Result<()> {
                         y: world.y,
                         z: world.z,
                     };
-                    if paint_surface.contains(screen.x, screen.y) && bounds.contains(position) {
+                    if paint_surface.contains(screen.x, screen.y)
+                        && bounds.contains(position)
+                        && text_entry.as_ref().map_or(true, |entry| !entry.is_active())
+                    {
                         let stroke_positions = right_drag_position
                             .map(|last| interpolate_cell_path(last, position))
                             .unwrap_or_else(|| vec![position]);
@@ -1872,6 +1810,7 @@ fn main() -> Result<()> {
                                         *anchor,
                                         PaintHand::Right,
                                         bounds,
+                                        view_orientation,
                                     ));
                                 }
                             }
@@ -1888,6 +1827,7 @@ fn main() -> Result<()> {
                                         stroke_positions,
                                         PaintHand::Right,
                                         bounds,
+                                        view_orientation,
                                         &active_layer_id,
                                         block_id,
                                     );
@@ -1900,6 +1840,7 @@ fn main() -> Result<()> {
                                         anchor,
                                         PaintHand::Right,
                                         bounds,
+                                        view_orientation,
                                     );
                                 }
                             }
@@ -1927,6 +1868,11 @@ fn main() -> Result<()> {
                     &shared_document_paths,
                     points,
                     SelectionMode::Replace,
+                    &mut active_layer_id,
+                    timeline_state.borrow().current_breath,
+                    &mut canvas,
+                    &selection,
+                    &mut shared_action_counter,
                 );
             }
         }
@@ -2023,6 +1969,7 @@ fn main() -> Result<()> {
                 &mut selected_property_id,
                 &mut canvas,
                 &timeline_state,
+                &selection,
             );
         }
         left_pointer_was_down = frame.input.pointer_down;
@@ -2051,6 +1998,7 @@ fn main() -> Result<()> {
             *drawing_space_wheel_mode.borrow(),
             selection.borrow().mode(),
             &tool_state.borrow(),
+            &controls_profile.borrow(),
         );
         if let Ok(session_text) = serde_json::to_string_pretty(&session_state) {
             if last_saved_session_text.as_ref() != Some(&session_text)

@@ -2,19 +2,10 @@ use crate::manifest::PropertyBlock;
 use crate::properties::block_covering_breath;
 
 /// Live, unsaved playhead and auto-key state for the painter session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TimelineState {
     pub current_breath: u32,
     pub auto_key_enabled: bool,
-}
-
-impl Default for TimelineState {
-    fn default() -> Self {
-        Self {
-            current_breath: 0,
-            auto_key_enabled: false,
-        }
-    }
 }
 
 impl TimelineState {

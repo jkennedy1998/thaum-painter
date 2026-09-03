@@ -1157,10 +1157,18 @@ impl Module for LayersPanelModule {
                         new_length,
                     ));
                 }
-                if self.property_block_drag.is_some() {
-                    let local_x = x - self.rect.x0;
-                    let current_breath = self.breath_at_x(local_x) as i64;
-                    let drag = self.property_block_drag.as_mut().unwrap();
+                // Compute the breath up front: `breath_at_x` borrows all of
+                // `self`, which conflicts with the mutable drag borrow below.
+                let current_breath = self
+                    .property_block_drag
+                    .as_ref()
+                    .map(|_| {
+                        let local_x = x - self.rect.x0;
+                        self.breath_at_x(local_x) as i64
+                    });
+                if let (Some(current_breath), Some(drag)) =
+                    (current_breath, self.property_block_drag.as_mut())
+                {
                     let delta = current_breath - drag.anchor_breath as i64;
                     if drag.mode == PropertyDragMode::Swap {
                         drag.swap_target_block_id = self
