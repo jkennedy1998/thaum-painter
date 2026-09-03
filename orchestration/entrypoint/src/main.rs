@@ -834,6 +834,38 @@ mod tests {
     }
 
     #[test]
+    fn text_entry_keys_pick_up_the_shifted_glyph() {
+        assert_eq!(
+            text_entry_key_for_key(KeyCode::KeyC, false),
+            Some(TextEntryKey::Char('c'))
+        );
+        assert_eq!(
+            text_entry_key_for_key(KeyCode::KeyC, true),
+            Some(TextEntryKey::Char('C'))
+        );
+        assert_eq!(
+            text_entry_key_for_key(KeyCode::Digit6, true),
+            Some(TextEntryKey::Char('^'))
+        );
+        assert_eq!(
+            text_entry_key_for_key(KeyCode::Digit7, true),
+            Some(TextEntryKey::Char('&'))
+        );
+        assert_eq!(
+            text_entry_key_for_key(KeyCode::Digit1, true),
+            Some(TextEntryKey::Char('!'))
+        );
+        assert_eq!(
+            text_entry_key_for_key(KeyCode::Minus, true),
+            Some(TextEntryKey::Char('_'))
+        );
+        assert_eq!(
+            text_entry_key_for_key(KeyCode::Minus, false),
+            Some(TextEntryKey::Char('-'))
+        );
+    }
+
+    #[test]
     fn typing_reserved_inputs_cover_the_camera_and_depth_bindings_only() {
         let reserved = typing_reserved_inputs(&thaum_painter_domain::tai::painter_bindings());
         let labels: Vec<&str> = reserved
@@ -1027,7 +1059,9 @@ fn painter_key_actions(bindings: &ActionBindingMap, key: KeyCode) -> Vec<ActionN
 /// Translates a physical key press into a text-entry key while typing. Single-
 /// character labels (letters, digits, `-`, `=`) become chars; multi-character
 /// labels (numpad keys) have no glyph, so they fall through as suppressed.
-fn text_entry_key_for_key(key: KeyCode) -> Option<TextEntryKey> {
+/// `shift_held` picks the shifted glyph: uppercase for letters, the US-layout
+/// symbol-row pair for digits and symbols (`1`→`!`, `-`→`_`, ...).
+fn text_entry_key_for_key(key: KeyCode, shift_held: bool) -> Option<TextEntryKey> {
     match key {
         KeyCode::Space => Some(TextEntryKey::Space),
         KeyCode::Enter | KeyCode::NumpadEnter => Some(TextEntryKey::Enter),
@@ -1044,8 +1078,74 @@ fn text_entry_key_for_key(key: KeyCode) -> Option<TextEntryKey> {
             if chars.next().is_some() {
                 return None;
             }
-            Some(TextEntryKey::Char(ch.to_ascii_lowercase()))
+            Some(TextEntryKey::Char(shifted_char(ch, shift_held)))
         }),
+    }
+}
+
+/// US-layout shifted glyph for one printable base character: uppercase for
+/// letters, the symbol-row pair otherwise. Only keys `raw_key_label` maps to
+/// single chars reach this (letters, digits, `-`, `=`); the rest is future
+/// proofing for wider key tables.
+fn shifted_char(ch: char, shift_held: bool) -> char {
+    if !shift_held {
+        return ch.to_ascii_lowercase();
+    }
+    match ch {
+        'a'..='z' => ch.to_ascii_uppercase(),
+        '1' => '!',
+        '2' => '@',
+        '3' => '#',
+        '4' => '$',
+        '5' => '%',
+        '6' => '^',
+        '7' => '&',
+        '8' => '*',
+        '9' => '(',
+        '0' => ')',
+        '-' => '_',
+        '=' => '+',
+        other => other,
+    }
+}
+
+/// Feeds one translated key into an open in-place number-field edit: digits
+/// and `-` build the buffer, Backspace/Delete erase, Enter commits the
+/// clamped value into the tool state, Escape cancels. Every other key is
+/// consumed silently — the edit owns the surface while it is open. Caller
+/// guards on an open edit.
+fn handle_number_field_edit_key(
+    entry_key: TextEntryKey,
+    number_edit: &Rc<RefCell<Option<NumberFieldEdit>>>,
+    tool_state: &RefCell<ToolState>,
+) {
+    match entry_key {
+        TextEntryKey::Enter => {
+            if let Some(edit) = number_edit.borrow_mut().take() {
+                if let Some(value) = edit.commit(-9, 9) {
+                    let mut tool_state = tool_state.borrow_mut();
+                    if edit.row_id == "text_enter_step" {
+                        tool_state.set_text_enter_step_axis(edit.field.min(2), value);
+                    } else {
+                        tool_state.set_text_char_step_axis(edit.field.min(2), value);
+                    }
+                }
+            }
+        }
+        TextEntryKey::Escape => {
+            number_edit.borrow_mut().take();
+        }
+        TextEntryKey::Backspace | TextEntryKey::Delete => {
+            if let Some(edit) = number_edit.borrow_mut().as_mut() {
+                edit.backspace();
+            }
+        }
+        TextEntryKey::Char(ch) => {
+            if let Some(edit) = number_edit.borrow_mut().as_mut() {
+                edit.push(ch);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1350,6 +1450,11 @@ fn main() -> Result<()> {
             }
         }
         for key in &frame.input.just_pressed_keys {
+            // Shift state comes from the held-key set (winit reports the
+            // modifier itself as a pressed physical key), so shifted glyphs
+            // reach both the text session and open number-field edits.
+            let shift_held = frame.input.pressed_keys.contains(&KeyCode::ShiftLeft)
+                || frame.input.pressed_keys.contains(&KeyCode::ShiftRight);
             // While typing mode owns the input surface: session keys route
             // into the typing session, reserved camera/depth inputs fall
             // through to live dispatch, and everything else — including
@@ -1361,47 +1466,12 @@ fn main() -> Result<()> {
                 match route {
                     TypingRoute::Suppressed => continue,
                     TypingRoute::Owned => {
-                        let Some(entry_key) = text_entry_key_for_key(*key) else {
+                        let Some(entry_key) = text_entry_key_for_key(*key, shift_held) else {
                             continue;
                         };
-                        // An open number-field edit consumes the keys first:
-                        // digits and '-' build the buffer, Backspace erases,
-                        // Enter commits into the tool state, Escape cancels.
+                        // An open number-field edit consumes the keys first.
                         if number_edit.borrow().is_some() {
-                            match entry_key {
-                                TextEntryKey::Enter => {
-                                    if let Some(edit) = number_edit.borrow_mut().take() {
-                                        if let Some(value) = edit.commit(-9, 9) {
-                                            let mut tool_state = tool_state.borrow_mut();
-                                            if edit.row_id == "text_enter_step" {
-                                                tool_state.set_text_enter_step_axis(
-                                                    edit.field.min(2),
-                                                    value,
-                                                );
-                                            } else {
-                                                tool_state.set_text_char_step_axis(
-                                                    edit.field.min(2),
-                                                    value,
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                                TextEntryKey::Escape => {
-                                    number_edit.borrow_mut().take();
-                                }
-                                TextEntryKey::Backspace | TextEntryKey::Delete => {
-                                    if let Some(edit) = number_edit.borrow_mut().as_mut() {
-                                        edit.backspace();
-                                    }
-                                }
-                                TextEntryKey::Char(ch) => {
-                                    if let Some(edit) = number_edit.borrow_mut().as_mut() {
-                                        edit.push(ch);
-                                    }
-                                }
-                                _ => {}
-                            }
+                            handle_number_field_edit_key(entry_key, &number_edit, &tool_state);
                             continue;
                         }
                         match text_entry
