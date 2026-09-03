@@ -41,7 +41,7 @@ use thaum_renderer_domain::{
     remap_surface_units_to_flat_2d_local, ActionBindingMap, ActionName, CellPoint, CommandBar,
     CommandBarButton, CommandBarClickOutcome, Composition, ControlActionRow, ControlsPanelModule,
     ControlsProfile, conflicting_actions, effective_bindings, format_raw_input,
-    ModulePointerButton, ModulePointerEvent, ModuleRect, ModuleRegistry, Module,
+    ModulePointerButton, ModulePointerEvent, ModuleRect, ModuleRegistry,
     PersistedRendererUiSessionState, RawInput, UiColorRole, UiCustomizationModule, UiPalette,
 };
 use winit::keyboard::KeyCode;
