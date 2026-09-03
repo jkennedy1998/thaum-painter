@@ -2,7 +2,10 @@
 //! A lasso drag records the freehand bound; release rasterizes it through
 //! the pure `lasso` operation and applies it through the hand's tool state.
 
-use thaum_renderer_domain::{Cell, CellColor, CellGraphic, CellGroup, CellPoint, CellWeight, WorldPoint};
+use thaum_renderer_domain::{
+    Cell, CellColor, CellGraphic, CellGroup, CellPoint, CellWeight, WorldPoint,
+    CELL_SHADER_VIVID_FLASH,
+};
 
 use crate::tool_state::PaintHand;
 
@@ -28,8 +31,7 @@ impl LassoStroke {
     }
 }
 
-/// Overlay preview for an in-progress lasso: draws the bound path itself,
-/// never the interior — the interior only exists once the stroke releases.
+/// Overlay preview for an in-progress lasso: draws the bound path itself.
 pub fn build_lasso_path_cell_group(stroke: &LassoStroke) -> CellGroup {
     let mut group = CellGroup::new(WorldPoint { x: 0, y: 0, z: 0 });
     for position in &stroke.path {
@@ -38,6 +40,26 @@ pub fn build_lasso_path_cell_group(stroke: &LassoStroke) -> CellGroup {
             graphic: CellGraphic::Glyph('◌'),
             color: CellColor::Flat([0.55, 0.75, 1.0, 1.0]),
             weight: CellWeight::from_index_clamped(3),
+            ..Cell::default()
+        });
+    }
+    group
+}
+
+/// Live interior preview for an in-progress lasso: one flashing cell per
+/// point the release commit will edit, produced from the same lasso seam the
+/// commit consumes. The cells carry the renderer's `CELL_SHADER_VIVID_FLASH`
+/// shader, so each one alternates between hidden (the current drawing shows
+/// through) and a vivid dot in the flash color.
+pub fn build_lasso_preview_cell_group(points: &[CellPoint], flash_color: CellColor) -> CellGroup {
+    let mut group = CellGroup::new(WorldPoint { x: 0, y: 0, z: 0 });
+    for position in points {
+        group.insert(Cell {
+            position: *position,
+            graphic: CellGraphic::Glyph('•'),
+            color: flash_color,
+            weight: CellWeight::from_index_clamped(3),
+            shader_stack: vec![CELL_SHADER_VIVID_FLASH],
             ..Cell::default()
         });
     }
@@ -64,5 +86,23 @@ mod tests {
         let mut stroke = LassoStroke::new(PaintHand::Right, point(0, 0));
         stroke.extend(&[point(1, 0), point(2, 0)]);
         assert_eq!(stroke.path, vec![point(0, 0), point(1, 0), point(2, 0)]);
+    }
+
+    #[test]
+    fn the_interior_preview_flashes_one_vivid_dot_per_enclosed_cell() {
+        let points = vec![point(0, 0), point(1, 0), point(1, 1)];
+        let group = build_lasso_preview_cell_group(&points, CellColor::Flat([1.0, 0.0, 0.0, 1.0]));
+        let cells: Vec<&Cell> = group.iter_cells().collect();
+        assert_eq!(cells.len(), 3);
+        for cell in &cells {
+            assert_eq!(cell.graphic, CellGraphic::Glyph('•'));
+            assert_eq!(cell.shader_stack, vec![CELL_SHADER_VIVID_FLASH]);
+        }
+        assert!(cells.iter().any(|c| c.position == point(1, 1)));
+    }
+
+    #[test]
+    fn an_empty_preview_region_builds_an_empty_group() {
+        assert_eq!(build_lasso_preview_cell_group(&[], CellColor::default()).iter_cells().count(), 0);
     }
 }

@@ -539,15 +539,29 @@ impl ToolState {
         hand: PaintHand,
         orientation: CameraViewOrientation,
     ) {
-        if !self.hand_state(hand).edit_channels.any_enabled() {
-            return;
-        }
-        let points =
-            selection.filter_plane_edit_points(crate::lasso::lasso_points(path, orientation));
+        let points = self.lasso_edit_points(selection, path, hand, orientation);
         for point in points {
             let painted = self.resolved_painted_cell(canvas.get(&point), hand);
             brush::apply_brush(canvas, point, painted);
         }
+    }
+
+    /// The image-edit half of the lasso: exactly the cells `apply_lasso_for_hand`
+    /// will paint for the hand's bound — the enclosed region rasterized through
+    /// the pure lasso operation, filtered by the current selection, and gated by
+    /// the hand's edit channels. The in-progress preview consumes this same seam
+    /// so the flashing area is exactly what release will edit.
+    pub fn lasso_edit_points(
+        &self,
+        selection: &PainterSelection,
+        path: &[CellPoint],
+        hand: PaintHand,
+        orientation: CameraViewOrientation,
+    ) -> Vec<CellPoint> {
+        if !self.hand_state(hand).edit_channels.any_enabled() {
+            return Vec::new();
+        }
+        selection.filter_plane_edit_points(crate::lasso::lasso_points(path, orientation))
     }
 
     /// The selection-surface half of the lasso: the enclosed cells of the
@@ -1182,6 +1196,30 @@ mod tests {
         assert!(selection.plane().contains(point(0, 0)));
         assert!(selection.plane().contains(point(1, 0)));
         assert!(!selection.plane().contains(point(2, 0)));
+    }
+
+    #[test]
+    fn lasso_edit_points_match_what_release_will_paint() {
+        // The in-progress preview consumes this seam: the points must be the
+        // enclosed region gated by selection and edit channels — exactly what
+        // apply_lasso_for_hand paints on release.
+        let mut tool_state = ToolState::default();
+        tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Lasso);
+        let selection = selection();
+        let path = [point(0, 0), point(2, 0), point(2, 2), point(0, 2)];
+
+        let points = tool_state.lasso_edit_points(&selection, &path, PaintHand::Left, flat_view());
+        assert_eq!(points.len(), 9);
+        assert!(points.contains(&point(1, 1)));
+
+        tool_state.left_hand.edit_channels = ChannelMask {
+            graphic: false,
+            color: false,
+            weight: false,
+        };
+        assert!(tool_state
+            .lasso_edit_points(&selection, &path, PaintHand::Left, flat_view())
+            .is_empty());
     }
 
     #[test]

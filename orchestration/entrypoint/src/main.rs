@@ -21,7 +21,7 @@ use thaum_painter_domain::{
         apply_layers_panel_action, build_selected_layer_property_rows, resolved_active_layer_id,
     }, render_space::build_document_layer_cell_groups, save_shared_document_snapshot, selection_stroke::{
         build_plane_selection_cell_group, interpolate_cell_path, SelectionStroke,
-    }, lasso_stroke::{build_lasso_path_cell_group, LassoStroke}, session_document::{
+    }, lasso_stroke::{build_lasso_path_cell_group, build_lasso_preview_cell_group, LassoStroke}, session_document::{
         commit_selection_channel, commit_staged_paint_stroke,
         apply_shared_history_action, recover_snapshot_conflict, stage_image_edit_chunk,
         stage_text_entry_change, sync_canvas_from_active_layer,
@@ -436,6 +436,11 @@ fn sync_renderer_background_from_ui_palette(state: &mut BootState, ui_palette: &
         blue as f64 / 255.0,
         1.0,
     ];
+    // Flash lane: overlay shaders (lasso interior preview, selection flash)
+    // alternate affected cells toward the palette's vivid role.
+    if let Some(packed) = ui_palette.get(UiColorRole::Vivid).to_packed_rgba() {
+        state.data_lanes.set_flash(packed);
+    }
 }
 
 #[cfg(test)]
@@ -2356,10 +2361,31 @@ fn main() -> Result<()> {
             selection_stroke.as_ref(),
             flash_on,
         ));
-        // In-progress lasso bound: the path itself only; the interior is
-        // committed on release, never previewed into the drawing.
+        // In-progress lasso bound: the bound path itself, plus a live interior
+        // preview built from the same lasso seam release consumes — the exact
+        // cells release will edit flash between the current drawing and a
+        // vivid dot. The interior is never committed before release.
         if let Some(stroke) = lasso_stroke.as_ref() {
             groups.push(build_lasso_path_cell_group(stroke));
+            let target = tool_state.borrow().hand_state(stroke.hand).target;
+            let points = if target == PaintTarget::Image {
+                tool_state.borrow().lasso_edit_points(
+                    &selection.borrow(),
+                    &stroke.path,
+                    stroke.hand,
+                    view_orientation,
+                )
+            } else {
+                tool_state.borrow().lasso_selection_points(
+                    &stroke.path,
+                    stroke.hand,
+                    view_orientation,
+                )
+            };
+            groups.push(build_lasso_preview_cell_group(
+                &points,
+                ui_palette.get(UiColorRole::Vivid),
+            ));
         }
         // Typing cursor: a flashing bright block on the cell that will receive
         // the next character. Composed on top like the selection overlay, never
