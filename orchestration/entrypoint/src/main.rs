@@ -175,6 +175,63 @@ fn begin_canvas_press_if_eligible(
     }
 }
 
+/// Routes one hand's held-pointer frame through the shared seam when the
+/// drag belongs on the canvas: chrome hits cancel the pending stroke, and
+/// only in-surface, in-bounds, non-typing positions continue it. Same
+/// shape as `begin_canvas_press_if_eligible`, one hand per call.
+#[allow(clippy::too_many_arguments)] // session-bridge seam: one fn carries the live session state; struct-izing touches the entrypoint
+fn continue_canvas_drag_if_eligible(
+    pointer_strokes: &mut CanvasPointerStrokes,
+    tool_state: &Rc<RefCell<ToolState>>,
+    selection: &Rc<RefCell<PainterSelection>>,
+    canvas: &mut Canvas,
+    shared_document: &mut SharedDocumentRuntime,
+    shared_document_paths: &SharedDocumentPaths,
+    shared_action_counter: &mut u64,
+    session_user_id: &str,
+    active_layer_id: &mut String,
+    hand: PaintHand,
+    world: thaum_renderer_domain::WorldPoint,
+    screen: CellPoint,
+    paint_surface: ModuleRect,
+    bounds: CanvasBounds,
+    view_orientation: thaum_renderer_domain::CameraViewOrientation,
+    chrome_hit: bool,
+    typing_owns_input: bool,
+) {
+    match route_drag(
+        screen,
+        CellPoint {
+            x: world.x,
+            y: world.y,
+            z: world.z,
+        },
+        chrome_hit,
+        paint_surface,
+        bounds,
+        typing_owns_input,
+    ) {
+        DragRoute::Chrome => pointer_strokes.cancel(hand),
+        DragRoute::Canvas(position) => pointer_strokes.continue_drag(
+            &mut canvas_pointer_context(
+                tool_state,
+                selection,
+                canvas,
+                shared_document,
+                shared_document_paths,
+                shared_action_counter,
+                session_user_id,
+                active_layer_id,
+            ),
+            hand,
+            position,
+            bounds,
+            view_orientation,
+        ),
+        DragRoute::Ignored => {}
+    }
+}
+
 /// Who owns a held pointer during a drag frame, classified once per hand.
 /// Chrome (command bar or a captured module drag) wins over the canvas; the
 /// canvas only receives drags inside its screen surface, inside its world
@@ -1696,11 +1753,22 @@ fn main() -> Result<()> {
                     &effective_painter_bindings.borrow(),
                 ));
             }
-        } else if frame.input.pointer_down {
+        } else if frame.input.pointer_down || frame.input.right_pointer_down {
+            // One held-pointer path per hand: both buttons behave identically
+            // apart from which hand's tool/stroke they carry, and left wins
+            // when both are held (the original else-if ordering).
+            let hand = if frame.input.pointer_down {
+                PaintHand::Left
+            } else {
+                PaintHand::Right
+            };
             if let Some(cursor) = frame.input.cursor_position {
                 let world = to_world(cursor);
                 let screen = to_screen(cursor);
                 modules.dispatch_captured_pointer_move(screen.x, screen.y);
+                // A captured pointer move can enqueue a layers-panel action,
+                // and waiting for a click/release to apply it would strand
+                // the commit — drain on every drag frame.
                 drain_layers_panel_action(
                     &layers_panel_state,
                     &mut shared_document,
@@ -1713,83 +1781,25 @@ fn main() -> Result<()> {
                     &timeline_state,
                     &selection,
                 );
-                let bounds = *paint_canvas_bounds.borrow();
-                match route_drag(
-                    screen,
-                    CellPoint { x: world.x, y: world.y, z: world.z },
-                    command_bar.contains(screen.x, screen.y) || modules.is_pointer_captured(),
-                    paint_surface,
-                    bounds,
-                    text_entry.as_ref().map_or(false, |entry| entry.is_active()),
-                ) {
-                    DragRoute::Chrome => pointer_strokes.cancel(PaintHand::Left),
-                    DragRoute::Canvas(position) => pointer_strokes.continue_drag(
-                        &mut canvas_pointer_context(
-                            &tool_state,
-                            &selection,
-                            &mut canvas,
-                            &mut shared_document,
-                            &shared_document_paths,
-                            &mut shared_action_counter,
-                            &session_user_id,
-                            &mut active_layer_id,
-                        ),
-                        PaintHand::Left,
-                        position,
-                        bounds,
-                        view_orientation,
-                    ),
-                    DragRoute::Ignored => {}
-                }
-            }
-        } else if frame.input.right_pointer_down {
-            if let Some(cursor) = frame.input.cursor_position {
-                let world = to_world(cursor);
-                let screen = to_screen(cursor);
-                modules.dispatch_captured_pointer_move(screen.x, screen.y);
-                // Same pending-action drain as the left-drag path: a captured
-                // pointer move can enqueue a layers-panel action, and waiting
-                // for a left event to apply it would strand the commit.
-                drain_layers_panel_action(
-                    &layers_panel_state,
+                continue_canvas_drag_if_eligible(
+                    &mut pointer_strokes,
+                    &tool_state,
+                    &selection,
+                    &mut canvas,
                     &mut shared_document,
                     &shared_document_paths,
                     &mut shared_action_counter,
                     &session_user_id,
                     &mut active_layer_id,
-                    &mut selected_property_id,
-                    &mut canvas,
-                    &timeline_state,
-                    &selection,
-                );
-                let bounds = *paint_canvas_bounds.borrow();
-                match route_drag(
+                    hand,
+                    world,
                     screen,
-                    CellPoint { x: world.x, y: world.y, z: world.z },
-                    command_bar.contains(screen.x, screen.y) || modules.is_pointer_captured(),
                     paint_surface,
-                    bounds,
+                    *paint_canvas_bounds.borrow(),
+                    view_orientation,
+                    command_bar.contains(screen.x, screen.y) || modules.is_pointer_captured(),
                     text_entry.as_ref().map_or(false, |entry| entry.is_active()),
-                ) {
-                    DragRoute::Chrome => pointer_strokes.cancel(PaintHand::Right),
-                    DragRoute::Canvas(position) => pointer_strokes.continue_drag(
-                        &mut canvas_pointer_context(
-                            &tool_state,
-                            &selection,
-                            &mut canvas,
-                            &mut shared_document,
-                            &shared_document_paths,
-                            &mut shared_action_counter,
-                            &session_user_id,
-                            &mut active_layer_id,
-                        ),
-                        PaintHand::Right,
-                        position,
-                        bounds,
-                        view_orientation,
-                    ),
-                    DragRoute::Ignored => {}
-                }
+                );
             }
         }
 
