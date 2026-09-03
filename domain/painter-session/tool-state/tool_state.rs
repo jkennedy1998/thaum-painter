@@ -537,11 +537,13 @@ impl ToolState {
         selection: &PainterSelection,
         path: &[CellPoint],
         hand: PaintHand,
+        orientation: CameraViewOrientation,
     ) {
         if !self.hand_state(hand).edit_channels.any_enabled() {
             return;
         }
-        let points = selection.filter_plane_edit_points(crate::lasso::lasso_points(path));
+        let points =
+            selection.filter_plane_edit_points(crate::lasso::lasso_points(path, orientation));
         for point in points {
             let painted = self.resolved_painted_cell(canvas.get(&point), hand);
             brush::apply_brush(canvas, point, painted);
@@ -551,11 +553,16 @@ impl ToolState {
     /// The selection-surface half of the lasso: the enclosed cells of the
     /// hand's bound, gated by that hand's select-channel enable state. The
     /// caller applies them through the hand's resolved selection mode.
-    pub fn lasso_selection_points(&self, path: &[CellPoint], hand: PaintHand) -> Vec<CellPoint> {
+    pub fn lasso_selection_points(
+        &self,
+        path: &[CellPoint],
+        hand: PaintHand,
+        orientation: CameraViewOrientation,
+    ) -> Vec<CellPoint> {
         if !self.hand_state(hand).select_channels.any_enabled() {
             return Vec::new();
         }
-        crate::lasso::lasso_points(path)
+        crate::lasso::lasso_points(path, orientation)
     }
 
     /// Applies the acting hand's assigned tool at `position`, routing either into image edits or
@@ -1199,6 +1206,7 @@ mod tests {
             &selection,
             &[point(0, 0), point(2, 0), point(2, 2), point(0, 2)],
             PaintHand::Left,
+            flat_view(),
         );
 
         assert_eq!(
@@ -1227,6 +1235,7 @@ mod tests {
             &selection,
             &[point(0, 0), point(2, 0), point(2, 2), point(0, 2)],
             PaintHand::Left,
+            flat_view(),
         );
 
         assert_eq!(
@@ -1265,6 +1274,7 @@ mod tests {
             &selection,
             &[point(0, 0), point(1, 0), point(1, 1), point(0, 1)],
             PaintHand::Left,
+            flat_view(),
         );
 
         assert_eq!(
@@ -1291,7 +1301,7 @@ mod tests {
         tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Lasso);
         let path = [point(0, 0), point(2, 0), point(2, 2), point(0, 2)];
 
-        let points = tool_state.lasso_selection_points(&path, PaintHand::Left);
+        let points = tool_state.lasso_selection_points(&path, PaintHand::Left, flat_view());
         assert!(points.contains(&point(1, 1)));
         assert_eq!(points.len(), 9);
 
@@ -1301,7 +1311,7 @@ mod tests {
             weight: false,
         };
         assert!(tool_state
-            .lasso_selection_points(&path, PaintHand::Left)
+            .lasso_selection_points(&path, PaintHand::Left, flat_view())
             .is_empty());
     }
 

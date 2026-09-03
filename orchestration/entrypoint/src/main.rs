@@ -1520,6 +1520,12 @@ fn main() -> Result<()> {
         let to_screen = move |surface_units: [f32; 2]| {
             remap_surface_units_to_flat_2d_local(camera, surface_units, cell_clip_size)
         };
+        // Typing is camera-relative: the session re-bases to the live view
+        // every frame, so arrows and typed cells keep following the camera
+        // even after a mid-session swing.
+        if let Some(entry) = text_entry.as_mut() {
+            entry.set_orientation(view_orientation);
+        }
         command_bar.set_nested_buttons("menu:modules", module_menu_buttons(&modules));
         // Playback tick: while playing, step the playhead across the document
         // loop window (wrapping when loop is on, stopping at the end when not)
@@ -2236,6 +2242,7 @@ fn main() -> Result<()> {
                         &selection.borrow(),
                         &stroke.path,
                         stroke.hand,
+                        view_orientation,
                     );
                 } else {
                     {
@@ -2245,7 +2252,11 @@ fn main() -> Result<()> {
                         )
                         .resolve(selection_state.mode(), SelectionMode::Subtract);
                         selection_state.apply_plane_points_with_mode(
-                            tool_state.borrow().lasso_selection_points(&stroke.path, stroke.hand),
+                            tool_state.borrow().lasso_selection_points(
+                                &stroke.path,
+                                stroke.hand,
+                                view_orientation,
+                            ),
                             mode,
                         );
                     }

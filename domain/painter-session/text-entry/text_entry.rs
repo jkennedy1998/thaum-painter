@@ -103,6 +103,14 @@ impl TextEntryState {
         self.active
     }
 
+    /// Re-anchors the session to the live camera view. Typing is
+    /// camera-relative: arrows, character advance, and Enter all resolve
+    /// through the current orientation, so a mid-session camera swing keeps
+    /// the cursor moving the way the screen points.
+    pub fn set_orientation(&mut self, orientation: CameraViewOrientation) {
+        self.orientation = orientation;
+    }
+
     pub fn cursor_point(&self) -> CellPoint {
         view_plane_point(self.origin, self.orientation, self.cursor)
     }
@@ -364,6 +372,31 @@ mod tests {
         state.handle_key(TextEntryKey::ArrowUp);
         state.handle_key(TextEntryKey::ArrowLeft);
         assert_eq!(state.cursor_point(), point(5, 5));
+    }
+
+    #[test]
+    fn a_mid_session_camera_swing_rebases_arrows_and_typing_to_the_new_view() {
+        let mut state = typing();
+        state.handle_key(TextEntryKey::Char('A'));
+        // Swing to PosX mid-session: the session re-bases through
+        // `set_orientation`, so "right" is now screen-right at PosX.
+        state.set_orientation(camera_view_orientation_for_camera(
+            CameraSwing::PosX,
+            CameraRoll::Deg0,
+        ));
+        state.handle_key(TextEntryKey::ArrowRight);
+        // At PosX the view plane is z/y (x is depth): right steps along −z,
+        // and typed cells keep x anchored.
+        assert_eq!(state.cursor_point(), CellPoint { x: 5, y: 5, z: -2 });
+        state.handle_key(TextEntryKey::ArrowUp);
+        assert_eq!(state.cursor_point(), CellPoint { x: 5, y: 6, z: -2 });
+        assert_eq!(
+            state.handle_key(TextEntryKey::Char('B')),
+            TextEntryOutcome::Applied {
+                point: CellPoint { x: 5, y: 6, z: -2 },
+                cell: Some(brush('B')),
+            }
+        );
     }
 
     #[test]
