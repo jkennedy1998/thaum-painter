@@ -20,6 +20,10 @@ pub enum PaintTool {
     Brush,
     Erase,
     Fill,
+    /// Freehand bound: press-drag-release records a lasso path; release
+    /// fills the enclosed cells through `apply_lasso_for_hand`, never
+    /// through `apply_at_for_hand`.
+    Lasso,
     /// Live typing mode: edits flow through the session's
     /// `TextEntryState`, never through `apply_at_for_hand`.
     Text,
@@ -28,8 +32,14 @@ pub enum PaintTool {
 impl PaintTool {
     /// Every live tool, in toolbox order. Drift-tested against the
     /// painter-tools registry.
-    pub fn all() -> [PaintTool; 4] {
-        [PaintTool::Brush, PaintTool::Erase, PaintTool::Fill, PaintTool::Text]
+    pub fn all() -> [PaintTool; 5] {
+        [
+            PaintTool::Brush,
+            PaintTool::Erase,
+            PaintTool::Fill,
+            PaintTool::Lasso,
+            PaintTool::Text,
+        ]
     }
 
     /// Stable registration id (also the persistence name). One small bridge
@@ -40,6 +50,7 @@ impl PaintTool {
             PaintTool::Brush => "brush",
             PaintTool::Erase => "erase",
             PaintTool::Fill => "fill",
+            PaintTool::Lasso => "lasso",
             PaintTool::Text => "text",
         }
     }
@@ -49,6 +60,7 @@ impl PaintTool {
             "brush" => Some(PaintTool::Brush),
             "erase" => Some(PaintTool::Erase),
             "fill" => Some(PaintTool::Fill),
+            "lasso" => Some(PaintTool::Lasso),
             "text" => Some(PaintTool::Text),
             _ => None,
         }
@@ -317,6 +329,21 @@ impl ToolState {
         self.text_options = self.text_options.clamped();
     }
 
+    /// Sets one axis (0 = along right, 1 = down the screen, 2 = into depth)
+    /// of the per-character cursor step to an exact value (typed into the
+    /// properties panel's number field), clamped like the panel's range.
+    pub fn set_text_char_step_axis(&mut self, axis: usize, value: i32) {
+        set_step_axis(&mut self.text_options.char_step, axis, value);
+        self.text_options = self.text_options.clamped();
+    }
+
+    /// Same as [`ToolState::set_text_char_step_axis`] for the per-Enter line
+    /// step.
+    pub fn set_text_enter_step_axis(&mut self, axis: usize, value: i32) {
+        set_step_axis(&mut self.text_options.enter_step, axis, value);
+        self.text_options = self.text_options.clamped();
+    }
+
     /// The captured brush cell for a typing session: the hand's current
     /// graphic/color/weight frozen at click time (old
     /// `getBrushForButton(text_mode_button)` capture).
@@ -396,6 +423,9 @@ impl ToolState {
                 bounds,
                 self.fill_connectivity_for_hand(hand),
             ),
+            // Lasso fills on release through `apply_lasso_for_hand`, so a
+            // per-position probe never produces edit points.
+            PaintTool::Lasso => Vec::new(),
             // Text never paints through this seam; typing stages through the
             // session bridge (`stage_text_entry_change`) instead.
             PaintTool::Text => Vec::new(),
@@ -443,6 +473,9 @@ impl ToolState {
                     brush::apply_brush(canvas, point, painted);
                 }
             }
+            // Lasso edits on release through `apply_lasso_for_hand`, never
+            // per position here.
+            PaintTool::Lasso => {}
             // Text edits flow through the live typing session, not here.
             PaintTool::Text => {}
         }
@@ -471,6 +504,9 @@ impl ToolState {
                 }
                 flood_select_points(canvas, position, bounds, hand_state.select_channels)
             }
+            // Lasso selects its enclosed region on release through
+            // `lasso_selection_points`, never per position here.
+            PaintTool::Lasso => Vec::new(),
             PaintTool::Text => Vec::new(),
         }
     }
@@ -488,6 +524,38 @@ impl ToolState {
         let mode = crate::painter_tools::shared::selection_behavior(self.tool_for_hand(hand).id())
             .resolve(selection.mode(), SelectionMode::Subtract);
         selection.apply_plane_points_with_mode(points, mode);
+    }
+
+    /// Rasterizes the hand's lasso bound and fills every enclosed cell with
+    /// that hand's state, through the same seams as brush/fill: the region
+    /// is gated by the current selection, and each filled cell resolves
+    /// through the channel mask (an empty cell under a graphic-masked fill
+    /// keeps its implicit blank glyph; a color-only fill recolors in place).
+    pub fn apply_lasso_for_hand(
+        &mut self,
+        canvas: &mut Canvas,
+        selection: &PainterSelection,
+        path: &[CellPoint],
+        hand: PaintHand,
+    ) {
+        if !self.hand_state(hand).edit_channels.any_enabled() {
+            return;
+        }
+        let points = selection.filter_plane_edit_points(crate::lasso::lasso_points(path));
+        for point in points {
+            let painted = self.resolved_painted_cell(canvas.get(&point), hand);
+            brush::apply_brush(canvas, point, painted);
+        }
+    }
+
+    /// The selection-surface half of the lasso: the enclosed cells of the
+    /// hand's bound, gated by that hand's select-channel enable state. The
+    /// caller applies them through the hand's resolved selection mode.
+    pub fn lasso_selection_points(&self, path: &[CellPoint], hand: PaintHand) -> Vec<CellPoint> {
+        if !self.hand_state(hand).select_channels.any_enabled() {
+            return Vec::new();
+        }
+        crate::lasso::lasso_points(path)
     }
 
     /// Applies the acting hand's assigned tool at `position`, routing either into image edits or
@@ -528,6 +596,15 @@ fn nudge_step(step: &mut (i32, i32, i32), axis: usize, delta: i32) {
         0 => step.0 += delta,
         1 => step.1 += delta,
         2 => step.2 += delta,
+        _ => {}
+    }
+}
+
+fn set_step_axis(step: &mut (i32, i32, i32), axis: usize, value: i32) {
+    match axis {
+        0 => step.0 = value,
+        1 => step.1 = value,
+        2 => step.2 = value,
         _ => {}
     }
 }
@@ -1101,6 +1178,134 @@ mod tests {
     }
 
     #[test]
+    fn lasso_fills_its_enclosed_region_with_the_hands_state() {
+        let mut tool_state = ToolState::default();
+        tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Lasso);
+        tool_state.set_graphic_for_hand(PaintHand::Left, CellGraphic::Glyph('.'));
+        let mut canvas = Canvas::new();
+        let mut selection = selection();
+        brush::apply_brush(
+            &mut canvas,
+            point(1, 1),
+            PaintedCell {
+                graphic: CellGraphic::Glyph('#'),
+                color: color(255, 255, 255),
+                weight_index: 1,
+            },
+        );
+
+        tool_state.apply_lasso_for_hand(
+            &mut canvas,
+            &selection,
+            &[point(0, 0), point(2, 0), point(2, 2), point(0, 2)],
+            PaintHand::Left,
+        );
+
+        assert_eq!(
+            canvas.get(&point(0, 0)).unwrap().graphic,
+            CellGraphic::Glyph('.')
+        );
+        assert_eq!(
+            canvas.get(&point(1, 1)).unwrap().graphic,
+            CellGraphic::Glyph('.')
+        );
+        assert!(canvas.get(&point(3, 3)).is_none());
+    }
+
+    #[test]
+    fn lasso_only_fills_cells_inside_the_current_selection() {
+        let mut tool_state = ToolState::default();
+        tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Lasso);
+        tool_state.set_graphic_for_hand(PaintHand::Left, CellGraphic::Glyph('.'));
+        let mut canvas = Canvas::new();
+        let mut selection = selection();
+        selection.set_mode(SelectionMode::Additive);
+        selection.apply_plane_points([point(0, 0), point(1, 0)]);
+
+        tool_state.apply_lasso_for_hand(
+            &mut canvas,
+            &selection,
+            &[point(0, 0), point(2, 0), point(2, 2), point(0, 2)],
+            PaintHand::Left,
+        );
+
+        assert_eq!(
+            canvas.get(&point(0, 0)).unwrap().graphic,
+            CellGraphic::Glyph('.')
+        );
+        assert_eq!(
+            canvas.get(&point(1, 0)).unwrap().graphic,
+            CellGraphic::Glyph('.')
+        );
+        assert!(canvas.get(&point(2, 1)).is_none());
+    }
+
+    #[test]
+    fn lasso_fill_flows_through_the_channel_mask_and_blank_glyph_rule() {
+        let mut tool_state = ToolState::default();
+        tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Lasso);
+        tool_state.left_hand.edit_channels.graphic = false;
+        tool_state.left_hand.edit_channels.color = true;
+        tool_state.left_hand.edit_channels.weight = false;
+        tool_state.set_color_for_hand(PaintHand::Left, color(9, 8, 7));
+        let mut canvas = Canvas::new();
+        let mut selection = selection();
+        brush::apply_brush(
+            &mut canvas,
+            point(0, 0),
+            PaintedCell {
+                graphic: CellGraphic::Glyph('A'),
+                color: color(1, 1, 1),
+                weight_index: 0,
+            },
+        );
+
+        tool_state.apply_lasso_for_hand(
+            &mut canvas,
+            &selection,
+            &[point(0, 0), point(1, 0), point(1, 1), point(0, 1)],
+            PaintHand::Left,
+        );
+
+        assert_eq!(
+            canvas.get(&point(0, 0)),
+            Some(&PaintedCell {
+                graphic: CellGraphic::Glyph('A'),
+                color: color(9, 8, 7),
+                weight_index: 0,
+            })
+        );
+        assert_eq!(
+            canvas.get(&point(1, 1)),
+            Some(&PaintedCell {
+                graphic: CellGraphic::Glyph(' '),
+                color: color(9, 8, 7),
+                weight_index: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn lasso_selection_points_return_the_enclosed_region_gated_by_select_channels() {
+        let mut tool_state = ToolState::default();
+        tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Lasso);
+        let path = [point(0, 0), point(2, 0), point(2, 2), point(0, 2)];
+
+        let points = tool_state.lasso_selection_points(&path, PaintHand::Left);
+        assert!(points.contains(&point(1, 1)));
+        assert_eq!(points.len(), 9);
+
+        tool_state.left_hand.select_channels = ChannelMask {
+            graphic: false,
+            color: false,
+            weight: false,
+        };
+        assert!(tool_state
+            .lasso_selection_points(&path, PaintHand::Left)
+            .is_empty());
+    }
+
+    #[test]
     fn nudging_text_steps_stays_shared_across_hands_and_clamped() {
         let mut tool_state = ToolState::default();
 
@@ -1113,6 +1318,9 @@ mod tests {
         for _ in 0..20 {
             tool_state.nudge_text_char_step(2, 2);
         }
-        assert_eq!(tool_state.text_options.char_step.2, 16);
+        assert_eq!(tool_state.text_options.char_step.2, 9);
+
+        tool_state.set_text_enter_step_axis(0, -9);
+        assert_eq!(tool_state.text_options.enter_step, (-9, -3, 0));
     }
 }

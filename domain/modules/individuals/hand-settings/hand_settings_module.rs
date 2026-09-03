@@ -2,9 +2,9 @@ use std::{cell::RefCell, rc::Rc};
 
 use thaum_renderer_domain::{
     Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, CellWeight, GizmoBar,
-    GizmoClickOutcome, GizmoKind, GizmoState, Module, ModulePointerEvent, ModuleRect, PanelChrome,
-    PersistedModuleUiState, PropertyHit, PropertyMatrixColumn, PropertyMatrixSide, PropertyRow,
-    PropertyRows, UiColorRole, UiPalette, WorldPoint,
+    GizmoClickOutcome, GizmoKind, GizmoState, Module, ModulePointerEvent, ModuleRect, NumberFieldEdit,
+    PanelChrome, PersistedModuleUiState, PropertyHit, PropertyMatrixColumn, PropertyMatrixSide,
+    PropertyRow, PropertyRows, UiColorRole, UiPalette, WorldPoint,
 };
 
 use crate::{
@@ -33,6 +33,10 @@ pub struct HandSettingsModule {
     rect: ModuleRect,
     tool_state: Rc<RefCell<ToolState>>,
     selection: Rc<RefCell<PainterSelection>>,
+    /// In-place number-field edit driven through the host's typing seam
+    /// (shared with the entrypoint, which routes the keys and applies the
+    /// committed value).
+    number_edit: Rc<RefCell<Option<NumberFieldEdit>>>,
     palette: UiPalette,
     gizmos: GizmoBar,
     gizmo_state: GizmoState,
@@ -45,12 +49,14 @@ impl HandSettingsModule {
         rect: ModuleRect,
         tool_state: Rc<RefCell<ToolState>>,
         selection: Rc<RefCell<PainterSelection>>,
+        number_edit: Rc<RefCell<Option<NumberFieldEdit>>>,
     ) -> Self {
         Self {
             id: id.into(),
             rect,
             tool_state,
             selection,
+            number_edit,
             palette: UiPalette::default(),
             gizmos: standard_gizmo_bar(),
             gizmo_state: GizmoState::new(),
@@ -149,28 +155,6 @@ impl HandSettingsModule {
             fill_diag_columns.push(column);
         }
 
-        let text_step_columns = |value: (i32, i32, i32)| -> Vec<PropertyMatrixColumn> {
-            let axes = [value.0, value.1, value.2];
-            ["r", "d", "z"]
-                .iter()
-                .enumerate()
-                .flat_map(|(axis, axis_label)| {
-                    ["-", "+"].map(|suffix| {
-                        let id = format!("{axis_label}{suffix}");
-                        let shown = axes[axis];
-                        let label = if shown.is_negative() {
-                            format!("{axis_label}{shown}")
-                        } else {
-                            format!("{axis_label}+{shown}")
-                        };
-                        let mut column = PropertyMatrixColumn::new(id, label);
-                        column.left_enabled = true;
-                        column.right_enabled = true;
-                        column
-                    })
-                })
-                .collect()
-        };
         let char_step = state.text_options.char_step;
         let enter_step = state.text_options.enter_step;
 
@@ -266,22 +250,26 @@ impl HandSettingsModule {
             });
         }
         // Text typing geometry: per-character and per-Enter 3D cursor steps,
-        // shared across hands. Click a token to nudge that axis; the token
-        // label carries the live value.
+        // shared across hands. Left-click a number to type a value in; scroll
+        // a number to nudge it by one.
         if Self::tool_row_used(&state, "text_char_step") {
-            rows.push(PropertyRow::Matrix {
+            rows.push(PropertyRow::NumberRow {
                 id: "text_char_step".into(),
                 label: "char".into(),
-                columns: text_step_columns(char_step),
-                token_width: 3,
+                values: vec![char_step.0, char_step.1, char_step.2],
+                min: -9,
+                max: 9,
+                editing: self.editing_for("text_char_step"),
             });
         }
         if Self::tool_row_used(&state, "text_enter_step") {
-            rows.push(PropertyRow::Matrix {
+            rows.push(PropertyRow::NumberRow {
                 id: "text_enter_step".into(),
                 label: "enter".into(),
-                columns: text_step_columns(enter_step),
-                token_width: 3,
+                values: vec![enter_step.0, enter_step.1, enter_step.2],
+                min: -9,
+                max: 9,
+                editing: self.editing_for("text_enter_step"),
             });
         }
 
@@ -293,12 +281,51 @@ impl HandSettingsModule {
             || state.right_tool.property_row_ids().contains(&row_id)
     }
 
+    fn editing_for(&self, row_id: &str) -> Option<(usize, String)> {
+        self.number_edit
+            .borrow()
+            .as_ref()
+            .filter(|edit| edit.row_id == row_id)
+            .map(|edit| (edit.field, edit.buffer.clone()))
+    }
+
+    /// Whether a number-field typing session is currently open. The
+    /// entrypoint reads this to route keys through the typing seam.
+    pub fn number_edit_active(&self) -> bool {
+        self.number_edit.borrow().is_some()
+    }
+
+    /// The active edit, for the entrypoint's key routing.
+    pub fn number_edit(&self) -> Rc<RefCell<Option<NumberFieldEdit>>> {
+        self.number_edit.clone()
+    }
+
     fn apply_property_hit(&mut self, hit: PropertyHit) {
+        // A number-field click begins an in-place edit; the entrypoint routes
+        // the typing and applies the committed value through the tool state.
+        if let PropertyHit::Number { row_id, field } = hit {
+            let current = match row_id.as_str() {
+                "text_char_step" => {
+                    let step = self.tool_state.borrow().text_options.char_step;
+                    [step.0, step.1, step.2][field.min(2)]
+                }
+                "text_enter_step" => {
+                    let step = self.tool_state.borrow().text_options.enter_step;
+                    [step.0, step.1, step.2][field.min(2)]
+                }
+                _ => return,
+            };
+            *self.number_edit.borrow_mut() = Some(NumberFieldEdit::begin(row_id, field, current));
+            return;
+        }
         let PropertyHit::Matrix {
             row_id,
             side,
             column_id,
-        } = hit;
+        } = hit
+        else {
+            return;
+        };
         let hand = match side {
             PropertyMatrixSide::Left => PaintHand::Left,
             PropertyMatrixSide::Right => PaintHand::Right,
@@ -350,25 +377,6 @@ impl HandSettingsModule {
                     _ => return,
                 };
                 state.set_fill_diagonal_for_hand(hand, fill_diagonal);
-            }
-            "text_char_step" | "text_enter_step" => {
-                let column = column_id.as_str();
-                let axis = match column.as_bytes().first() {
-                    Some(b'r') => 0,
-                    Some(b'd') => 1,
-                    Some(b'z') => 2,
-                    _ => return,
-                };
-                let delta = match column.as_bytes().get(1) {
-                    Some(b'+') => 1,
-                    Some(b'-') => -1,
-                    _ => return,
-                };
-                if row_id == "text_char_step" {
-                    state.nudge_text_char_step(axis, delta);
-                } else {
-                    state.nudge_text_enter_step(axis, delta);
-                }
             }
             "lock" => {
                 if let Some(channel) = Self::channel_from_id(&column_id) {
@@ -509,6 +517,35 @@ impl Module for HandSettingsModule {
         }
     }
 
+    /// Scroll on a number field nudges that value by one (up = +1, down =
+    /// −1), clamped to the row's range. Consumes the wheel only over fields.
+    fn on_wheel(&mut self, x: i32, y: i32, _delta_x: f32, delta_y: f32) -> bool {
+        if self.number_edit.borrow().is_some() {
+            // A typing session owns the keyboard; ignore wheel while editing.
+            return true;
+        }
+        let rows = self.build_rows();
+        let Some((row_id, field)) = PropertyRows::number_field_at(self.rect, &rows, x, y)
+        else {
+            return false;
+        };
+        let delta = if delta_y > 0.0 {
+            1
+        } else if delta_y < 0.0 {
+            -1
+        } else {
+            return true;
+        };
+        let axis = field.min(2);
+        let mut state = self.tool_state.borrow_mut();
+        match row_id.as_str() {
+            "text_char_step" => state.nudge_text_char_step(axis, delta),
+            "text_enter_step" => state.nudge_text_enter_step(axis, delta),
+            _ => return false,
+        }
+        true
+    }
+
     fn wants_pointer_capture(&self) -> bool {
         self.gizmo_state.wants_pointer_capture()
     }
@@ -555,6 +592,10 @@ mod tests {
         Rc::new(RefCell::new(ToolState::default()))
     }
 
+    fn number_edit() -> Rc<RefCell<Option<NumberFieldEdit>>> {
+        Rc::new(RefCell::new(None))
+    }
+
     fn selection() -> Rc<RefCell<PainterSelection>> {
         Rc::new(RefCell::new(PainterSelection::new(
             crate::fill::CanvasBounds {
@@ -571,7 +612,13 @@ mod tests {
     #[test]
     fn clicking_a_weight_token_assigns_that_weight_to_the_matching_hand() {
         let state = tool_state();
-        let mut module = HandSettingsModule::new("hands", rect(), state.clone(), selection());
+        let mut module = HandSettingsModule::new(
+            "hands",
+            rect(),
+            state.clone(),
+            selection(),
+            number_edit(),
+        );
 
         module.apply_property_hit(PropertyHit::Matrix {
             row_id: "weight".into(),
@@ -585,7 +632,13 @@ mod tests {
     #[test]
     fn clicking_select_tokens_toggles_that_select_channel_for_the_clicked_side() {
         let state = tool_state();
-        let mut module = HandSettingsModule::new("hands", rect(), state.clone(), selection());
+        let mut module = HandSettingsModule::new(
+            "hands",
+            rect(),
+            state.clone(),
+            selection(),
+            number_edit(),
+        );
 
         module.apply_property_hit(PropertyHit::Matrix {
             row_id: "select".into(),
@@ -599,7 +652,13 @@ mod tests {
     #[test]
     fn clicking_edit_tokens_toggles_that_edit_channel_for_the_clicked_side() {
         let state = tool_state();
-        let mut module = HandSettingsModule::new("hands", rect(), state.clone(), selection());
+        let mut module = HandSettingsModule::new(
+            "hands",
+            rect(),
+            state.clone(),
+            selection(),
+            number_edit(),
+        );
 
         module.apply_property_hit(PropertyHit::Matrix {
             row_id: "edit".into(),
@@ -613,7 +672,13 @@ mod tests {
     #[test]
     fn clicking_target_tokens_sets_that_exact_target_for_the_matching_hand() {
         let state = tool_state();
-        let mut module = HandSettingsModule::new("hands", rect(), state.clone(), selection());
+        let mut module = HandSettingsModule::new(
+            "hands",
+            rect(),
+            state.clone(),
+            selection(),
+            number_edit(),
+        );
 
         module.apply_property_hit(PropertyHit::Matrix {
             row_id: "target".into(),
@@ -628,7 +693,13 @@ mod tests {
     fn clicking_selection_mode_tokens_sets_the_shared_selection_mode() {
         let state = tool_state();
         let selection = selection();
-        let mut module = HandSettingsModule::new("hands", rect(), state, selection.clone());
+        let mut module = HandSettingsModule::new(
+            "hands",
+            rect(),
+            state,
+            selection.clone(),
+            number_edit(),
+        );
 
         module.apply_property_hit(PropertyHit::Matrix {
             row_id: "selection_mode".into(),
@@ -645,7 +716,13 @@ mod tests {
         state
             .borrow_mut()
             .set_tool_for_hand(PaintHand::Left, PaintTool::Brush);
-        let mut module = HandSettingsModule::new("hands", rect(), state.clone(), selection());
+        let mut module = HandSettingsModule::new(
+            "hands",
+            rect(),
+            state.clone(),
+            selection(),
+            number_edit(),
+        );
 
         module.apply_property_hit(PropertyHit::Matrix {
             row_id: "brush_size".into(),
@@ -663,7 +740,13 @@ mod tests {
         state
             .borrow_mut()
             .set_tool_for_hand(PaintHand::Right, PaintTool::Fill);
-        let mut module = HandSettingsModule::new("hands", rect(), state.clone(), selection());
+        let mut module = HandSettingsModule::new(
+            "hands",
+            rect(),
+            state.clone(),
+            selection(),
+            number_edit(),
+        );
 
         module.apply_property_hit(PropertyHit::Matrix {
             row_id: "fill_diagonal".into(),
@@ -678,7 +761,13 @@ mod tests {
     #[test]
     fn clicking_lock_tokens_toggles_that_channel_lock_for_the_clicked_side() {
         let state = tool_state();
-        let mut module = HandSettingsModule::new("hands", rect(), state.clone(), selection());
+        let mut module = HandSettingsModule::new(
+            "hands",
+            rect(),
+            state.clone(),
+            selection(),
+            number_edit(),
+        );
 
         module.apply_property_hit(PropertyHit::Matrix {
             row_id: "lock".into(),
@@ -692,7 +781,13 @@ mod tests {
     #[test]
     fn rows_only_include_tool_properties_the_equipped_tools_use() {
         let state = tool_state();
-        let module = HandSettingsModule::new("hands", rect(), state.clone(), selection());
+        let mut module = HandSettingsModule::new(
+            "hands",
+            rect(),
+            state.clone(),
+            selection(),
+            number_edit(),
+        );
 
         let row_ids = |module: &HandSettingsModule| -> Vec<String> {
             module
@@ -723,16 +818,22 @@ mod tests {
     }
 
     #[test]
-    fn text_step_rows_only_appear_when_text_is_equipped_and_clicks_nudge_the_shared_step() {
+    fn text_step_rows_only_appear_when_text_is_equipped() {
         let state = tool_state();
-        let module = HandSettingsModule::new("hands", rect(), state.clone(), selection());
+        let mut module = HandSettingsModule::new(
+            "hands",
+            rect(),
+            state.clone(),
+            selection(),
+            number_edit(),
+        );
 
         let row_ids = |module: &HandSettingsModule| -> Vec<String> {
             module
                 .build_rows()
                 .into_iter()
                 .filter_map(|row| match row {
-                    PropertyRow::Matrix { id, .. } => Some(id),
+                    PropertyRow::NumberRow { id, .. } => Some(id),
                     _ => None,
                 })
                 .collect()
@@ -749,27 +850,86 @@ mod tests {
         let text_ids = row_ids(&module);
         assert!(text_ids.contains(&"text_char_step".to_string()));
         assert!(text_ids.contains(&"text_enter_step".to_string()));
+    }
 
-        let mut module = HandSettingsModule::new("hands", rect(), state.clone(), selection());
-        module.apply_property_hit(PropertyHit::Matrix {
+    #[test]
+    fn clicking_a_text_number_field_begins_an_in_place_edit_with_the_current_value() {
+        let state = tool_state();
+        state.borrow_mut().set_tool_for_hand(PaintHand::Left, PaintTool::Text);
+        let number_edit = number_edit();
+        let mut module = HandSettingsModule::new(
+            "hands",
+            rect(),
+            state,
+            selection(),
+            number_edit.clone(),
+        );
+
+        module.apply_property_hit(PropertyHit::Number {
             row_id: "text_char_step".into(),
-            side: PropertyMatrixSide::Right,
-            column_id: "d+".into(),
-        });
-        module.apply_property_hit(PropertyHit::Matrix {
-            row_id: "text_enter_step".into(),
-            side: PropertyMatrixSide::Left,
-            column_id: "z-".into(),
+            field: 1,
         });
 
-        assert_eq!(state.borrow().text_options.char_step, (1, 1, 0));
-        assert_eq!(state.borrow().text_options.enter_step, (0, 1, -1));
+        let edit = number_edit.borrow().clone().expect("edit began");
+        assert_eq!(edit.row_id, "text_char_step");
+        assert_eq!(edit.field, 1);
+        // char_step starts (1, 0, 0), so field 1 edits "0".
+        assert_eq!(edit.buffer, "0");
+        assert!(module.number_edit_active());
+    }
+
+    #[test]
+    fn scrolling_a_text_number_field_nudges_that_axis_by_one() {
+        let state = tool_state();
+        state.borrow_mut().set_tool_for_hand(PaintHand::Left, PaintTool::Text);
+        let mut module = HandSettingsModule::new(
+            "hands",
+            rect(),
+            state.clone(),
+            selection(),
+            number_edit(),
+        );
+
+        // Locate the char row's first field through the seam, then wheel on
+        // it. Rows draw one line each from the top row downward.
+        let rows = module.build_rows();
+        let row_index = rows
+            .iter()
+            .position(|row| matches!(row, PropertyRow::NumberRow { id, .. } if id == "text_char_step"))
+            .expect("text char row present");
+        let (_, value_x, _) = PropertyRows::content_columns(rect());
+        let field_x = rect().x0 + value_x;
+        // Rows stack upward from the top row, one row_height each.
+        let row_y = rows[..row_index]
+            .iter()
+            .map(|row| PropertyRows::row_height(row))
+            .sum::<i32>();
+        let field_y =
+            rect().y0 + PropertyRows::top_row_y(rect()) - row_y;
+        assert_eq!(
+            PropertyRows::number_field_at(rect(), &rows, field_x, field_y),
+            Some(("text_char_step".into(), 0))
+        );
+
+        module.on_wheel(field_x, field_y, 0.0, 1.0);
+        assert_eq!(state.borrow().text_options.char_step, (2, 0, 0));
+        module.on_wheel(field_x, field_y, 0.0, -2.0);
+        assert_eq!(state.borrow().text_options.char_step, (1, 0, 0));
+
+        // Off the fields: the wheel is not consumed.
+        assert!(!module.on_wheel(field_x, field_y - 3, 0.0, 1.0));
     }
 
     #[test]
     fn clicking_the_move_gizmo_starts_requesting_pointer_capture() {
         let state = tool_state();
-        let mut module = HandSettingsModule::new("hands", rect(), state, selection());
+        let mut module = HandSettingsModule::new(
+            "hands",
+            rect(),
+            state,
+            selection(),
+            number_edit(),
+        );
 
         module.on_pointer_event(ModulePointerEvent::Click {
             x: 11,

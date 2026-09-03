@@ -12,6 +12,7 @@ Own live tool settings and active authoring-hand state for the painter session.
 - per-hand image-versus-selection target state
 - per-hand channel locks for selector updates
 - the `PaintTool` enum and per-tool session behavior match arms (edit/select semantics) — the thin enum <-> registry bridge and the property manifest delegation now read from `domain/painter-tools/`
+- lasso session behavior: in-progress bound accumulation (`lasso_stroke`), release-time enclosed-region fill through the channel mask, and release-time selection-surface application
 - text-entry and paste option state that belongs to the live session
 
 ## does not own
@@ -26,14 +27,15 @@ Own live tool settings and active authoring-hand state for the painter session.
 - `contract.md`
   - tool-state contract
 - `tool_state.rs`
-  - live left/right hand tool-state, selection-gated image editing, and masked paint application, including blank-glyph preservation on empty cells
+  - live left/right hand tool-state, selection-gated image editing, masked paint application, lasso release fill/selection application, including blank-glyph preservation on empty cells
+- `lasso_stroke.rs`
+  - in-progress lasso bound accumulation (`LassoStroke`) and its overlay preview cell group (path only, never the interior)
 
 ## dependencies
 - `/home/j/Repos/thaum-painter/domain/painter-operations/`
 - `/home/j/Repos/thaum-painter/domain/painter-session/paint-color/`
 - `/home/j/Repos/thaum-painter/domain/painter-tools/`
 - `/home/j/Repos/thaum-painter/domain/file/storage/`
-
 ## exposed interfaces
 - none
 
@@ -46,7 +48,10 @@ Own live tool settings and active authoring-hand state for the painter session.
 ## tests
 - inline `#[cfg(test)]` in `tool_state.rs`
   - light
-  - validates per-hand tool selection, shared brush/erase properties, selection-gated image editing, fill masking, channel locks, and the per-tool property-row manifest
+  - validates per-hand tool selection, shared brush/erase properties, selection-gated image editing, fill masking, lasso enclosed-region fill/selection, channel locks, and the per-tool property-row manifest
+- inline `#[cfg(test)]` in `lasso_stroke.rs`
+  - light
+  - validates lasso stroke accumulation
 
 ## data
 - none
@@ -62,3 +67,4 @@ Own live tool settings and active authoring-hand state for the painter session.
 - registration truth (id, label, icon, property rows, hotkey) moved to the `domain/painter-tools/` registry; this encapsulation keeps session behavior match arms until per-tool behavior migration and owns the small enum <-> registry bridge that drift-tests against the registry.
 - cross-tool rules are not re-decided here: the erase-forces-subtract selection rule and its future siblings live in `domain/painter-tools/shared/` and this encapsulation consumes them.
 - when graphic editing is disabled and the user edits an empty cell, painter now preserves that cell's implicit blank glyph (`' '`) rather than silently swapping in the hand's current graphic.
+- source-of-truth from J: the lasso tool equips per hand, records its bound with press-drag-release, and on release fills the enclosed cells with the selected character — which may be an empty cell and may be channel-locked (character-only or color-only) — so the fill flows through the same hand-state seams as brush/fill, and it only edits within the selected tiles.

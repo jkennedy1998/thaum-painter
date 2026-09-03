@@ -221,14 +221,14 @@ impl TextEntryState {
 /// Purely visual: the entrypoint composes this group on top of the document
 /// each frame and never stages it, so the flashing cursor is never part of the
 /// drawing.
-pub fn cursor_overlay_group(point: CellPoint, visible: bool) -> CellGroup {
+/// The cursor overlay is always present while typing; the blink phase swaps
+/// the glyph between a filled block and an outline so the cursor cell stays
+/// visible at every moment.
+pub fn cursor_overlay_group(point: CellPoint, glyph: char) -> CellGroup {
     let mut group = CellGroup::new(WorldPoint { x: 0, y: 0, z: 0 });
-    if !visible {
-        return group;
-    }
     group.insert(Cell {
         position: point,
-        graphic: CellGraphic::Glyph('█'),
+        graphic: CellGraphic::Glyph(glyph),
         color: CellColor::Flat([1.0, 0.9, 0.25, 1.0]),
         weight: CellWeight::from_index_clamped(3),
         ..Cell::default()

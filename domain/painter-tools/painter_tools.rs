@@ -16,6 +16,9 @@ pub mod erase;
 #[path = "individuals/fill/fill_tool.rs"]
 pub mod fill;
 
+#[path = "individuals/lasso/lasso_tool.rs"]
+pub mod lasso;
+
 #[path = "individuals/text/text_tool.rs"]
 pub mod text;
 

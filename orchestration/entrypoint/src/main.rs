@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use rfd::FileDialog;
+use thaum_renderer_domain::NumberFieldEdit;
 use thaum_painter_domain::{
     camera_viewport::{
         apply_drawing_space_scroll, apply_hud_scroll, pan_hud_and_focus_right,
@@ -20,7 +21,7 @@ use thaum_painter_domain::{
         apply_layers_panel_action, build_selected_layer_property_rows, resolved_active_layer_id,
     }, render_space::build_document_layer_cell_groups, save_shared_document_snapshot, selection_stroke::{
         build_plane_selection_cell_group, interpolate_cell_path, SelectionStroke,
-    }, session_document::{
+    }, lasso_stroke::{build_lasso_path_cell_group, LassoStroke}, session_document::{
         commit_selection_channel, commit_staged_paint_stroke,
         apply_shared_history_action, recover_snapshot_conflict, stage_image_edit_chunk,
         stage_text_entry_change, sync_canvas_from_active_layer,
@@ -556,6 +557,12 @@ mod tests {
             painter_tool_for_action(&bucket_actions[0]),
             Some(PaintTool::Fill)
         );
+        let lasso_actions = painter_key_actions_for_label(&bindings, "L");
+        assert_eq!(lasso_actions.len(), 1, "L resolves to exactly one action");
+        assert_eq!(
+            painter_tool_for_action(&lasso_actions[0]),
+            Some(PaintTool::Lasso)
+        );
         // The zoom key resolves through the registry too (remappable), and
         // only the wheel binding stays off the key path.
         assert_eq!(
@@ -571,7 +578,11 @@ mod tests {
     #[test]
     fn every_action_the_key_dispatch_fires_exists_in_the_registry() {
         let bindings = thaum_painter_domain::tai::painter_bindings();
-        for name in ["painter_select_pencil", "painter_select_bucket"] {
+        for name in [
+            "painter_select_pencil",
+            "painter_select_bucket",
+            "painter_select_lasso",
+        ] {
             assert!(
                 !bindings
                     .bindings_for(&ActionName::new(name))
@@ -740,6 +751,7 @@ fn painter_tool_for_action(action: &ActionName) -> Option<PaintTool> {
 pub const LIVE_PAINTER_ACTIONS: &[&str] = &[
     "painter_select_pencil",
     "painter_select_bucket",
+    "painter_select_lasso",
     "painter_pan_left",
     "painter_pan_right",
     "painter_pan_up",
@@ -772,6 +784,7 @@ fn painter_control_rows() -> Vec<ControlActionRow> {
     let rows = [
         ("tools", "Select Pencil", "painter_select_pencil"),
         ("tools", "Select Bucket", "painter_select_bucket"),
+        ("tools", "Select Lasso", "painter_select_lasso"),
         ("pan", "Pan Left", "painter_pan_left"),
         ("pan", "Pan Right", "painter_pan_right"),
         ("pan", "Pan Up", "painter_pan_up"),
@@ -927,6 +940,10 @@ fn main() -> Result<()> {
         )
         .with_palette(ui_palette.clone()),
     ));
+    // Shared in-place number-field edit state for the hand-settings panel:
+    // the module opens it on a field click, the typing seam routes the keys,
+    // and Enter commits the value through the tool state.
+    let number_edit: Rc<RefCell<Option<NumberFieldEdit>>> = Rc::new(RefCell::new(None));
     modules.register(Box::new(
         HandSettingsModule::new(
             "painter_hand_settings",
@@ -938,6 +955,7 @@ fn main() -> Result<()> {
             },
             tool_state.clone(),
             selection.clone(),
+            number_edit.clone(),
         )
         .with_palette(ui_palette.clone()),
     ));
@@ -1056,6 +1074,9 @@ fn main() -> Result<()> {
     // into the session or suppressed.
     let mut typing_mode = TypingMode::default();
     let mut selection_stroke: Option<SelectionStroke> = None;
+    // In-progress lasso bound (either hand): press starts the path, drag
+    // extends it, release rasterizes and fills/selects the enclosed region.
+    let mut lasso_stroke: Option<LassoStroke> = None;
     let mut active_layer_id = resolved_active_layer_id(
         &shared_document,
         persisted_session
@@ -1201,6 +1222,46 @@ fn main() -> Result<()> {
                         let Some(entry_key) = text_entry_key_for_key(*key) else {
                             continue;
                         };
+                        // An open number-field edit consumes the keys first:
+                        // digits and '-' build the buffer, Backspace erases,
+                        // Enter commits into the tool state, Escape cancels.
+                        if number_edit.borrow().is_some() {
+                            match entry_key {
+                                TextEntryKey::Enter => {
+                                    if let Some(edit) = number_edit.borrow_mut().take() {
+                                        if let Some(value) = edit.commit(-9, 9) {
+                                            let mut tool_state = tool_state.borrow_mut();
+                                            if edit.row_id == "text_enter_step" {
+                                                tool_state.set_text_enter_step_axis(
+                                                    edit.field.min(2),
+                                                    value,
+                                                );
+                                            } else {
+                                                tool_state.set_text_char_step_axis(
+                                                    edit.field.min(2),
+                                                    value,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                                TextEntryKey::Escape => {
+                                    number_edit.borrow_mut().take();
+                                }
+                                TextEntryKey::Backspace | TextEntryKey::Delete => {
+                                    if let Some(edit) = number_edit.borrow_mut().as_mut() {
+                                        edit.backspace();
+                                    }
+                                }
+                                TextEntryKey::Char(ch) => {
+                                    if let Some(edit) = number_edit.borrow_mut().as_mut() {
+                                        edit.push(ch);
+                                    }
+                                }
+                                _ => {}
+                            }
+                            continue;
+                        }
                         match text_entry
                             .as_mut()
                             .expect("typing mode active without a typing session")
@@ -1221,7 +1282,7 @@ fn main() -> Result<()> {
                         // Enter: the pending segment becomes one 'Type Text'
                         // record; typing continues on the next line as a new
                         // undo segment.
-                        commit_staged_paint_stroke(
+                        if let Err(err) = commit_staged_paint_stroke(
                             &mut shared_document,
                             &shared_document_paths,
                             &mut shared_action_counter,
@@ -1229,14 +1290,16 @@ fn main() -> Result<()> {
                             &active_layer_id,
                             &mut canvas,
                             text_stroke_start.take(),
-                        )?;
+                        ) {
+                            eprintln!("text commit failed (kept in memory): {err:#}");
+                        }
                         let current_breath = timeline_state.borrow().current_breath;
                         text_stroke_start = shared_document
                             .active_raster_block_id(&active_layer_id, current_breath)
                             .map(|block_id| (canvas.clone(), block_id.clone()));
                     }
                     TextEntryOutcome::Finished => {
-                        commit_staged_paint_stroke(
+                        if let Err(err) = commit_staged_paint_stroke(
                             &mut shared_document,
                             &shared_document_paths,
                             &mut shared_action_counter,
@@ -1244,7 +1307,9 @@ fn main() -> Result<()> {
                             &active_layer_id,
                             &mut canvas,
                             text_stroke_start.take(),
-                        )?;
+                        ) {
+                            eprintln!("text commit failed (kept in memory): {err:#}");
+                        }
                         text_entry = None;
                         typing_mode.end();
                     }
@@ -1510,7 +1575,10 @@ fn main() -> Result<()> {
         // pending stroke, like Escape) and is otherwise swallowed.
         if typing_mode.is_active() {
             if frame.input.just_clicked.is_some() {
-                commit_staged_paint_stroke(
+                if number_edit.borrow().is_some() {
+                    // A number edit stages nothing; a click just closes it.
+                    number_edit.borrow_mut().take();
+                } else if let Err(err) = commit_staged_paint_stroke(
                     &mut shared_document,
                     &shared_document_paths,
                     &mut shared_action_counter,
@@ -1518,7 +1586,11 @@ fn main() -> Result<()> {
                     &active_layer_id,
                     &mut canvas,
                     text_stroke_start.take(),
-                )?;
+                ) {
+                    // A failed commit must not tear down the session: the
+                    // in-memory document already holds the change.
+                    eprintln!("text commit failed (kept in memory): {err:#}");
+                }
                 text_entry = None;
                 typing_mode.end();
             }
@@ -1586,6 +1658,7 @@ fn main() -> Result<()> {
             );
             if handled_command_bar || handled_module || modules.is_pointer_captured() {
                 selection_stroke = None;
+                lasso_stroke = None;
                 left_drag_position = None;
             } else {
                 let bounds = *paint_canvas_bounds.borrow();
@@ -1603,6 +1676,13 @@ fn main() -> Result<()> {
                     if tool_state.borrow().hand_state(PaintHand::Left).target
                         == PaintTarget::Selection
                     {
+                        // Lasso on the selection surface records its bound;
+                        // the enclosed region is selected on release.
+                        if tool_state.borrow().tool_for_hand(PaintHand::Left)
+                            == PaintTool::Lasso
+                        {
+                            lasso_stroke = Some(LassoStroke::new(PaintHand::Left, position));
+                        } else {
                         let mode = thaum_painter_domain::painter_tools::shared::selection_behavior(
                             tool_state.borrow().tool_for_hand(PaintHand::Left).id(),
                         )
@@ -1616,6 +1696,7 @@ fn main() -> Result<()> {
                             view_orientation,
                         ));
                         selection_stroke = Some(stroke);
+                        }
                     } else {
                         let target = tool_state.borrow().hand_state(PaintHand::Left).target;
                         let mut selection_state = selection.borrow_mut();
@@ -1646,6 +1727,19 @@ fn main() -> Result<()> {
                                     typing_mode.begin(typing_reserved_inputs(
                                         &effective_painter_bindings.borrow(),
                                     ));
+                                }
+                            } else if tool_state.borrow().tool_for_hand(PaintHand::Left)
+                                == PaintTool::Lasso
+                            {
+                                // Lasso records its bound only; the fill lands
+                                // on release as one committed stroke.
+                                let current_breath = timeline_state.borrow().current_breath;
+                                if let Some(block_id) = shared_document
+                                    .active_raster_block_id(&active_layer_id, current_breath)
+                                {
+                                    left_stroke_start = Some((canvas.clone(), block_id.clone()));
+                                    lasso_stroke =
+                                        Some(LassoStroke::new(PaintHand::Left, position));
                                 }
                             } else {
                             // Paint strokes land on the raster block covering the playhead
@@ -1722,6 +1816,7 @@ fn main() -> Result<()> {
             );
             if handled_command_bar || handled_module || modules.is_pointer_captured() {
                 selection_stroke = None;
+                lasso_stroke = None;
                 right_drag_position = None;
             } else {
                 let bounds = *paint_canvas_bounds.borrow();
@@ -1739,6 +1834,13 @@ fn main() -> Result<()> {
                     if tool_state.borrow().hand_state(PaintHand::Right).target
                         == PaintTarget::Selection
                     {
+                        // Lasso on the selection surface records its bound;
+                        // the enclosed region is selected on release.
+                        if tool_state.borrow().tool_for_hand(PaintHand::Right)
+                            == PaintTool::Lasso
+                        {
+                            lasso_stroke = Some(LassoStroke::new(PaintHand::Right, position));
+                        } else {
                         let mode = thaum_painter_domain::painter_tools::shared::selection_behavior(
                             tool_state.borrow().tool_for_hand(PaintHand::Right).id(),
                         )
@@ -1752,6 +1854,7 @@ fn main() -> Result<()> {
                             view_orientation,
                         ));
                         selection_stroke = Some(stroke);
+                        }
                     } else {
                         let target = tool_state.borrow().hand_state(PaintHand::Right).target;
                         let mut selection_state = selection.borrow_mut();
@@ -1780,6 +1883,19 @@ fn main() -> Result<()> {
                                     typing_mode.begin(typing_reserved_inputs(
                                         &effective_painter_bindings.borrow(),
                                     ));
+                                }
+                            } else if tool_state.borrow().tool_for_hand(PaintHand::Right)
+                                == PaintTool::Lasso
+                            {
+                                // Lasso records its bound only; the fill lands
+                                // on release as one committed stroke.
+                                let current_breath = timeline_state.borrow().current_breath;
+                                if let Some(block_id) = shared_document
+                                    .active_raster_block_id(&active_layer_id, current_breath)
+                                {
+                                    right_stroke_start = Some((canvas.clone(), block_id.clone()));
+                                    lasso_stroke =
+                                        Some(LassoStroke::new(PaintHand::Right, position));
                                 }
                             } else {
                             let current_breath = timeline_state.borrow().current_breath;
@@ -1814,6 +1930,13 @@ fn main() -> Result<()> {
                     }
                 }
             }
+            // A number-field click just began an in-place edit; typing mode
+            // owns the keyboard until a click or Escape ends the session.
+            if !typing_mode.is_active() && number_edit.borrow().is_some() {
+                typing_mode.begin(typing_reserved_inputs(
+                    &effective_painter_bindings.borrow(),
+                ));
+            }
         } else if frame.input.pointer_down {
             if let Some(cursor) = frame.input.cursor_position {
                 let world = to_world(cursor);
@@ -1833,6 +1956,7 @@ fn main() -> Result<()> {
                 );
                 if command_bar.contains(screen.x, screen.y) || modules.is_pointer_captured() {
                     selection_stroke = None;
+                    lasso_stroke = None;
                     left_drag_position = None;
                 } else {
                     let bounds = *paint_canvas_bounds.borrow();
@@ -1848,7 +1972,11 @@ fn main() -> Result<()> {
                         let stroke_positions = left_drag_position
                             .map(|last| interpolate_cell_path(last, position))
                             .unwrap_or_else(|| vec![position]);
-                        if let Some(stroke) = selection_stroke.as_mut() {
+                        if let Some(stroke) = lasso_stroke.as_mut() {
+                            if stroke.hand == PaintHand::Left {
+                                stroke.extend(&stroke_positions);
+                            }
+                        } else if let Some(stroke) = selection_stroke.as_mut() {
                             if stroke.hand == PaintHand::Left {
                                 let tool_state_ref = tool_state.borrow();
                                 for anchor in &stroke_positions {
@@ -1903,6 +2031,7 @@ fn main() -> Result<()> {
                 modules.dispatch_captured_pointer_move(screen.x, screen.y);
                 if command_bar.contains(screen.x, screen.y) || modules.is_pointer_captured() {
                     selection_stroke = None;
+                    lasso_stroke = None;
                     right_drag_position = None;
                 } else {
                     let bounds = *paint_canvas_bounds.borrow();
@@ -1918,7 +2047,11 @@ fn main() -> Result<()> {
                         let stroke_positions = right_drag_position
                             .map(|last| interpolate_cell_path(last, position))
                             .unwrap_or_else(|| vec![position]);
-                        if let Some(stroke) = selection_stroke.as_mut() {
+                        if let Some(stroke) = lasso_stroke.as_mut() {
+                            if stroke.hand == PaintHand::Right {
+                                stroke.extend(&stroke_positions);
+                            }
+                        } else if let Some(stroke) = selection_stroke.as_mut() {
                             if stroke.hand == PaintHand::Right {
                                 let tool_state_ref = tool_state.borrow();
                                 for anchor in &stroke_positions {
@@ -2092,7 +2225,45 @@ fn main() -> Result<()> {
             // One committed action per stroke: the drag's staged patches become a
             // single CellPatchSet record, written once on release (one undo per
             // stroke). Hands that didn't paint are no-ops.
-            commit_staged_paint_stroke(
+            // A lasso bound closes here: the enclosed cells fill through the
+            // hand's tool state (image target) or select through the hand's
+            // resolved mode (selection target), then share the stroke commit.
+            if let Some(stroke) = lasso_stroke.take() {
+                let target = tool_state.borrow().hand_state(stroke.hand).target;
+                if target == PaintTarget::Image {
+                    tool_state.borrow_mut().apply_lasso_for_hand(
+                        &mut canvas,
+                        &selection.borrow(),
+                        &stroke.path,
+                        stroke.hand,
+                    );
+                } else {
+                    {
+                        let mut selection_state = selection.borrow_mut();
+                        let mode = thaum_painter_domain::painter_tools::shared::selection_behavior(
+                            tool_state.borrow().tool_for_hand(stroke.hand).id(),
+                        )
+                        .resolve(selection_state.mode(), SelectionMode::Subtract);
+                        selection_state.apply_plane_points_with_mode(
+                            tool_state.borrow().lasso_selection_points(&stroke.path, stroke.hand),
+                            mode,
+                        );
+                    }
+                    let points: Vec<CellPoint> = selection.borrow().plane().iter().collect();
+                    commit_selection_channel(
+                        &mut shared_document,
+                        &shared_document_paths,
+                        points,
+                        SelectionMode::Replace,
+                        &mut active_layer_id,
+                        timeline_state.borrow().current_breath,
+                        &mut canvas,
+                        &selection,
+                        &mut shared_action_counter,
+                    );
+                }
+            }
+            if let Err(err) = commit_staged_paint_stroke(
                 &mut shared_document,
                 &shared_document_paths,
                 &mut shared_action_counter,
@@ -2100,8 +2271,10 @@ fn main() -> Result<()> {
                 &active_layer_id,
                 &mut canvas,
                 left_stroke_start.take(),
-            )?;
-            commit_staged_paint_stroke(
+            ) {
+                eprintln!("stroke commit failed (kept in memory): {err:#}");
+            }
+            if let Err(err) = commit_staged_paint_stroke(
                 &mut shared_document,
                 &shared_document_paths,
                 &mut shared_action_counter,
@@ -2109,7 +2282,9 @@ fn main() -> Result<()> {
                 &active_layer_id,
                 &mut canvas,
                 right_stroke_start.take(),
-            )?;
+            ) {
+                eprintln!("stroke commit failed (kept in memory): {err:#}");
+            }
             apply_layers_panel_action(
                 layers_panel_state.borrow_mut().take_pending_action(),
                 &mut shared_document,
@@ -2170,6 +2345,11 @@ fn main() -> Result<()> {
             selection_stroke.as_ref(),
             flash_on,
         ));
+        // In-progress lasso bound: the path itself only; the interior is
+        // committed on release, never previewed into the drawing.
+        if let Some(stroke) = lasso_stroke.as_ref() {
+            groups.push(build_lasso_path_cell_group(stroke));
+        }
         // Typing cursor: a flashing bright block on the cell that will receive
         // the next character. Composed on top like the selection overlay, never
         // staged into the canvas or document, so it is never part of the drawing.
@@ -2180,7 +2360,8 @@ fn main() -> Result<()> {
         }
         if typing_mode.is_active() {
             if let Some(entry) = text_entry.as_ref() {
-                groups.push(cursor_overlay_group(entry.cursor_point(), cursor_blink_on));
+                let glyph = if cursor_blink_on { '█' } else { '□' };
+                groups.push(cursor_overlay_group(entry.cursor_point(), glyph));
             }
         }
         groups.push(command_bar.draw());

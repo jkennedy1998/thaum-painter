@@ -70,7 +70,7 @@ fn stepped_from_zero(step: (i32, i32, i32), line: i32) -> (i32, i32, i32) {
 pub const TAB_WIDTH: i32 = 4;
 
 /// Text tool spacing properties as two view-relative 3D steps, each axis
-/// clamped to −16..16 like the old save sanitizer:
+/// clamped to −9..9 (the properties panel's 2-char signed fields):
 /// - `char_step`: cursor advance per character, (along right, down the screen,
 ///   into depth). Negative values reverse direction, so right-to-left,
 ///   upward, and into/out-of-screen typing all work.
@@ -89,7 +89,7 @@ pub const DEFAULT_TEXT_LAYOUT_OPTIONS: TextLayoutOptions = TextLayoutOptions {
 
 impl TextLayoutOptions {
     pub fn clamped(self) -> Self {
-        let clamp = |v: i32| v.clamp(-16, 16);
+        let clamp = |v: i32| v.clamp(-9, 9);
         Self {
             char_step: (clamp(self.char_step.0), clamp(self.char_step.1), clamp(self.char_step.2)),
             enter_step: (

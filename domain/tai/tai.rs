@@ -35,6 +35,10 @@ pub fn painter_bindings() -> ActionBindingMap {
         ActionName::new("painter_select_bucket"),
         RawInput::Key("B".to_string()),
     );
+    map.bind(
+        ActionName::new("painter_select_lasso"),
+        RawInput::Key("L".to_string()),
+    );
     // Drawing-space pan (context decides 3D focus pan vs HUD pan).
     map.bind(ActionName::new("painter_pan_left"), RawInput::Key("A".to_string()));
     map.bind(ActionName::new("painter_pan_right"), RawInput::Key("D".to_string()));

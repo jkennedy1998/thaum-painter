@@ -51,6 +51,14 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
         hotkey: Some("B"),
     },
     ToolDescriptor {
+        id: "lasso",
+        label: "Lasso",
+        icon: '◌',
+        property_row_ids: &[],
+        select_action: Some("painter_select_lasso"),
+        hotkey: Some("L"),
+    },
+    ToolDescriptor {
         id: "text",
         label: "Text",
         icon: 'T',
@@ -110,12 +118,14 @@ mod tests {
         assert_eq!(BrushTool::descriptor().id, "brush");
         assert_eq!(EraseTool::descriptor().id, "erase");
         assert_eq!(FillTool::descriptor().id, "fill");
+        assert_eq!(LassoTool::descriptor().id, "lasso");
         assert_eq!(TextTool::descriptor().id, "text");
-        assert_eq!(all().len(), 4);
+        assert_eq!(all().len(), 5);
     }
 
     use crate::painter_tools::brush::BrushTool;
     use crate::painter_tools::erase::EraseTool;
     use crate::painter_tools::fill::FillTool;
+    use crate::painter_tools::lasso::LassoTool;
     use crate::painter_tools::text::TextTool;
 }

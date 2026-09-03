@@ -2,6 +2,8 @@
 pub mod debug_log;
 #[path = "painter-operations/brush/brush.rs"]
 pub mod brush;
+#[path = "painter-operations/shapes/lasso.rs"]
+pub mod lasso;
 #[path = "painter-operations/text/text.rs"]
 pub mod text;
 #[path = "rendering/camera/camera_viewport.rs"]
@@ -52,6 +54,8 @@ pub mod storage;
 pub mod timeline_state;
 #[path = "painter-session/tool-state/tool_state.rs"]
 pub mod tool_state;
+#[path = "painter-session/tool-state/lasso_stroke.rs"]
+pub mod lasso_stroke;
 #[path = "modules/individuals/toolbar/toolbar_module.rs"]
 pub mod toolbar_module;
 #[path = "modules/individuals/toolbox/toolbox_module.rs"]
