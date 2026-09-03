@@ -24,7 +24,7 @@ use thaum_painter_domain::{
         commit_selection_channel, commit_staged_paint_stroke,
         apply_shared_history_action, recover_snapshot_conflict, stage_image_edit_chunk,
         stage_text_entry_change, sync_canvas_from_active_layer,
-    }, text_entry::{TextEntryKey, TextEntryOutcome, TextEntryState}, Canvas, DrawingSpaceWheelMode, GraphicPickerModule, HandSettingsModule, LayerRow, LayersPanelModule, LayersPanelState,
+    }, text_entry::{cursor_overlay_group, TextEntryKey, TextEntryOutcome, TextEntryState}, Canvas, DrawingSpaceWheelMode, GraphicPickerModule, HandSettingsModule, LayerRow, LayersPanelModule, LayersPanelState,
     MaterialPickerModule, PaintCanvasBoundsModule, PaintColorBlockModule,
     PaintColorPickerModule, PaintHand,
     PaintTarget, PaintTool, PainterSelection, PainterUserSessionState, PersistedPainterUiState, SelectionMode, SharedDocumentPaths,
@@ -637,6 +637,14 @@ fn raw_key_label(key: KeyCode) -> Option<String> {
         KeyCode::Numpad9 => "NUMPAD9",
         KeyCode::NumpadAdd => "NUMPAD_ADD",
         KeyCode::NumpadSubtract => "NUMPAD_SUB",
+        KeyCode::Enter | KeyCode::NumpadEnter => "ENTER",
+        KeyCode::Escape => "ESCAPE",
+        KeyCode::ArrowLeft => "LEFT",
+        KeyCode::ArrowRight => "RIGHT",
+        KeyCode::ArrowUp => "UP",
+        KeyCode::ArrowDown => "DOWN",
+        KeyCode::Backspace => "BACKSPACE",
+        KeyCode::Delete => "DELETE",
         KeyCode::Space => "SPACE",
         _ => return None,
     };
@@ -1103,6 +1111,10 @@ fn main() -> Result<()> {
     // Playback advances one breath per tick while the timeline is playing.
     const PLAYBACK_BREATH_INTERVAL: Duration = Duration::from_millis(125);
     let mut last_playback_step = Instant::now();
+    // Text cursor blink state (rendered overlay only; see cursor_overlay_group).
+    const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(400);
+    let mut cursor_blink_on = true;
+    let mut cursor_blink_at = Instant::now();
 
     run_renderer_window_with_state_frame_provider(state, move |state, frame| {
         sync_renderer_background_from_ui_palette(state, &ui_palette);
@@ -2158,6 +2170,19 @@ fn main() -> Result<()> {
             selection_stroke.as_ref(),
             flash_on,
         ));
+        // Typing cursor: a flashing bright block on the cell that will receive
+        // the next character. Composed on top like the selection overlay, never
+        // staged into the canvas or document, so it is never part of the drawing.
+        let now = Instant::now();
+        if now.duration_since(cursor_blink_at) >= CURSOR_BLINK_INTERVAL {
+            cursor_blink_on = !cursor_blink_on;
+            cursor_blink_at = now;
+        }
+        if typing_mode.is_active() {
+            if let Some(entry) = text_entry.as_ref() {
+                groups.push(cursor_overlay_group(entry.cursor_point(), cursor_blink_on));
+            }
+        }
         groups.push(command_bar.draw());
         state.composition = Composition::ordered(groups).with_natural_pass_order();
         Ok(())

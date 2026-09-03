@@ -6,7 +6,10 @@
 //! applies one cell change live, and pending changes commit as ONE undo-able
 //! 'Type Text' action at Enter/exit — the old commit granularity.
 
-use thaum_renderer_domain::{CameraViewOrientation, CellGraphic, CellPoint};
+use thaum_renderer_domain::{
+    CameraViewOrientation, Cell, CellColor, CellGraphic, CellGroup, CellPoint, CellWeight,
+    WorldPoint,
+};
 
 use crate::brush::PaintedCell;
 use crate::text::{view_plane_point, TextLayoutOptions};
@@ -60,12 +63,14 @@ pub struct TextEntryState {
     options: TextLayoutOptions,
     space_replace: bool,
     brush: PaintedCell,
-    /// Cursor in view-plane coords: (col along right, row down the screen).
-    cursor: (i32, i32),
-    /// Current line index (Enter accumulates `enterlead * line` rows down).
+    /// Cursor in view-relative cells: (along right, down the screen, into
+    /// depth), from the anchor.
+    cursor: (i32, i32, i32),
+    /// Current line index (Enter accumulates `enter_step * line` from the
+    /// anchor).
     line: i32,
     /// Per-line end cursors for Backspace's wrap to the previous line.
-    line_ends: Vec<(i32, i32)>,
+    line_ends: Vec<(i32, i32, i32)>,
     pending: Vec<PendingChange>,
 }
 
@@ -87,9 +92,9 @@ impl TextEntryState {
             options: options.clamped(),
             space_replace,
             brush,
-            cursor: (0, 0),
+            cursor: (0, 0, 0),
             line: 0,
-            line_ends: vec![(0, 0)],
+            line_ends: vec![(0, 0, 0)],
             pending: Vec::new(),
         }
     }
@@ -99,7 +104,7 @@ impl TextEntryState {
     }
 
     pub fn cursor_point(&self) -> CellPoint {
-        view_plane_point(self.origin, self.orientation, self.cursor.0, self.cursor.1)
+        view_plane_point(self.origin, self.orientation, self.cursor)
     }
 
     pub fn pending_changes(&self) -> &[PendingChange] {
@@ -112,12 +117,9 @@ impl TextEntryState {
         std::mem::take(&mut self.pending)
     }
 
-    fn line_start(&self, line: i32) -> (i32, i32) {
-        if line == 0 {
-            (0, 0)
-        } else {
-            (self.options.enterspace, self.options.enterlead * line)
-        }
+    fn line_start(&self, line: i32) -> (i32, i32, i32) {
+        let step = self.options.enter_step;
+        (step.0 * line, step.1 * line, step.2 * line)
     }
 
     pub fn handle_key(&mut self, key: TextEntryKey) -> TextEntryOutcome {
@@ -167,8 +169,12 @@ impl TextEntryState {
                     self.line -= 1;
                     self.cursor = self.line_ends[self.line as usize];
                 } else if !at_line_start {
-                    self.cursor.0 -= self.options.spacing;
-                    self.cursor.1 -= self.options.charlead;
+                    let step = self.options.char_step;
+                    self.cursor = (
+                        self.cursor.0 - step.0,
+                        self.cursor.1 - step.1,
+                        self.cursor.2 - step.2,
+                    );
                 } else {
                     return TextEntryOutcome::Ignored;
                 }
@@ -201,10 +207,33 @@ impl TextEntryState {
     }
 
     fn advance_cursor(&mut self) {
-        self.cursor.0 += self.options.spacing;
-        self.cursor.1 += self.options.charlead;
+        let step = self.options.char_step;
+        self.cursor = (
+            self.cursor.0 + step.0,
+            self.cursor.1 + step.1,
+            self.cursor.2 + step.2,
+        );
         self.line_ends[self.line as usize] = self.cursor;
     }
+}
+
+/// A rendered overlay marking the cell about to receive the next character.
+/// Purely visual: the entrypoint composes this group on top of the document
+/// each frame and never stages it, so the flashing cursor is never part of the
+/// drawing.
+pub fn cursor_overlay_group(point: CellPoint, visible: bool) -> CellGroup {
+    let mut group = CellGroup::new(WorldPoint { x: 0, y: 0, z: 0 });
+    if !visible {
+        return group;
+    }
+    group.insert(Cell {
+        position: point,
+        graphic: CellGraphic::Glyph('█'),
+        color: CellColor::Flat([1.0, 0.9, 0.25, 1.0]),
+        weight: CellWeight::from_index_clamped(3),
+        ..Cell::default()
+    });
+    group
 }
 
 #[cfg(test)]
@@ -241,11 +270,11 @@ mod tests {
     }
 
     #[test]
-    fn chars_apply_at_the_cursor_and_advance_with_spacing_and_charlead() {
+    fn chars_apply_at_the_cursor_and_advance_with_the_char_step() {
         let mut state = TextEntryState::begin(
             point(5, 5),
             flat_view(),
-            TextLayoutOptions { spacing: 2, charlead: 1, ..crate::text::DEFAULT_TEXT_LAYOUT_OPTIONS },
+            TextLayoutOptions { char_step: (2, 1, 0), ..crate::text::DEFAULT_TEXT_LAYOUT_OPTIONS },
             true,
             brush('X'),
         );
@@ -261,11 +290,11 @@ mod tests {
     }
 
     #[test]
-    fn enter_commits_and_starts_the_next_line_using_enterlead_and_enterspace() {
+    fn enter_commits_and_starts_the_next_line_using_the_enter_step() {
         let mut state = TextEntryState::begin(
             point(5, 5),
             flat_view(),
-            TextLayoutOptions { enterlead: 2, enterspace: 3, ..crate::text::DEFAULT_TEXT_LAYOUT_OPTIONS },
+            TextLayoutOptions { enter_step: (3, 2, 0), ..crate::text::DEFAULT_TEXT_LAYOUT_OPTIONS },
             true,
             brush('?'),
         );
@@ -304,7 +333,7 @@ mod tests {
         let mut state = typing();
         state.handle_key(TextEntryKey::Char('A'));
         state.handle_key(TextEntryKey::Char('B'));
-        // Steps back one char cell (spacing 1) and erases it.
+        // Steps back one char cell (char_step 1) and erases it.
         assert_eq!(
             state.handle_key(TextEntryKey::Backspace),
             TextEntryOutcome::Applied { point: point(6, 5), cell: None }
@@ -335,6 +364,23 @@ mod tests {
         state.handle_key(TextEntryKey::ArrowUp);
         state.handle_key(TextEntryKey::ArrowLeft);
         assert_eq!(state.cursor_point(), point(5, 5));
+    }
+
+    #[test]
+    fn char_step_depth_component_moves_typing_through_depth_and_backspace_reverses_it() {
+        let mut state = TextEntryState::begin(
+            point(0, 0),
+            flat_view(),
+            TextLayoutOptions { char_step: (1, 0, 2), ..crate::text::DEFAULT_TEXT_LAYOUT_OPTIONS },
+            true,
+            brush('?'),
+        );
+        state.handle_key(TextEntryKey::Char('A'));
+        // Depth +2 moves south (+z at PosZ).
+        assert_eq!(state.cursor_point(), CellPoint { x: 1, y: 0, z: 2 });
+        // Backspace undoes the full 3D step.
+        state.handle_key(TextEntryKey::Backspace);
+        assert_eq!(state.cursor_point(), point(0, 0));
     }
 
     #[test]

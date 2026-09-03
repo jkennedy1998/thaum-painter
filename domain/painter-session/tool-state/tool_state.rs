@@ -187,8 +187,9 @@ pub struct ToolState {
     pub active_hand: PaintHand,
     pub left_hand: HandState,
     pub right_hand: HandState,
-    /// Text tool layout properties (old-painter spacing/charlead/enterlead/
-    /// enterspace), live-session state per the tool-state contract.
+    /// Text tool layout properties: per-character and per-Enter cursor steps
+    /// as view-relative 3D offsets (right, down, depth), live-session state
+    /// per the tool-state contract.
     pub text_options: TextLayoutOptions,
     /// Whether Space during typing clears the cell under the cursor.
     pub text_space_replace: bool,
@@ -298,6 +299,22 @@ impl ToolState {
     pub fn set_fill_diagonal_for_hand(&mut self, hand: PaintHand, fill_diagonal: bool) {
         self.hand_state_mut(hand).fill_diagonal = fill_diagonal;
         self.active_hand = hand;
+    }
+
+    /// Nudges one axis (0 = along right, 1 = down the screen, 2 = into depth)
+    /// of the per-character cursor step by `delta` cells, clamped to the
+    /// layout options' −16..16 range. Text properties are shared across
+    /// hands: the typing session reads one layout regardless of the hand.
+    pub fn nudge_text_char_step(&mut self, axis: usize, delta: i32) {
+        nudge_step(&mut self.text_options.char_step, axis, delta);
+        self.text_options = self.text_options.clamped();
+    }
+
+    /// Same as [`ToolState::nudge_text_char_step`] for the per-Enter line
+    /// step.
+    pub fn nudge_text_enter_step(&mut self, axis: usize, delta: i32) {
+        nudge_step(&mut self.text_options.enter_step, axis, delta);
+        self.text_options = self.text_options.clamped();
     }
 
     /// The captured brush cell for a typing session: the hand's current
@@ -506,6 +523,15 @@ impl ToolState {
     }
 }
 
+fn nudge_step(step: &mut (i32, i32, i32), axis: usize, delta: i32) {
+    match axis {
+        0 => step.0 += delta,
+        1 => step.1 += delta,
+        2 => step.2 += delta,
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,7 +590,10 @@ mod tests {
         assert_eq!(PaintTool::Brush.property_row_ids(), &["brush_size"]);
         assert_eq!(PaintTool::Erase.property_row_ids(), &["brush_size"]);
         assert_eq!(PaintTool::Fill.property_row_ids(), &["fill_diagonal"]);
-        assert!(PaintTool::Text.property_row_ids().is_empty());
+        assert_eq!(
+            PaintTool::Text.property_row_ids(),
+            &["text_char_step", "text_enter_step"]
+        );
     }
 
     #[test]
@@ -1069,5 +1098,21 @@ mod tests {
         assert!(selection.plane().contains(point(0, 0)));
         assert!(selection.plane().contains(point(1, 0)));
         assert!(!selection.plane().contains(point(2, 0)));
+    }
+
+    #[test]
+    fn nudging_text_steps_stays_shared_across_hands_and_clamped() {
+        let mut tool_state = ToolState::default();
+
+        tool_state.nudge_text_char_step(0, 3);
+        assert_eq!(tool_state.text_options.char_step, (4, 0, 0));
+
+        tool_state.nudge_text_enter_step(1, -4);
+        assert_eq!(tool_state.text_options.enter_step, (0, -3, 0));
+
+        for _ in 0..20 {
+            tool_state.nudge_text_char_step(2, 2);
+        }
+        assert_eq!(tool_state.text_options.char_step.2, 16);
     }
 }

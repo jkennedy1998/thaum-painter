@@ -149,6 +149,31 @@ impl HandSettingsModule {
             fill_diag_columns.push(column);
         }
 
+        let text_step_columns = |value: (i32, i32, i32)| -> Vec<PropertyMatrixColumn> {
+            let axes = [value.0, value.1, value.2];
+            ["r", "d", "z"]
+                .iter()
+                .enumerate()
+                .flat_map(|(axis, axis_label)| {
+                    ["-", "+"].map(|suffix| {
+                        let id = format!("{axis_label}{suffix}");
+                        let shown = axes[axis];
+                        let label = if shown.is_negative() {
+                            format!("{axis_label}{shown}")
+                        } else {
+                            format!("{axis_label}+{shown}")
+                        };
+                        let mut column = PropertyMatrixColumn::new(id, label);
+                        column.left_enabled = true;
+                        column.right_enabled = true;
+                        column
+                    })
+                })
+                .collect()
+        };
+        let char_step = state.text_options.char_step;
+        let enter_step = state.text_options.enter_step;
+
         let mut lock_columns = Vec::new();
         for (id, label, channel) in [
             ("graphic", "GFX", PaintChannel::Graphic),
@@ -240,6 +265,25 @@ impl HandSettingsModule {
                 token_width: 4,
             });
         }
+        // Text typing geometry: per-character and per-Enter 3D cursor steps,
+        // shared across hands. Click a token to nudge that axis; the token
+        // label carries the live value.
+        if Self::tool_row_used(&state, "text_char_step") {
+            rows.push(PropertyRow::Matrix {
+                id: "text_char_step".into(),
+                label: "char".into(),
+                columns: text_step_columns(char_step),
+                token_width: 3,
+            });
+        }
+        if Self::tool_row_used(&state, "text_enter_step") {
+            rows.push(PropertyRow::Matrix {
+                id: "text_enter_step".into(),
+                label: "enter".into(),
+                columns: text_step_columns(enter_step),
+                token_width: 3,
+            });
+        }
 
         rows
     }
@@ -306,6 +350,25 @@ impl HandSettingsModule {
                     _ => return,
                 };
                 state.set_fill_diagonal_for_hand(hand, fill_diagonal);
+            }
+            "text_char_step" | "text_enter_step" => {
+                let column = column_id.as_str();
+                let axis = match column.as_bytes().first() {
+                    Some(b'r') => 0,
+                    Some(b'd') => 1,
+                    Some(b'z') => 2,
+                    _ => return,
+                };
+                let delta = match column.as_bytes().get(1) {
+                    Some(b'+') => 1,
+                    Some(b'-') => -1,
+                    _ => return,
+                };
+                if row_id == "text_char_step" {
+                    state.nudge_text_char_step(axis, delta);
+                } else {
+                    state.nudge_text_enter_step(axis, delta);
+                }
             }
             "lock" => {
                 if let Some(channel) = Self::channel_from_id(&column_id) {
@@ -657,6 +720,50 @@ mod tests {
         // Standard rows stay put regardless of the equipped tools.
         assert!(mixed_ids.contains(&"weight".to_string()));
         assert!(mixed_ids.contains(&"lock".to_string()));
+    }
+
+    #[test]
+    fn text_step_rows_only_appear_when_text_is_equipped_and_clicks_nudge_the_shared_step() {
+        let state = tool_state();
+        let module = HandSettingsModule::new("hands", rect(), state.clone(), selection());
+
+        let row_ids = |module: &HandSettingsModule| -> Vec<String> {
+            module
+                .build_rows()
+                .into_iter()
+                .filter_map(|row| match row {
+                    PropertyRow::Matrix { id, .. } => Some(id),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        // Brush/erase hands: no text rows.
+        let default_ids = row_ids(&module);
+        assert!(!default_ids.contains(&"text_char_step".to_string()));
+        assert!(!default_ids.contains(&"text_enter_step".to_string()));
+
+        state
+            .borrow_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Text);
+        let text_ids = row_ids(&module);
+        assert!(text_ids.contains(&"text_char_step".to_string()));
+        assert!(text_ids.contains(&"text_enter_step".to_string()));
+
+        let mut module = HandSettingsModule::new("hands", rect(), state.clone(), selection());
+        module.apply_property_hit(PropertyHit::Matrix {
+            row_id: "text_char_step".into(),
+            side: PropertyMatrixSide::Right,
+            column_id: "d+".into(),
+        });
+        module.apply_property_hit(PropertyHit::Matrix {
+            row_id: "text_enter_step".into(),
+            side: PropertyMatrixSide::Left,
+            column_id: "z-".into(),
+        });
+
+        assert_eq!(state.borrow().text_options.char_step, (1, 1, 0));
+        assert_eq!(state.borrow().text_options.enter_step, (0, 1, -1));
     }
 
     #[test]

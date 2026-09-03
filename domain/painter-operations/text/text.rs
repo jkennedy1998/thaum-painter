@@ -1,17 +1,17 @@
-//! Text layout over the voxel cell grid: one glyph char per cell, following the
-//! old painter's text-entry semantics (`buildTextEntryCell` — typing sets the
-//! cell's glyph char; the document's cells are the font).
+//! Text layout over the voxel cell grid: one glyph char per cell, following
+//! the old painter's text-entry semantics (`buildTextEntryCell` — typing sets
+//! the cell's glyph char; the document's cells are the font).
 
 use thaum_renderer_domain::{CameraViewOrientation, CellPoint};
 
 /// Lays `text` out as one glyph char per cell starting at `origin`:
-/// - chars advance along the view orientation's right axis,
+/// - chars advance by the char step in view-relative axes (default: along the
+///   view orientation's right axis),
 /// - spaces advance without placing a cell,
-/// - `\n` starts the next line one cell along the *opposite* of the view's up
-///   axis (reading order: later lines sit below earlier ones on screen),
-/// - tabs advance four cells, `\r` is skipped,
-/// - the view's depth axis never moves, so text lies flat in the active view
-///   plane at every swing and roll — same contract as `brush_points`.
+/// - `\n` steps the line start by the enter step (default: one cell along the
+///   *opposite* of the view's up axis — reading order: later lines sit below
+///   earlier ones on screen),
+/// - tabs advance four cells, `\r` is skipped.
 ///
 /// Pure geometry: returns (point, char) pairs; the session bridge composes each
 /// char with the active brush's color/weight into `PaintedCell`s, exactly as it
@@ -24,9 +24,9 @@ pub fn text_cells(
     text_cells_with_options(text, origin, orientation, DEFAULT_TEXT_LAYOUT_OPTIONS)
 }
 
-/// [`text_cells`] with explicit old-painter text tool properties: per-char
-/// advance is `spacing` along right and `charlead` down the screen; Enter-style
-/// newlines reset to column `enterspace` and step `enterlead` further down.
+/// [`text_cells`] with explicit text tool properties: per-character advance is
+/// `char_step` in (right, down, depth) view-relative cells; each Enter moves
+/// the next line's start by `enter_step` from the previous line's start.
 pub fn text_cells_with_options(
     text: &str,
     origin: CellPoint,
@@ -34,89 +34,89 @@ pub fn text_cells_with_options(
     options: TextLayoutOptions,
 ) -> Vec<(CellPoint, char)> {
     let options = options.clamped();
-    let right = orientation.right.unit_vector();
-    let up = orientation.up.unit_vector();
-    let at = |col: i32, row: i32| CellPoint {
-        x: origin.x + right[0] * col - up[0] * row,
-        y: origin.y + right[1] * col - up[1] * row,
-        z: origin.z + right[2] * col - up[2] * row,
-    };
-
     let mut cells = Vec::new();
-    let mut col = 0;
-    let mut row = 0;
+    let mut cursor = (0, 0, 0);
+    let mut line = 0;
     for ch in text.chars() {
         match ch {
             '\n' => {
-                row += options.enterlead;
-                col = options.enterspace;
+                line += 1;
+                cursor = stepped_from_zero(options.enter_step, line);
             }
-            '\t' => col += TAB_WIDTH,
+            '\t' => cursor.0 += TAB_WIDTH,
             '\r' => {}
-            ' ' => col += options.spacing,
+            ' ' => cursor = stepped(cursor, options.char_step),
             glyph => {
-                cells.push((at(col, row), glyph));
-                col += options.spacing;
-                row += options.charlead;
+                cells.push((view_plane_point(origin, orientation, cursor), glyph));
+                cursor = stepped(cursor, options.char_step);
             }
         }
     }
     cells
 }
 
+fn stepped(cursor: (i32, i32, i32), step: (i32, i32, i32)) -> (i32, i32, i32) {
+    (
+        cursor.0 + step.0,
+        cursor.1 + step.1,
+        cursor.2 + step.2,
+    )
+}
+
+fn stepped_from_zero(step: (i32, i32, i32), line: i32) -> (i32, i32, i32) {
+    (step.0 * line, step.1 * line, step.2 * line)
+}
+
 pub const TAB_WIDTH: i32 = 4;
 
-/// Old-painter text tool properties (`text_spacing`, `text_charlead`,
-/// `text_enterlead`, `text_enterspace`), clamped to −16..16 like the old save
-/// sanitizer. All values are in view-plane cells:
-/// - `spacing`: horizontal (along right) advance per character,
-/// - `charlead`: vertical advance per character (positive = down the screen),
-/// - `enterlead`: vertical advance per Enter (positive = down, accumulates per
-///   line: line N starts `enterlead * N` cells below the anchor),
-/// - `enterspace`: horizontal offset applied to every line start after Enter.
-/// Negative values reverse direction, so right-to-left and upward typing work.
+/// Text tool spacing properties as two view-relative 3D steps, each axis
+/// clamped to −16..16 like the old save sanitizer:
+/// - `char_step`: cursor advance per character, (along right, down the screen,
+///   into depth). Negative values reverse direction, so right-to-left,
+///   upward, and into/out-of-screen typing all work.
+/// - `enter_step`: line-start advance per Enter, same axes: line N starts
+///   `enter_step * N` from the anchor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextLayoutOptions {
-    pub spacing: i32,
-    pub charlead: i32,
-    pub enterlead: i32,
-    pub enterspace: i32,
+    pub char_step: (i32, i32, i32),
+    pub enter_step: (i32, i32, i32),
 }
 
 pub const DEFAULT_TEXT_LAYOUT_OPTIONS: TextLayoutOptions = TextLayoutOptions {
-    spacing: 1,
-    charlead: 0,
-    enterlead: 1,
-    enterspace: 0,
+    char_step: (1, 0, 0),
+    enter_step: (0, 1, 0),
 };
 
 impl TextLayoutOptions {
     pub fn clamped(self) -> Self {
         let clamp = |v: i32| v.clamp(-16, 16);
         Self {
-            spacing: clamp(self.spacing),
-            charlead: clamp(self.charlead),
-            enterlead: clamp(self.enterlead),
-            enterspace: clamp(self.enterspace),
+            char_step: (clamp(self.char_step.0), clamp(self.char_step.1), clamp(self.char_step.2)),
+            enter_step: (
+                clamp(self.enter_step.0),
+                clamp(self.enter_step.1),
+                clamp(self.enter_step.2),
+            ),
         }
     }
 }
 
-/// The cell a text cursor sits on, in view-plane coordinates relative to the
-/// entry anchor: `col` along the view's right axis, `row` down the screen
-/// (opposite the view's up axis). The depth axis never moves.
+/// The cell a text cursor sits on, in view-relative cells from the entry
+/// anchor: `col` along the view's right axis, `row` down the screen (opposite
+/// the view's up axis), `depth` along the view's depth axis.
 pub fn view_plane_point(
     origin: CellPoint,
     orientation: CameraViewOrientation,
-    col: i32,
-    row: i32,
+    col_row_depth: (i32, i32, i32),
 ) -> CellPoint {
+    let (col, row, depth) = col_row_depth;
     let right = orientation.right.unit_vector();
     let up = orientation.up.unit_vector();
+    let depth_axis = orientation.depth.unit_vector();
     CellPoint {
-        x: origin.x + right[0] * col - up[0] * row,
-        y: origin.y + right[1] * col - up[1] * row,
-        z: origin.z + right[2] * col - up[2] * row,
+        x: origin.x + right[0] * col - up[0] * row + depth_axis[0] * depth,
+        y: origin.y + right[1] * col - up[1] * row + depth_axis[1] * depth,
+        z: origin.z + right[2] * col - up[2] * row + depth_axis[2] * depth,
     }
 }
 
@@ -142,6 +142,42 @@ mod tests {
         assert_eq!(
             text_cells("AB", point(2, 5), flat_view()),
             vec![(point(2, 5), 'A'), (point(3, 5), 'B')]
+        );
+    }
+
+    #[test]
+    fn char_step_moves_each_glyph_by_the_full_3d_step() {
+        let cells = text_cells_with_options(
+            "AB",
+            point(2, 5),
+            flat_view(),
+            TextLayoutOptions { char_step: (2, 1, 3), ..DEFAULT_TEXT_LAYOUT_OPTIONS },
+        );
+        assert_eq!(
+            cells,
+            vec![
+                (CellPoint { x: 2, y: 5, z: 0 }, 'A'),
+                // right +2, down −1 (y decreases), depth +3 (south = +z at PosZ).
+                (CellPoint { x: 4, y: 4, z: 3 }, 'B'),
+            ]
+        );
+    }
+
+    #[test]
+    fn enter_step_accumulates_each_line_from_the_anchor() {
+        let cells = text_cells_with_options(
+            "A\nB\nC",
+            point(0, 0),
+            flat_view(),
+            TextLayoutOptions { enter_step: (2, 1, 0), ..DEFAULT_TEXT_LAYOUT_OPTIONS },
+        );
+        assert_eq!(
+            cells,
+            vec![
+                (point(0, 0), 'A'),
+                (point(2, -1), 'B'),
+                (point(4, -2), 'C'),
+            ]
         );
     }
 
@@ -182,8 +218,9 @@ mod tests {
 
     #[test]
     fn side_view_text_spreads_along_right_and_stacks_along_up_never_into_depth() {
-        // At PosX the view plane is z/y and x is the depth axis: text must never
-        // move x, mirroring the brush footprint contract.
+        // At PosX the view plane is z/y and x is the depth axis: with the
+        // default steps text must never move x, mirroring the brush footprint
+        // contract (depth movement only happens via explicit step components).
         let cells = text_cells(
             "AB\nC",
             CellPoint { x: 3, y: 5, z: 7 },

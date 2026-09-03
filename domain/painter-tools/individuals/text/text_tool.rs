@@ -22,7 +22,10 @@ mod tests {
         assert_eq!(descriptor.id, "text");
         assert_eq!(descriptor.label, "Text");
         assert_eq!(descriptor.icon, 'T');
-        assert!(descriptor.property_row_ids.is_empty());
+        assert_eq!(
+            descriptor.property_row_ids,
+            &["text_char_step", "text_enter_step"]
+        );
         assert_eq!(descriptor.select_action, None);
         assert_eq!(descriptor.hotkey, None);
     }

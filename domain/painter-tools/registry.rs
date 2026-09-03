@@ -54,7 +54,7 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
         id: "text",
         label: "Text",
         icon: 'T',
-        property_row_ids: &[],
+        property_row_ids: &["text_char_step", "text_enter_step"],
         select_action: None,
         hotkey: None,
     },
