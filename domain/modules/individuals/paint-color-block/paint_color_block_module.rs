@@ -1,8 +1,8 @@
 use std::{cell::RefCell, rc::Rc};
 
 use thaum_renderer_domain::{
-    ColorBlockModule, Module, ModulePointerButton, ModulePointerEvent, ModuleRect,
-    PersistedModuleUiState, UiPalette,
+    CellColor, CellGraphic, CellWeight, ColorBlockModule, Module, ModulePointerButton,
+    ModulePointerEvent, ModuleRect, PersistedModuleUiState, UiPalette,
 };
 
 use crate::{
@@ -76,6 +76,17 @@ impl PaintColorBlockModule {
     }
 }
 
+fn flat_rgb(color: CellColor) -> Option<[u8; 3]> {
+    match color {
+        CellColor::Flat([red, green, blue, _]) => Some([
+            (red * 255.0).round().clamp(0.0, 255.0) as u8,
+            (green * 255.0).round().clamp(0.0, 255.0) as u8,
+            (blue * 255.0).round().clamp(0.0, 255.0) as u8,
+        ]),
+        _ => None,
+    }
+}
+
 impl Module for PaintColorBlockModule {
     fn id(&self) -> &str {
         self.inner.id()
@@ -86,7 +97,21 @@ impl Module for PaintColorBlockModule {
     }
 
     fn draw(&self) -> thaum_renderer_domain::CellGroup {
-        self.inner.draw()
+        let mut group = self.inner.draw();
+        // Selection highlight: color cells matching either hand's live color
+        // draw at weight 3, every other color cell at weight 1. Resolved from
+        // tool state at draw time so the highlight can never go stale when a
+        // hand color changes elsewhere (hand settings, other picker, etc.).
+        let left = self.hand_rgb(PaintHand::Left);
+        let right = self.hand_rgb(PaintHand::Right);
+        for cell in group.cells.values_mut() {
+            if !matches!(cell.graphic, CellGraphic::Glyph('█')) {
+                continue;
+            }
+            let selected = flat_rgb(cell.color).is_some_and(|rgb| rgb == left || rgb == right);
+            cell.weight = CellWeight::from_index_clamped(if selected { 3 } else { 1 });
+        }
+        group
     }
 
     fn on_pointer_event(&mut self, event: ModulePointerEvent) {
@@ -180,6 +205,43 @@ mod tests {
             x1: 18,
             y1: 11,
         }
+    }
+
+    #[test]
+    fn drawing_highlights_hand_colors_at_weight_three_and_other_colors_at_weight_one() {
+        let tool_state = Rc::new(RefCell::new(ToolState::default()));
+        let module =
+            PaintColorBlockModule::new("block", rect(), tool_state.clone(), UiPalette::default());
+        // Anchor one hand to the picker's current selection so at least one
+        // drawn color cell (the preview swatch) is guaranteed to match.
+        let selected = module.inner.selected_rgb();
+        tool_state
+            .borrow_mut()
+            .set_color_for_hand(
+                PaintHand::Left,
+                PaintColor::flat_rgb(selected[0], selected[1], selected[2]),
+            );
+
+        let group = module.draw();
+        let mut highlighted = 0;
+        let mut plain = 0;
+        for cell in group.cells.values() {
+            if !matches!(cell.graphic, CellGraphic::Glyph('█')) {
+                continue;
+            }
+            let Some(rgb) = flat_rgb(cell.color) else {
+                continue;
+            };
+            if rgb == selected {
+                assert_eq!(cell.weight, CellWeight::from_index_clamped(3));
+                highlighted += 1;
+            } else {
+                assert_eq!(cell.weight, CellWeight::from_index_clamped(1));
+                plain += 1;
+            }
+        }
+        assert!(highlighted >= 1);
+        assert!(plain > 0);
     }
 
     #[test]

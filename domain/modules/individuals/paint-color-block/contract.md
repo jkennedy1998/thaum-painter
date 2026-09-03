@@ -7,6 +7,7 @@ Own painter's binding for the generic renderer color-block picker so the old 37-
 - the `PaintColorBlockModule` type
 - left/right hand routing for color-block interactions
 - syncing the renderer color block from the active hand's current color preview
+- draw-time selection highlighting: color cells matching either hand's live color draw at weight 3, all other color cells at weight 1, resolved from tool state each draw so the highlight never goes stale
 - opting the renderer color block into painter's old 37-color indexed palette so the field is visibly banded
 - committing dragged or wheel-scrolled RGB updates into live painter tool-state
 
@@ -39,6 +40,7 @@ Own painter's binding for the generic renderer color-block picker so the old 37-
 - inline `#[cfg(test)]` in `paint_color_block_module.rs`
   - light
   - validates click and drag assignment into painter hand color state
+  - validates weight-3 highlighting of hand-matched color cells and weight-1 for the rest
 
 ## data
 - none
