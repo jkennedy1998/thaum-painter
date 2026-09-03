@@ -42,7 +42,8 @@ use thaum_renderer_domain::{
     CommandBarButton, CommandBarClickOutcome, Composition, ControlActionRow, ControlsPanelModule,
     ControlsProfile, conflicting_actions, effective_bindings, format_raw_input,
     ModulePointerButton, ModulePointerEvent, ModuleRect, ModuleRegistry,
-    PersistedRendererUiSessionState, RawInput, UiColorRole, UiCustomizationModule, UiPalette,
+    PersistedRendererUiSessionState, RawInput, TypingMode, TypingRoute, UiColorRole,
+    UiCustomizationModule, UiPalette,
 };
 use winit::keyboard::KeyCode;
 
@@ -485,6 +486,25 @@ mod tests {
     }
 
     #[test]
+    fn typing_reserved_inputs_cover_the_camera_and_depth_bindings_only() {
+        let reserved = typing_reserved_inputs(&thaum_painter_domain::tai::painter_bindings());
+        let labels: Vec<&str> = reserved
+            .iter()
+            .map(|input| match input {
+                RawInput::Key(label) => label.as_str(),
+                _ => panic!("camera/depth bindings are key bindings"),
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                "NUMPAD4", "NUMPAD6", "NUMPAD8", "NUMPAD2", "NUMPAD7", "NUMPAD9", "NUMPAD1",
+                "NUMPAD3",
+            ]
+        );
+    }
+
+    #[test]
     fn raw_key_labels_cover_the_keys_the_registry_binds() {
         assert_eq!(raw_key_label(KeyCode::KeyP).as_deref(), Some("P"));
         assert_eq!(raw_key_label(KeyCode::KeyB).as_deref(), Some("B"));
@@ -662,22 +682,29 @@ fn text_entry_key_for_key(key: KeyCode) -> Option<TextEntryKey> {
     }
 }
 
-/// Reserved keys that stay live while a typing session owns the keyboard:
-/// camera swing/roll (numpad 4/6/8/2/7/9) and depth step (numpad 1/3) only —
-/// every other shortcut is suppressed during typing (the old
-/// `handle_text_mode_reserved_shortcut` allowlist).
-fn is_text_mode_reserved_key(key: KeyCode) -> bool {
-    matches!(
-        key,
-        KeyCode::Numpad4
-            | KeyCode::Numpad6
-            | KeyCode::Numpad8
-            | KeyCode::Numpad2
-            | KeyCode::Numpad7
-            | KeyCode::Numpad9
-            | KeyCode::Numpad1
-            | KeyCode::Numpad3
-    )
+/// Inputs that stay live while a typing session owns the input surface: the
+/// current bindings of the camera swing/roll/focus-depth actions, so a
+/// remap moves the reserved set with it (the old text-mode allowlist was
+/// hardcoded to numpad 4/6/8/2/7/9 and 1/3).
+fn typing_reserved_inputs(bindings: &ActionBindingMap) -> Vec<RawInput> {
+    const TYPING_RESERVED_ACTIONS: &[&str] = &[
+        "painter_swing_left",
+        "painter_swing_right",
+        "painter_swing_up",
+        "painter_swing_down",
+        "painter_roll_counter_clockwise",
+        "painter_roll_clockwise",
+        "painter_focus_depth_toward",
+        "painter_focus_depth_away",
+    ];
+    TYPING_RESERVED_ACTIONS
+        .iter()
+        .flat_map(|action| {
+            bindings
+                .bindings_for(&ActionName::new(*action))
+                .to_vec()
+        })
+        .collect()
 }
 
 /// Live painter behavior for one registry action. One entry per action the
@@ -1039,6 +1066,10 @@ fn main() -> Result<()> {
     // segment (Enter starts a new segment), the old commit granularity.
     let mut text_entry: Option<TextEntryState> = None;
     let mut text_stroke_start: Option<(Canvas, String)> = None;
+    // Renderer-owned input-focus gate for typing sessions; declared reserved
+    // inputs (camera/depth bindings) stay live, everything else is focused
+    // into the session or suppressed.
+    let mut typing_mode = TypingMode::default();
     let mut selection_stroke: Option<SelectionStroke> = None;
     let mut active_layer_id = resolved_active_layer_id(
         &shared_document,
@@ -1112,6 +1143,17 @@ fn main() -> Result<()> {
             .is_some_and(|module| module.id() == "paint_canvas_bounds");
 
         for key in &frame.input.pressed_keys {
+            // While a typing session owns the input surface, only the
+            // reserved camera/depth bindings stay live for held keys; every
+            // other held binding (pan WASD included) is suppressed.
+            if typing_mode.is_active() {
+                let reserved = raw_key_label(*key)
+                    .map(|label| typing_mode.route(&RawInput::Key(label)))
+                    .is_some_and(|route| route == TypingRoute::Reserved);
+                if !reserved {
+                    continue;
+                }
+            }
             // Held pan resolves through the effective binding map too, so a
             // remap moves the continuous pan behavior along with the press.
             let held_actions = painter_key_actions(&effective_painter_bindings.borrow(), *key);
@@ -1153,24 +1195,25 @@ fn main() -> Result<()> {
             }
         }
         for key in &frame.input.just_pressed_keys {
-            // While a controls-panel row waits for a captured key, the press
-            // becomes that row's new binding and never dispatches a command.
-            if let Some(label) = raw_key_label(*key) {
-                if modules.dispatch_key_capture(&label).is_some() {
-                    continue;
-                }
- }
-            // While a typing session is active it owns the keyboard: reserved
-            // camera/depth bindings fall through, session keys route into the
-            // session, and everything else is suppressed.
-            if text_entry.as_ref().is_some_and(|entry| entry.is_active()) {
-                if is_text_mode_reserved_key(*key) {
-                    continue;
-                }
-                let Some(entry_key) = text_entry_key_for_key(*key) else {
-                    continue;
-                };
-                match text_entry.as_mut().unwrap().handle_key(entry_key) {
+            // While typing mode owns the input surface: session keys route
+            // into the typing session, reserved camera/depth inputs fall
+            // through to live dispatch, and everything else — including
+            // module key capture — is suppressed.
+            if typing_mode.is_active() {
+                let route = raw_key_label(*key)
+                    .map(|label| typing_mode.route(&RawInput::Key(label)))
+                    .unwrap_or(TypingRoute::Suppressed);
+                match route {
+                    TypingRoute::Suppressed => continue,
+                    TypingRoute::Owned => {
+                        let Some(entry_key) = text_entry_key_for_key(*key) else {
+                            continue;
+                        };
+                        match text_entry
+                            .as_mut()
+                            .expect("typing mode active without a typing session")
+                            .handle_key(entry_key)
+                        {
                     TextEntryOutcome::Applied { point, cell } => {
                         if let Some((_, block_id)) = text_stroke_start.as_ref() {
                             stage_text_entry_change(
@@ -1211,10 +1254,22 @@ fn main() -> Result<()> {
                             text_stroke_start.take(),
                         )?;
                         text_entry = None;
+                        typing_mode.end();
                     }
                     TextEntryOutcome::Idle | TextEntryOutcome::Ignored => {}
+                        }
+                    }
+                    // Reserved camera/depth inputs fall through to module key
+                    // capture and live binding dispatch below.
+                    TypingRoute::Reserved => {}
                 }
-                continue;
+            }
+            // While a controls-panel row waits for a captured key, the press
+            // becomes that row's new binding and never dispatches a command.
+            if let Some(label) = raw_key_label(*key) {
+                if modules.dispatch_key_capture(&label).is_some() {
+                    continue;
+                }
             }
             // Registry-owned keys dispatch by binding name through the
             // effective map (declared defaults + user profile), one live
@@ -1407,7 +1462,11 @@ fn main() -> Result<()> {
         let paint_viewport = *paint_canvas_viewport.borrow();
         let paint_surface = PaintCanvasBoundsModule::content_rect(paint_viewport);
 
-        if let Some(click) = frame.input.just_clicked {
+        // While typing mode owns the input surface, all pointer input is
+        // suppressed: clicks, drags, and panel interactions cannot reach
+        // modules or the canvas behind the session's back.
+        if typing_mode.is_active() {
+        } else if let Some(click) = frame.input.just_clicked {
             let world = to_world(click);
             let screen = to_screen(click);
             let handled_command_bar = command_bar.contains(screen.x, screen.y);
@@ -1530,6 +1589,9 @@ fn main() -> Result<()> {
                                         brush_cell,
                                     ));
                                     text_stroke_start = Some((canvas.clone(), block_id.clone()));
+                                    typing_mode.begin(typing_reserved_inputs(
+                                        &effective_painter_bindings.borrow(),
+                                    ));
                                 }
                             } else {
                             // Paint strokes land on the raster block covering the playhead
@@ -1663,6 +1725,9 @@ fn main() -> Result<()> {
                                         brush_cell,
                                     ));
                                     text_stroke_start = Some((canvas.clone(), block_id.clone()));
+                                    typing_mode.begin(typing_reserved_inputs(
+                                        &effective_painter_bindings.borrow(),
+                                    ));
                                 }
                             } else {
                             let current_breath = timeline_state.borrow().current_breath;
@@ -1877,7 +1942,9 @@ fn main() -> Result<()> {
             }
         }
 
-        if frame.input.wheel_delta_x != 0.0 || frame.input.wheel_delta_y != 0.0 {
+        if !typing_mode.is_active()
+            && (frame.input.wheel_delta_x != 0.0 || frame.input.wheel_delta_y != 0.0)
+        {
             if let Some(cursor) = frame.input.cursor_position {
                 let screen = to_screen(cursor);
                 let wheel_handled_by_command_bar = command_bar.on_wheel(

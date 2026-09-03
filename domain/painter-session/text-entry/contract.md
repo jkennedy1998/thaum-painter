@@ -13,9 +13,6 @@ keyboard, per-keystroke cell changes, and the Enter/exit commit granularity.
   place, arrows move the cursor freely, Escape finishes
 - brush capture at session start (the click's brush stays fixed for the whole
   session, matching the old `getBrushForButton(text_mode_button)` capture)
-- the reserved-shortcut contract: while typing, ONLY camera/depth bindings run
-  outside the session — every other shortcut is suppressed (old
-  `handle_text_mode_reserved_shortcut` allowlist behavior)
 
 ## does not own
 - text layout math (`domain/painter-operations/text/`)
@@ -24,6 +21,8 @@ keyboard, per-keystroke cell changes, and the Enter/exit commit granularity.
 - staging changes onto the shared document / committing records (session bridge
   `stage_text_entry_change` + `commit_staged_paint_stroke`)
 - which physical keys map to `TextEntryKey` (entrypoint input translation)
+- input-focus gating while typing (held keys, pointer, wheel, reserved
+  camera/depth bindings — renderer `domain/controls/typing-mode/`)
 - text tool properties UI panels
 
 ## children-encapsulations
@@ -38,6 +37,8 @@ keyboard, per-keystroke cell changes, and the Enter/exit commit granularity.
 ## dependencies
 - `/home/j/Repos/thaum-painter/domain/painter-operations/text/`
 - `/home/j/Repos/thaum-renderer/domain/camera/`
+- `/home/j/Repos/thaum-renderer/domain/controls/typing-mode/` (the entrypoint
+  gates dispatch through it while this session is active)
 
 ## exposed interfaces
 ### live typing session
@@ -47,7 +48,8 @@ effects: none (pure session state; callers stage/commit)
 via: `TextEntryState::begin`, `handle_key`, `take_pending`
 
 ## interface consumers
-- `orchestration/entrypoint/` (click begins the session; key loop routes through it before shortcut dispatch)
+- `orchestration/entrypoint/` (click begins the session and the typing-mode
+  gate; key loop routes through it)
 
 ## artifacts
 - none

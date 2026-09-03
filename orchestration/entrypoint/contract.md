@@ -13,6 +13,7 @@ Own the real, runnable consumer entrypoint that boots `thaum-renderer` for thaum
 - the first real hand-based paint loop: left/right clicks and drags over the paint canvas apply the left-hand/right-hand tools from `domain/painter-session/tool-state/`, so toolbox selection immediately affects live painting
 - live scene-space canvas + selection proof rendering: the paint canvas cells and plane-selection border are emitted as regular composition groups in the renderer's world/3D intake path, while toolbox/indexed-color-picker/color-block/material-picker/graphic-picker/hand-settings remain flat 2D modules
 - registry-backed hotkey dispatch: physical key presses resolve through the TAI registry's `painter_bindings()` (`domain/tai/`) by binding name before any live-only match arm runs; registry-owned keys (P/B tool select) never fall through to the hand-written arms, and wheel-bound registry actions (zoom) stay wheel-handled
+- typing-mode input focus: while a text-tool typing session is active the renderer's `TypingMode` gate (`thaum-renderer` `domain/controls/typing-mode/`) routes every input — held and just-pressed keys, pointer clicks/drags, and wheel — with the current camera/depth bindings (from the effective binding map, so remaps move the reserved set) as the only inputs that stay live outside the session
 
 ## does not own
 - renderer domain truth or boot internals, owned by `thaum-renderer`
