@@ -32,15 +32,19 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use anyhow::Error;
-use thaum_renderer_domain::{CameraViewOrientation, CellPoint};
+use thaum_renderer_domain::{CameraViewOrientation, CellColor, CellGroup, CellPoint};
 
 use crate::{
     brush::Canvas,
     fill::CanvasBounds,
-    lasso_stroke::LassoStroke,
+    lasso_stroke::{
+        build_lasso_path_cell_group, build_lasso_preview_cell_groups, LassoStroke,
+    },
     painter_tools::shared::selection_behavior,
     selection_state::{PainterSelection, SelectionMode},
-    selection_stroke::{interpolate_cell_path, SelectionStroke},
+    selection_stroke::{
+        build_plane_selection_cell_groups, interpolate_cell_path, SelectionStroke,
+    },
     session_document::{
         commit_selection_channel, commit_staged_paint_stroke, stage_image_edit_chunk,
     },
@@ -424,13 +428,57 @@ impl CanvasPointerStrokes {
         }
         errors
     }
+
+    /// Overlay groups for in-progress strokes: the plane-selection preview
+    /// (with any active selection stroke) and, when a lasso bound is open,
+    /// the bound path plus its live interior preview. The image/selection
+    /// target dispatch mirrors the release commit's — a preview must show
+    /// exactly what release will paint. Never commits anything.
+    pub fn overlay_cell_groups(
+        &self,
+        ctx: &mut CanvasPointerContext<'_>,
+        orientation: CameraViewOrientation,
+        vivid: CellColor,
+    ) -> Vec<CellGroup> {
+        let mut groups = build_plane_selection_cell_groups(
+            &ctx.selection.borrow(),
+            self.selection.as_ref(),
+            ctx.canvas,
+            vivid,
+        );
+        if let Some(stroke) = &self.lasso {
+            groups.push(build_lasso_path_cell_group(stroke));
+            let target = ctx.tool_state.borrow().hand_state(stroke.hand).target;
+            let previews = if target == PaintTarget::Image {
+                ctx.tool_state.borrow().lasso_preview_cells(
+                    ctx.canvas,
+                    &ctx.selection.borrow(),
+                    &stroke.path,
+                    stroke.hand,
+                    orientation,
+                )
+            } else {
+                // Selection-target lasso: the drawing will not change, so both
+                // flash halves show the cell as currently drawn (vivid recolor
+                // vs true) — the selection display behavior.
+                ctx.tool_state.borrow().lasso_select_preview_cells(
+                    ctx.canvas,
+                    &stroke.path,
+                    stroke.hand,
+                    orientation,
+                )
+            };
+            groups.extend(build_lasso_preview_cell_groups(&previews, vivid));
+        }
+        groups
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use thaum_renderer_domain::{
-        camera_view_orientation_for_camera, CameraRoll, CameraSwing, CellGraphic,
+        camera_view_orientation_for_camera, CameraRoll, CameraSwing, CellColor, CellGraphic,
     };
     use crate::{
         brush::{apply_brush, PaintedCell},
@@ -611,6 +659,34 @@ mod tests {
         // The stroke start snapshots the canvas and its raster block so the
         // typed segment commits as one record on Escape/exit.
         assert!(!typing.stroke_start.1.is_empty());
+    }
+
+    #[test]
+    fn overlay_cell_groups_follow_in_progress_strokes() {
+        let vivid = CellColor::Flat([1.0, 0.0, 0.0, 1.0]);
+        let mut session = Session::new();
+        {
+            let tool_state = session.tool_state.get_mut();
+            tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Lasso);
+            tool_state.set_graphic_for_hand(PaintHand::Left, CellGraphic::Glyph('.'));
+        }
+        let mut strokes = CanvasPointerStrokes::new();
+        let bounds = canvas_bounds();
+        strokes.begin_press(&mut session.ctx(), PaintHand::Left, point(0, 0), bounds, flat_view(), 0);
+        strokes.continue_drag(&mut session.ctx(), PaintHand::Left, point(2, 2), bounds, flat_view());
+
+        // Open lasso bound: the bound path plus its flash-preview groups.
+        let groups = strokes.overlay_cell_groups(&mut session.ctx(), flat_view(), vivid);
+        assert!(!groups.is_empty());
+
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
+        assert!(errors.is_empty());
+        // Nothing in progress and nothing selected: every returned overlay
+        // group is an empty shell with no cells.
+        let groups = strokes.overlay_cell_groups(&mut session.ctx(), flat_view(), vivid);
+        assert!(groups
+            .iter()
+            .all(|group| group.iter_cells().next().is_none()));
     }
 
     #[test]

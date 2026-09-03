@@ -55,15 +55,21 @@ send: { ctx: &mut CanvasPointerContext, orientation: CameraViewOrientation, curr
 returns: Vec<anyhow::Error> (commit errors for the entrypoint to report)
 effects: paints lasso fills, commits selection channels and staged patch sets, writes document snapshots
 
+### CanvasPointerStrokes::overlay_cell_groups — live preview overlays for in-progress strokes
+send: { ctx: &mut CanvasPointerContext, orientation: CameraViewOrientation, vivid: CellColor }
+returns: Vec<CellGroup> (plane-selection preview; open lasso bound path plus flash-preview groups)
+effects: none — reads state only, never commits
+
 ## interface consumers
 - orchestration/entrypoint (the painter event loop)
 
 ## tests
 - `canvas_pointer`
   - light
-  - validates press/drag/release dispatch per hand: lasso bound + fill parity, selection stroke begin, text typing handoff, other-hand drag isolation, cancel semantics, and one-commit-per-stroke release
+  - validates press/drag/release dispatch per hand: lasso bound + fill parity, selection stroke begin, text typing handoff, other-hand drag isolation, cancel semantics, one-commit-per-stroke release, and overlay groups following in-progress strokes
 
 ## notes
 - This seam exists because the entrypoint carried two near-identical copies of the press/drag/release dispatch (one per hand) and the copies drifted; new tools implement behavior in `tool-state` (or their own session module) and surface here only through the existing dispatch rules.
 - A press with no raster block under the playhead breath begins nothing.
+- Overlay previews must show exactly what the release commit will paint: the overlay target dispatch mirrors `finish_pointer_stroke`'s image/selection dispatch.
 - Text-tool presses return the typing session instead of owning it here so keyboard routing stays with the entrypoint's input ownership seams.

@@ -19,17 +19,13 @@ use thaum_painter_domain::{
         load_document_from_root, new_unsaved_document, resolve_painter_file_root,
     }, layers_runtime::{
         apply_layers_panel_action, build_selected_layer_property_rows, resolved_active_layer_id,
-    }, render_space::build_document_layer_cell_groups, save_shared_document_snapshot, selection_stroke::{
-        build_plane_selection_cell_groups,
-    }, canvas_pointer::{CanvasPointerContext, CanvasPointerStrokes}, lasso_stroke::{
-        build_lasso_path_cell_group, build_lasso_preview_cell_groups,
-    }, session_document::{
+    }, render_space::build_document_layer_cell_groups, save_shared_document_snapshot, canvas_pointer::{CanvasPointerContext, CanvasPointerStrokes}, session_document::{
         commit_selection_channel, commit_staged_paint_stroke, apply_shared_history_action,
         recover_snapshot_conflict, stage_text_entry_change, sync_canvas_from_active_layer,
     }, text_entry::{cursor_overlay_group, TextEntryKey, TextEntryOutcome, TextEntryState}, Canvas, DrawingSpaceWheelMode, GraphicPickerModule, HandSettingsModule, LayerRow, LayersPanelModule, LayersPanelState,
     MaterialPickerModule, PaintCanvasBoundsModule, PaintColorBlockModule,
     PaintColorPickerModule, PaintHand,
-    PaintTarget, PaintTool, PainterSelection, PainterUserSessionState, PersistedPainterUiState, SelectionMode, SharedDocumentPaths,
+    PaintTool, PainterSelection, PainterUserSessionState, PersistedPainterUiState, SelectionMode, SharedDocumentPaths,
     SharedDocumentRuntime, TimelineState,
     ToolDef, ToolState, ToolboxModule, DEFAULT_SELECTION_CHANNEL_ID,
 };
@@ -2101,43 +2097,22 @@ fn main() -> Result<()> {
 
         let mut groups = build_document_layer_cell_groups(&shared_document, timeline_state.borrow().current_breath);
         groups.extend(modules.iter().map(|module| module.draw()));
-        groups.extend(build_plane_selection_cell_groups(
-            &selection.borrow(),
-            pointer_strokes.selection(),
-            &canvas,
+        // In-progress stroke overlays live on the seam: plane selection
+        // preview, and any open lasso bound with its live interior preview.
+        groups.extend(pointer_strokes.overlay_cell_groups(
+            &mut canvas_pointer_context(
+                &tool_state,
+                &selection,
+                &mut canvas,
+                &mut shared_document,
+                &shared_document_paths,
+                &mut shared_action_counter,
+                &session_user_id,
+                &mut active_layer_id,
+            ),
+            view_orientation,
             ui_palette.get(UiColorRole::Vivid),
         ));
-        // In-progress lasso bound: the bound path itself, plus a live interior
-        // preview built from the same lasso seam release consumes — each cell
-        // flashes between its current character/weight recolored vivid and the
-        // exact appearance release will paint. Never committed before release.
-        if let Some(stroke) = pointer_strokes.lasso() {
-            groups.push(build_lasso_path_cell_group(stroke));
-            let target = tool_state.borrow().hand_state(stroke.hand).target;
-            let previews = if target == PaintTarget::Image {
-                tool_state.borrow().lasso_preview_cells(
-                    &canvas,
-                    &selection.borrow(),
-                    &stroke.path,
-                    stroke.hand,
-                    view_orientation,
-                )
-            } else {
-                // Selection-target lasso: the drawing will not change, so both
-                // flash halves show the cell as currently drawn (vivid recolor
-                // vs true) — the selection display behavior.
-                tool_state.borrow().lasso_select_preview_cells(
-                    &canvas,
-                    &stroke.path,
-                    stroke.hand,
-                    view_orientation,
-                )
-            };
-            groups.extend(build_lasso_preview_cell_groups(
-                &previews,
-                ui_palette.get(UiColorRole::Vivid),
-            ));
-        }
         // Typing cursor: a flashing bright block on the cell that will receive
         // the next character. Composed on top like the selection overlay, never
         // staged into the canvas or document, so it is never part of the drawing.
