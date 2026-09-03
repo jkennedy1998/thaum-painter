@@ -232,6 +232,71 @@ fn continue_canvas_drag_if_eligible(
     }
 }
 
+/// Finishes one release frame (either hand): broadcasts Up to every
+/// module, commits both hands' pointer strokes, then drains the
+/// layers-panel queue — the pointer-up dispatch itself can commit a timing
+/// action or block swap, and waiting for the next click/drag frame would
+/// leave that commit stranded in the queue.
+#[allow(clippy::too_many_arguments)] // session-bridge seam: one fn carries the live session state; struct-izing touches the entrypoint
+fn finish_canvas_release(
+    modules: &mut ModuleRegistry,
+    pointer_strokes: &mut CanvasPointerStrokes,
+    tool_state: &Rc<RefCell<ToolState>>,
+    selection: &Rc<RefCell<PainterSelection>>,
+    canvas: &mut Canvas,
+    shared_document: &mut SharedDocumentRuntime,
+    shared_document_paths: &SharedDocumentPaths,
+    shared_action_counter: &mut u64,
+    session_user_id: &str,
+    active_layer_id: &mut String,
+    selected_property_id: &mut Option<String>,
+    layers_panel_state: &Rc<RefCell<LayersPanelState>>,
+    timeline_state: &Rc<RefCell<TimelineState>>,
+    screen: CellPoint,
+    view_orientation: thaum_renderer_domain::CameraViewOrientation,
+    current_breath: u32,
+) {
+    // Broadcast the release to every module, not just the captured one: a
+    // drag that never requested capture (or lost it) would otherwise keep
+    // following the pointer through hover moves forever, since its Up
+    // never arrived.
+    modules.dispatch_pointer_up_all(screen.x, screen.y);
+    // One committed action per stroke: the drag's staged patches become a
+    // single CellPatchSet record, written once on release (one undo per
+    // stroke). Hands that didn't paint are no-ops. A lasso bound closes
+    // here: the enclosed cells fill through the hand's tool state (image
+    // target) or select through the hand's resolved mode (selection
+    // target), then share the stroke commit.
+    for error in pointer_strokes.finish_pointer_stroke(
+        &mut canvas_pointer_context(
+            tool_state,
+            selection,
+            canvas,
+            shared_document,
+            shared_document_paths,
+            shared_action_counter,
+            session_user_id,
+            active_layer_id,
+        ),
+        view_orientation,
+        current_breath,
+    ) {
+        eprintln!("stroke commit failed (kept in memory): {error:#}");
+    }
+    drain_layers_panel_action(
+        layers_panel_state,
+        shared_document,
+        shared_document_paths,
+        shared_action_counter,
+        session_user_id,
+        active_layer_id,
+        selected_property_id,
+        canvas,
+        timeline_state,
+        selection,
+    );
+}
+
 /// Who owns a held pointer during a drag frame, classified once per hand.
 /// Chrome (command bar or a captured module drag) wins over the canvas; the
 /// canvas only receives drags inside its screen surface, inside its world
@@ -1909,44 +1974,23 @@ fn main() -> Result<()> {
                 .cursor_position
                 .map(to_screen)
                 .unwrap_or_else(|| to_screen([0.0, 0.0]));
-            // Broadcast the release to every module, not just the captured
-            // one: a drag that never requested capture (or lost it) would
-            // otherwise keep following the pointer through hover moves
-            // forever, since its Up never arrived.
-            modules.dispatch_pointer_up_all(screen.x, screen.y);
-            // One committed action per stroke: the drag's staged patches become a
-            // single CellPatchSet record, written once on release (one undo per
-            // stroke). Hands that didn't paint are no-ops.
-            // A lasso bound closes here: the enclosed cells fill through the
-            // hand's tool state (image target) or select through the hand's
-            // resolved mode (selection target), then share the stroke commit.
-            for error in pointer_strokes.finish_pointer_stroke(
-                &mut canvas_pointer_context(
-                    &tool_state,
-                    &selection,
-                    &mut canvas,
-                    &mut shared_document,
-                    &shared_document_paths,
-                    &mut shared_action_counter,
-                    &session_user_id,
-                    &mut active_layer_id,
-                ),
-                view_orientation,
-                timeline_state.borrow().current_breath,
-            ) {
-                eprintln!("stroke commit failed (kept in memory): {error:#}");
-            }
-            drain_layers_panel_action(
-                &layers_panel_state,
+            finish_canvas_release(
+                &mut modules,
+                &mut pointer_strokes,
+                &tool_state,
+                &selection,
+                &mut canvas,
                 &mut shared_document,
                 &shared_document_paths,
                 &mut shared_action_counter,
                 &session_user_id,
                 &mut active_layer_id,
                 &mut selected_property_id,
-                &mut canvas,
+                &layers_panel_state,
                 &timeline_state,
-                &selection,
+                screen,
+                view_orientation,
+                timeline_state.borrow().current_breath,
             );
         }
         left_pointer_was_down = frame.input.pointer_down;
