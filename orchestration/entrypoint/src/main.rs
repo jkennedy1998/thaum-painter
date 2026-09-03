@@ -20,8 +20,8 @@ use thaum_painter_domain::{
     }, layers_runtime::{
         apply_layers_panel_action, build_selected_layer_property_rows, resolved_active_layer_id,
     }, render_space::build_document_layer_cell_groups, save_shared_document_snapshot, selection_stroke::{
-        build_plane_selection_cell_group, interpolate_cell_path, SelectionStroke,
-    }, lasso_stroke::{build_lasso_path_cell_group, build_lasso_preview_cell_group, LassoStroke}, session_document::{
+        build_plane_selection_cell_groups, interpolate_cell_path, SelectionStroke,
+    }, lasso_stroke::{build_lasso_path_cell_group, build_lasso_preview_cell_groups, LassoStroke}, session_document::{
         commit_selection_channel, commit_staged_paint_stroke,
         apply_shared_history_action, recover_snapshot_conflict, stage_image_edit_chunk,
         stage_text_entry_change, sync_canvas_from_active_layer,
@@ -436,11 +436,6 @@ fn sync_renderer_background_from_ui_palette(state: &mut BootState, ui_palette: &
         blue as f64 / 255.0,
         1.0,
     ];
-    // Flash lane: overlay shaders (lasso interior preview, selection flash)
-    // alternate affected cells toward the palette's vivid role.
-    if let Some(packed) = ui_palette.get(UiColorRole::Vivid).to_packed_rgba() {
-        state.data_lanes.set_flash(packed);
-    }
 }
 
 #[cfg(test)]
@@ -2352,38 +2347,42 @@ fn main() -> Result<()> {
             }
         }
 
-        let raw_breath = state.data_lanes.breath().unwrap_or(0).max(0) as u32;
         let mut groups = build_document_layer_cell_groups(&shared_document, timeline_state.borrow().current_breath);
         groups.extend(modules.iter().map(|module| module.draw()));
-        let flash_on = (raw_breath / 6) % 2 == 0;
-        groups.push(build_plane_selection_cell_group(
+        groups.extend(build_plane_selection_cell_groups(
             &selection.borrow(),
             selection_stroke.as_ref(),
-            flash_on,
+            &canvas,
+            ui_palette.get(UiColorRole::Vivid),
         ));
         // In-progress lasso bound: the bound path itself, plus a live interior
-        // preview built from the same lasso seam release consumes — the exact
-        // cells release will edit flash between the current drawing and a
-        // vivid dot. The interior is never committed before release.
+        // preview built from the same lasso seam release consumes — each cell
+        // flashes between its current character/weight recolored vivid and the
+        // exact appearance release will paint. Never committed before release.
         if let Some(stroke) = lasso_stroke.as_ref() {
             groups.push(build_lasso_path_cell_group(stroke));
             let target = tool_state.borrow().hand_state(stroke.hand).target;
-            let points = if target == PaintTarget::Image {
-                tool_state.borrow().lasso_edit_points(
+            let previews = if target == PaintTarget::Image {
+                tool_state.borrow().lasso_preview_cells(
+                    &canvas,
                     &selection.borrow(),
                     &stroke.path,
                     stroke.hand,
                     view_orientation,
                 )
             } else {
-                tool_state.borrow().lasso_selection_points(
+                // Selection-target lasso: the drawing will not change, so both
+                // flash halves show the cell as currently drawn (vivid recolor
+                // vs true) — the selection display behavior.
+                tool_state.borrow().lasso_select_preview_cells(
+                    &canvas,
                     &stroke.path,
                     stroke.hand,
                     view_orientation,
                 )
             };
-            groups.push(build_lasso_preview_cell_group(
-                &points,
+            groups.extend(build_lasso_preview_cell_groups(
+                &previews,
                 ui_palette.get(UiColorRole::Vivid),
             ));
         }

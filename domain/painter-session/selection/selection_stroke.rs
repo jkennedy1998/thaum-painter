@@ -3,8 +3,12 @@
 
 use std::collections::BTreeSet;
 
-use thaum_renderer_domain::{Cell, CellColor, CellGraphic, CellGroup, CellPoint, CellWeight, WorldPoint};
+use thaum_renderer_domain::{
+    Cell, CellColor, CellGraphic, CellGroup, CellPoint, CellWeight, WorldPoint,
+    CELL_SHADER_VIVID_FLASH, CELL_SHADER_VIVID_FLASH_ALT,
+};
 
+use crate::brush::Canvas;
 use crate::selection_state::{PainterSelection, SelectionMode};
 use crate::tool_state::PaintHand;
 
@@ -54,11 +58,19 @@ pub fn interpolate_cell_path(start: CellPoint, end: CellPoint) -> Vec<CellPoint>
     points
 }
 
-pub fn build_plane_selection_cell_group(
+/// The document-owned 3D selection overlay (including in-progress stroke
+/// previews), built on the renderer's vivid flash shader pair: each selected
+/// cell flashes between its character and weight recolored to the vivid UI
+/// color and the exact appearance currently drawn. Empty cells flash between
+/// the vivid and dim selection box so blank selected areas stay visible.
+/// The shaders gate visibility only — both appearances are baked into the
+/// overlay cells, one per phase.
+pub fn build_plane_selection_cell_groups(
     selection: &PainterSelection,
     stroke: Option<&SelectionStroke>,
-    flash_on: bool,
-) -> CellGroup {
+    canvas: &Canvas,
+    vivid: CellColor,
+) -> Vec<CellGroup> {
     let preview = match stroke {
         Some(stroke) => {
             selection.preview_plane_with_mode(stroke.points.iter().copied(), stroke.mode)
@@ -66,27 +78,41 @@ pub fn build_plane_selection_cell_group(
         None => selection.plane().clone(),
     };
 
-    let glyph = if flash_on { '□' } else { '■' };
-    let color = if flash_on {
-        [1.0, 0.9, 0.25, 1.0]
-    } else {
-        [0.8, 0.6, 0.1, 1.0]
-    };
-
-    let mut group = CellGroup::new(WorldPoint { x: 0, y: 0, z: 0 });
+    let mut vivid_group = CellGroup::new(WorldPoint { x: 0, y: 0, z: 0 });
+    let mut true_group = CellGroup::new(WorldPoint { x: 0, y: 0, z: 0 });
     // Render every selected cell, not just a plane slice or border: selection is a
     // 3D bitmap shared across depths, so cells light up at any depth the camera can
     // see (the composition already shows whatever falls inside the camera window).
     for position in preview.iter() {
-        group.insert(Cell {
+        let existing = canvas.get(&position);
+        vivid_group.insert(Cell {
             position,
-            graphic: CellGraphic::Glyph(glyph),
-            color: CellColor::Flat(color),
-            weight: CellWeight::from_index_clamped(3),
+            graphic: existing
+                .map(|cell| cell.graphic.clone())
+                .unwrap_or(CellGraphic::Glyph('□')),
+            color: vivid,
+            weight: CellWeight::from_index_clamped(
+                existing.map_or(3, |cell| cell.weight_index as i32),
+            ),
+            shader_stack: vec![CELL_SHADER_VIVID_FLASH_ALT],
+            ..Cell::default()
+        });
+        true_group.insert(Cell {
+            position,
+            graphic: existing
+                .map(|cell| cell.graphic.clone())
+                .unwrap_or(CellGraphic::Glyph('□')),
+            color: existing
+                .map(|cell| cell.color.to_cell_color())
+                .unwrap_or(CellColor::Flat([0.8, 0.6, 0.1, 1.0])),
+            weight: CellWeight::from_index_clamped(
+                existing.map_or(3, |cell| cell.weight_index as i32),
+            ),
+            shader_stack: vec![CELL_SHADER_VIVID_FLASH],
             ..Cell::default()
         });
     }
-    group
+    vec![vivid_group, true_group]
 }
 
 #[cfg(test)]

@@ -6,7 +6,8 @@ use thaum_renderer_domain::{
     PersistedModuleUiState, UiColorRole, UiPalette, WorldPoint,
 };
 
-fn standard_gizmo_bar() -> GizmoBar {
+/// Deliberately bespoke: this panel has no Close gizmo.
+fn bounds_gizmo_bar() -> GizmoBar {
     GizmoBar::new(vec![
         GizmoKind::Move,
         GizmoKind::Resize,
@@ -64,7 +65,7 @@ impl PaintCanvasBoundsModule {
             viewport,
             wheel_mode,
             palette,
-            gizmos: standard_gizmo_bar(),
+            gizmos: bounds_gizmo_bar(),
             gizmo_state: GizmoState::new(),
             wheel_mode_hovered: false,
             hidden: false,
@@ -76,7 +77,7 @@ impl PaintCanvasBoundsModule {
     }
 
     pub fn is_gizmo_hit(viewport: ModuleRect, x: i32, y: i32) -> bool {
-        standard_gizmo_bar().hit_test(viewport, x, y).is_some()
+        bounds_gizmo_bar().hit_test(viewport, x, y).is_some()
             || Self::is_wheel_mode_hit(viewport, x, y)
     }
 
@@ -92,7 +93,7 @@ impl PaintCanvasBoundsModule {
         let local_x = x - viewport.x0;
         let local_y = y - viewport.y0;
         let height = viewport.y1 - viewport.y0;
-        local_y == height - 1 && local_x == standard_gizmo_bar().title_start_x()
+        local_y == height - 1 && local_x == bounds_gizmo_bar().title_start_x()
     }
 
     fn set_viewport(&mut self, rect: ModuleRect) {

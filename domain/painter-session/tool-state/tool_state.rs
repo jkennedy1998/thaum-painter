@@ -564,6 +564,32 @@ impl ToolState {
         selection.filter_plane_edit_points(crate::lasso::lasso_points(path, orientation))
     }
 
+    /// Per-cell preview data for the in-progress lasso: the exact points
+    /// release will edit, each with the cell as currently drawn and the
+    /// painted cell the commit will produce (through the same resolution
+    /// `apply_lasso_for_hand` uses).
+    pub fn lasso_preview_cells(
+        &self,
+        canvas: &Canvas,
+        selection: &PainterSelection,
+        path: &[CellPoint],
+        hand: PaintHand,
+        orientation: CameraViewOrientation,
+    ) -> Vec<crate::lasso_stroke::LassoPreviewCell> {
+        self.lasso_edit_points(selection, path, hand, orientation)
+            .into_iter()
+            .map(|point| {
+                let current = canvas.get(&point).cloned();
+                let upcoming = self.resolved_painted_cell(canvas.get(&point), hand);
+                crate::lasso_stroke::LassoPreviewCell {
+                    point,
+                    current,
+                    upcoming,
+                }
+            })
+            .collect()
+    }
+
     /// The selection-surface half of the lasso: the enclosed cells of the
     /// hand's bound, gated by that hand's select-channel enable state. The
     /// caller applies them through the hand's resolved selection mode.
@@ -577,6 +603,35 @@ impl ToolState {
             return Vec::new();
         }
         crate::lasso::lasso_points(path, orientation)
+    }
+
+    /// Selection-target lasso preview: the drawing will not change on
+    /// release, so both flash halves carry the cell as currently drawn —
+    /// the vivid recolor against the cell's true appearance, matching the
+    /// selection display behavior.
+    pub fn lasso_select_preview_cells(
+        &self,
+        canvas: &Canvas,
+        path: &[CellPoint],
+        hand: PaintHand,
+        orientation: CameraViewOrientation,
+    ) -> Vec<crate::lasso_stroke::LassoPreviewCell> {
+        self.lasso_selection_points(path, hand, orientation)
+            .into_iter()
+            .map(|point| {
+                let current = canvas.get(&point).cloned();
+                let upcoming = current.clone().unwrap_or(PaintedCell {
+                    graphic: CellGraphic::Glyph(' '),
+                    color: PaintColor::flat_rgb(0, 0, 0),
+                    weight_index: 3,
+                });
+                crate::lasso_stroke::LassoPreviewCell {
+                    point,
+                    current,
+                    upcoming,
+                }
+            })
+            .collect()
     }
 
     /// Applies the acting hand's assigned tool at `position`, routing either into image edits or

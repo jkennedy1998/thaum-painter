@@ -144,15 +144,6 @@ impl LayersPanelState {
     }
 }
 
-fn standard_gizmo_bar() -> GizmoBar {
-    GizmoBar::new(vec![
-        GizmoKind::Move,
-        GizmoKind::Close,
-        GizmoKind::Resize,
-        GizmoKind::Seamless,
-    ])
-}
-
 #[cfg(test)]
 const ROW_AUTO_KEY: usize = 0;
 #[cfg(test)]
@@ -416,7 +407,7 @@ impl LayersPanelModule {
             rect,
             state,
             palette: UiPalette::default(),
-            gizmos: standard_gizmo_bar(),
+            gizmos: GizmoBar::standard(),
             gizmo_state: GizmoState::new(),
             hidden: false,
             scrubbing_ruler: false,

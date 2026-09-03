@@ -18,15 +18,6 @@ struct MaterialHit {
     material: CellMaterialId,
 }
 
-fn standard_gizmo_bar() -> GizmoBar {
-    GizmoBar::new(vec![
-        GizmoKind::Move,
-        GizmoKind::Close,
-        GizmoKind::Resize,
-        GizmoKind::Seamless,
-    ])
-}
-
 fn supported_materials() -> &'static [CellMaterialId] {
     CellMaterialId::all()
 }
@@ -88,7 +79,7 @@ impl MaterialPickerModule {
             rect,
             tool_state,
             palette: UiPalette::default(),
-            gizmos: standard_gizmo_bar(),
+            gizmos: GizmoBar::standard(),
             gizmo_state: GizmoState::new(),
             hidden: false,
         }

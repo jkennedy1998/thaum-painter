@@ -15,15 +15,6 @@ pub struct ToolDef {
     pub label: &'static str,
 }
 
-fn standard_gizmo_bar() -> GizmoBar {
-    GizmoBar::new(vec![
-        GizmoKind::Move,
-        GizmoKind::Close,
-        GizmoKind::Resize,
-        GizmoKind::Seamless,
-    ])
-}
-
 pub struct ToolboxModule {
     id: String,
     rect: ModuleRect,
@@ -48,7 +39,7 @@ impl ToolboxModule {
             tool_state,
             tool_defs,
             palette: UiPalette::default(),
-            gizmos: standard_gizmo_bar(),
+            gizmos: GizmoBar::standard(),
             gizmo_state: GizmoState::new(),
             hidden: false,
         }

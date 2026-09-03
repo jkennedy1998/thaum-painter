@@ -12,15 +12,6 @@ use crate::{
     tool_state::{PaintChannel, PaintHand, PaintTarget, PaintTool, ToolState},
 };
 
-fn standard_gizmo_bar() -> GizmoBar {
-    GizmoBar::new(vec![
-        GizmoKind::Move,
-        GizmoKind::Close,
-        GizmoKind::Resize,
-        GizmoKind::Seamless,
-    ])
-}
-
 fn format_graphic(graphic: &CellGraphic) -> String {
     match graphic {
         CellGraphic::None => "none".into(),
@@ -58,7 +49,7 @@ impl HandSettingsModule {
             selection,
             number_edit,
             palette: UiPalette::default(),
-            gizmos: standard_gizmo_bar(),
+            gizmos: GizmoBar::standard(),
             gizmo_state: GizmoState::new(),
             hidden: false,
         }

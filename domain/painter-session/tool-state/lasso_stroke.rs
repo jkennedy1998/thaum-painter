@@ -1,12 +1,13 @@
-//! Live lasso stroke accumulation and its overlay preview cell group.
+//! Live lasso stroke accumulation and its overlay preview cell groups.
 //! A lasso drag records the freehand bound; release rasterizes it through
 //! the pure `lasso` operation and applies it through the hand's tool state.
 
 use thaum_renderer_domain::{
     Cell, CellColor, CellGraphic, CellGroup, CellPoint, CellWeight, WorldPoint,
-    CELL_SHADER_VIVID_FLASH,
+    CELL_SHADER_VIVID_FLASH, CELL_SHADER_VIVID_FLASH_ALT,
 };
 
+use crate::brush::PaintedCell;
 use crate::tool_state::PaintHand;
 
 /// One in-progress lasso bound: the acting hand plus the freehand path
@@ -31,6 +32,17 @@ impl LassoStroke {
     }
 }
 
+/// One previewed lasso cell: what the cell currently displays and what the
+/// release commit will paint there. Both halves feed the flashing overlay.
+#[derive(Debug, Clone)]
+pub struct LassoPreviewCell {
+    pub point: CellPoint,
+    /// The cell as currently drawn (None where the canvas is empty).
+    pub current: Option<PaintedCell>,
+    /// The painted cell the release commit will produce at this point.
+    pub upcoming: PaintedCell,
+}
+
 /// Overlay preview for an in-progress lasso: draws the bound path itself.
 pub fn build_lasso_path_cell_group(stroke: &LassoStroke) -> CellGroup {
     let mut group = CellGroup::new(WorldPoint { x: 0, y: 0, z: 0 });
@@ -46,32 +58,64 @@ pub fn build_lasso_path_cell_group(stroke: &LassoStroke) -> CellGroup {
     group
 }
 
-/// Live interior preview for an in-progress lasso: one flashing cell per
-/// point the release commit will edit, produced from the same lasso seam the
-/// commit consumes. The cells carry the renderer's `CELL_SHADER_VIVID_FLASH`
-/// shader, so each one alternates between hidden (the current drawing shows
-/// through) and a vivid dot in the flash color.
-pub fn build_lasso_preview_cell_group(points: &[CellPoint], flash_color: CellColor) -> CellGroup {
-    let mut group = CellGroup::new(WorldPoint { x: 0, y: 0, z: 0 });
-    for position in points {
-        group.insert(Cell {
-            position: *position,
-            graphic: CellGraphic::Glyph('•'),
-            color: flash_color,
-            weight: CellWeight::from_index_clamped(3),
+/// Live interior preview for an in-progress lasso, built from the same seam
+/// the release commit consumes. Two cell groups share the renderer's vivid
+/// flash shader pair: the current cell's character and weight recolored to
+/// the vivid UI color in one phase, the exact appearance release will paint
+/// in the other. The shaders gate visibility only — both appearances are
+/// fully baked into the overlay cells, one graphic override per phase.
+pub fn build_lasso_preview_cell_groups(
+    previews: &[LassoPreviewCell],
+    vivid: CellColor,
+) -> Vec<CellGroup> {
+    let mut current_group = CellGroup::new(WorldPoint { x: 0, y: 0, z: 0 });
+    let mut upcoming_group = CellGroup::new(WorldPoint { x: 0, y: 0, z: 0 });
+    for preview in previews {
+        current_group.insert(Cell {
+            position: preview.point,
+            graphic: preview
+                .current
+                .as_ref()
+                .map(|cell| cell.graphic.clone())
+                .unwrap_or(CellGraphic::None),
+            color: vivid,
+            weight: CellWeight::from_index_clamped(
+                preview.current.as_ref().map_or(3, |c| c.weight_index as i32),
+            ),
+            shader_stack: vec![CELL_SHADER_VIVID_FLASH_ALT],
+            ..Cell::default()
+        });
+        upcoming_group.insert(Cell {
+            position: preview.point,
+            graphic: preview.upcoming.graphic.clone(),
+            color: preview.upcoming.color.to_cell_color(),
+            weight: CellWeight::from_index_clamped(preview.upcoming.weight_index as i32),
             shader_stack: vec![CELL_SHADER_VIVID_FLASH],
             ..Cell::default()
         });
     }
-    group
+    vec![current_group, upcoming_group]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::paint_color::PaintColor;
 
     fn point(x: i32, y: i32) -> CellPoint {
         CellPoint { x, y, z: 0 }
+    }
+
+    fn painted(graphic: char, rgb: (u8, u8, u8)) -> PaintedCell {
+        PaintedCell {
+            graphic: CellGraphic::Glyph(graphic),
+            color: PaintColor::FlatRgb(rgb.0, rgb.1, rgb.2),
+            weight_index: 2,
+        }
+    }
+
+    fn vivid() -> CellColor {
+        CellColor::Flat([0.5, 1.0, 0.75, 1.0])
     }
 
     #[test]
@@ -89,20 +133,50 @@ mod tests {
     }
 
     #[test]
-    fn the_interior_preview_flashes_one_vivid_dot_per_enclosed_cell() {
-        let points = vec![point(0, 0), point(1, 0), point(1, 1)];
-        let group = build_lasso_preview_cell_group(&points, CellColor::Flat([1.0, 0.0, 0.0, 1.0]));
-        let cells: Vec<&Cell> = group.iter_cells().collect();
-        assert_eq!(cells.len(), 3);
-        for cell in &cells {
-            assert_eq!(cell.graphic, CellGraphic::Glyph('•'));
-            assert_eq!(cell.shader_stack, vec![CELL_SHADER_VIVID_FLASH]);
-        }
-        assert!(cells.iter().any(|c| c.position == point(1, 1)));
+    fn the_preview_flashes_current_in_vivid_against_the_upcoming_paint() {
+        let previews = vec![LassoPreviewCell {
+            point: point(1, 1),
+            current: Some(painted('#', (255, 255, 255))),
+            upcoming: painted('.', (9, 8, 7)),
+        }];
+        let groups = build_lasso_preview_cell_groups(&previews, vivid());
+
+        // Current half: the drawn character and weight, recolored vivid,
+        // shown only in the off phase (ALT shader).
+        let current: Vec<&Cell> = groups[0].iter_cells().collect();
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].graphic, CellGraphic::Glyph('#'));
+        assert_eq!(current[0].color, vivid());
+        assert_eq!(current[0].weight, CellWeight::from_index_clamped(2));
+        assert_eq!(current[0].shader_stack, vec![CELL_SHADER_VIVID_FLASH_ALT]);
+
+        // Upcoming half: the exact painted appearance release produces,
+        // shown only in the lit phase (FLASH shader).
+        let upcoming: Vec<&Cell> = groups[1].iter_cells().collect();
+        assert_eq!(upcoming.len(), 1);
+        assert_eq!(upcoming[0].graphic, CellGraphic::Glyph('.'));
+        assert_eq!(upcoming[0].color, PaintColor::flat_rgb(9, 8, 7).to_cell_color());
+        assert_eq!(upcoming[0].shader_stack, vec![CELL_SHADER_VIVID_FLASH]);
     }
 
     #[test]
-    fn an_empty_preview_region_builds_an_empty_group() {
-        assert_eq!(build_lasso_preview_cell_group(&[], CellColor::default()).iter_cells().count(), 0);
+    fn an_empty_canvas_cell_flashes_blank_against_the_upcoming_paint() {
+        let previews = vec![LassoPreviewCell {
+            point: point(0, 0),
+            current: None,
+            upcoming: painted('A', (1, 2, 3)),
+        }];
+        let groups = build_lasso_preview_cell_groups(&previews, vivid());
+        let current: Vec<&Cell> = groups[0].iter_cells().collect();
+        assert_eq!(current[0].graphic, CellGraphic::None);
+        let upcoming: Vec<&Cell> = groups[1].iter_cells().collect();
+        assert_eq!(upcoming[0].graphic, CellGraphic::Glyph('A'));
+    }
+
+    #[test]
+    fn an_empty_preview_region_builds_two_empty_groups() {
+        let groups = build_lasso_preview_cell_groups(&[], vivid());
+        assert_eq!(groups.len(), 2);
+        assert!(groups.iter().all(|g| g.iter_cells().next().is_none()));
     }
 }

@@ -39,15 +39,6 @@ enum LayoutHit {
     },
 }
 
-fn standard_gizmo_bar() -> GizmoBar {
-    GizmoBar::new(vec![
-        GizmoKind::Move,
-        GizmoKind::Close,
-        GizmoKind::Resize,
-        GizmoKind::Seamless,
-    ])
-}
-
 fn parse_supported_glyph_sections(text: &str) -> Vec<GlyphSection> {
     let mut sections = Vec::new();
     let mut pending_title: Option<String> = None;
@@ -185,7 +176,7 @@ impl GraphicPickerModule {
             glyph_sections: supported_glyph_sections(),
             sprites: supported_sprites(),
             palette: UiPalette::default(),
-            gizmos: standard_gizmo_bar(),
+            gizmos: GizmoBar::standard(),
             gizmo_state: GizmoState::new(),
             hidden: false,
         }
