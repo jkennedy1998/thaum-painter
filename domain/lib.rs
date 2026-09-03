@@ -14,6 +14,8 @@ pub mod document_locations;
 pub mod session_document;
 #[path = "painter-session/selection/selection_stroke.rs"]
 pub mod selection_stroke;
+#[path = "painter-session/canvas-pointer/canvas_pointer.rs"]
+pub mod canvas_pointer;
 #[path = "painter-session/text-entry/text_entry.rs"]
 pub mod text_entry;
 #[path = "painter-document/layers/layers_runtime.rs"]

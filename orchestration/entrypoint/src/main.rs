@@ -20,11 +20,12 @@ use thaum_painter_domain::{
     }, layers_runtime::{
         apply_layers_panel_action, build_selected_layer_property_rows, resolved_active_layer_id,
     }, render_space::build_document_layer_cell_groups, save_shared_document_snapshot, selection_stroke::{
-        build_plane_selection_cell_groups, interpolate_cell_path, SelectionStroke,
-    }, lasso_stroke::{build_lasso_path_cell_group, build_lasso_preview_cell_groups, LassoStroke}, session_document::{
-        commit_selection_channel, commit_staged_paint_stroke,
-        apply_shared_history_action, recover_snapshot_conflict, stage_image_edit_chunk,
-        stage_text_entry_change, sync_canvas_from_active_layer,
+        build_plane_selection_cell_groups,
+    }, canvas_pointer::{CanvasPointerContext, CanvasPointerStrokes}, lasso_stroke::{
+        build_lasso_path_cell_group, build_lasso_preview_cell_groups,
+    }, session_document::{
+        commit_selection_channel, commit_staged_paint_stroke, apply_shared_history_action,
+        recover_snapshot_conflict, stage_text_entry_change, sync_canvas_from_active_layer,
     }, text_entry::{cursor_overlay_group, TextEntryKey, TextEntryOutcome, TextEntryState}, Canvas, DrawingSpaceWheelMode, GraphicPickerModule, HandSettingsModule, LayerRow, LayersPanelModule, LayersPanelState,
     MaterialPickerModule, PaintCanvasBoundsModule, PaintColorBlockModule,
     PaintColorPickerModule, PaintHand,
@@ -54,6 +55,30 @@ fn development_asset_root() -> PathBuf {
 
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../thaum-renderer/orchestration/renderer-assets")
+}
+
+/// Assembles the canvas-pointer seam's session context from the event loop's
+/// live locals. Built per pointer event; borrows never outlive the event.
+fn canvas_pointer_context<'a>(
+    tool_state: &'a RefCell<ToolState>,
+    selection: &'a Rc<RefCell<PainterSelection>>,
+    canvas: &'a mut Canvas,
+    shared_document: &'a mut SharedDocumentRuntime,
+    shared_document_paths: &'a SharedDocumentPaths,
+    shared_action_counter: &'a mut u64,
+    session_user_id: &'a str,
+    active_layer_id: &'a mut String,
+) -> CanvasPointerContext<'a> {
+    CanvasPointerContext {
+        tool_state,
+        selection,
+        canvas,
+        document: shared_document,
+        document_paths: shared_document_paths,
+        action_counter: shared_action_counter,
+        session_user_id,
+        active_layer_id,
+    }
 }
 
 fn session_user_id() -> String {
@@ -441,6 +466,7 @@ fn sync_renderer_background_from_ui_palette(state: &mut BootState, ui_palette: &
 #[cfg(test)]
 mod tests {
     use super::*;
+    use thaum_painter_domain::selection_stroke::interpolate_cell_path;
 
     #[test]
     fn interpolate_cell_path_fills_every_step_between_two_points() {
@@ -1058,12 +1084,10 @@ fn main() -> Result<()> {
 
     let mut left_pointer_was_down = false;
     let mut right_pointer_was_down = false;
-    let mut left_drag_position: Option<CellPoint> = None;
-    let mut right_drag_position: Option<CellPoint> = None;
-    // Canvas snapshot + target block captured at stroke press; the release commits
-    // the whole drag as one record (one undo per stroke).
-    let mut left_stroke_start: Option<(Canvas, String)> = None;
-    let mut right_stroke_start: Option<(Canvas, String)> = None;
+    // Per-hand canvas pointer strokes: press dispatch, drag continuation, and
+    // release commit live on the shared canvas-pointer seam; the entrypoint
+    // keeps only screen-space hit testing and typing-session ownership.
+    let mut pointer_strokes = CanvasPointerStrokes::new();
     // Live text-entry session: begun by a Text-tool canvas click, ended by
     // Escape/exit. Pending keystrokes commit as one 'Type Text' record per
     // segment (Enter starts a new segment), the old commit granularity.
@@ -1073,10 +1097,6 @@ fn main() -> Result<()> {
     // inputs (camera/depth bindings) stay live, everything else is focused
     // into the session or suppressed.
     let mut typing_mode = TypingMode::default();
-    let mut selection_stroke: Option<SelectionStroke> = None;
-    // In-progress lasso bound (either hand): press starts the path, drag
-    // extends it, release rasterizes and fills/selects the enclosed region.
-    let mut lasso_stroke: Option<LassoStroke> = None;
     let mut active_layer_id = resolved_active_layer_id(
         &shared_document,
         persisted_session
@@ -1663,9 +1683,7 @@ fn main() -> Result<()> {
                 &selection,
             );
             if handled_command_bar || handled_module || modules.is_pointer_captured() {
-                selection_stroke = None;
-                lasso_stroke = None;
-                left_drag_position = None;
+                pointer_strokes.cancel(PaintHand::Left);
             } else {
                 let bounds = *paint_canvas_bounds.borrow();
                 let position = CellPoint {
@@ -1678,107 +1696,30 @@ fn main() -> Result<()> {
                     && !PaintCanvasBoundsModule::is_gizmo_hit(paint_viewport, screen.x, screen.y)
                     && text_entry.as_ref().map_or(true, |entry| !entry.is_active())
                 {
-                    left_drag_position = Some(position);
-                    if tool_state.borrow().hand_state(PaintHand::Left).target
-                        == PaintTarget::Selection
-                    {
-                        // Lasso on the selection surface records its bound;
-                        // the enclosed region is selected on release.
-                        if tool_state.borrow().tool_for_hand(PaintHand::Left)
-                            == PaintTool::Lasso
-                        {
-                            lasso_stroke = Some(LassoStroke::new(PaintHand::Left, position));
-                        } else {
-                        let mode = thaum_painter_domain::painter_tools::shared::selection_behavior(
-                            tool_state.borrow().tool_for_hand(PaintHand::Left).id(),
-                        )
-                        .resolve(selection.borrow().mode(), SelectionMode::Subtract);
-                        let mut stroke = SelectionStroke::new(PaintHand::Left, mode);
-                        stroke.extend(tool_state.borrow().selection_points_for_hand(
-                            &canvas,
-                            position,
-                            PaintHand::Left,
-                            bounds,
-                            view_orientation,
+                    // Tool dispatch lives on the shared canvas-pointer seam;
+                    // only the text tool's typing session comes back here.
+                    if let Some(typing) = pointer_strokes.begin_press(
+                        &mut canvas_pointer_context(
+                            &tool_state,
+                            &selection,
+                            &mut canvas,
+                            &mut shared_document,
+                            &shared_document_paths,
+                            &mut shared_action_counter,
+                            &session_user_id,
+                            &mut active_layer_id,
+                        ),
+                        PaintHand::Left,
+                        position,
+                        bounds,
+                        view_orientation,
+                        timeline_state.borrow().current_breath,
+                    ) {
+                        text_entry = Some(typing.entry);
+                        text_stroke_start = Some(typing.stroke_start);
+                        typing_mode.begin(typing_reserved_inputs(
+                            &effective_painter_bindings.borrow(),
                         ));
-                        selection_stroke = Some(stroke);
-                        }
-                    } else {
-                        let target = tool_state.borrow().hand_state(PaintHand::Left).target;
-                        let mut selection_state = selection.borrow_mut();
-                        if target == PaintTarget::Image {
-                            // Text tool: the click begins a typing session anchored at
-                            // the click cell with the hand's brush captured; typing then
-                            // owns the keyboard until Escape/exit.
-                            if tool_state.borrow().tool_for_hand(PaintHand::Left) == PaintTool::Text {
-                                let current_breath = timeline_state.borrow().current_breath;
-                                if let Some(block_id) = shared_document
-                                    .active_raster_block_id(&active_layer_id, current_breath)
-                                {
-                                    let brush_cell = tool_state
-                                        .borrow()
-                                        .text_brush_cell_for_hand(PaintHand::Left);
-                                    let (options, space_replace) = {
-                                        let ts = tool_state.borrow();
-                                        (ts.text_options, ts.text_space_replace)
-                                    };
-                                    text_entry = Some(TextEntryState::begin(
-                                        position,
-                                        view_orientation,
-                                        options,
-                                        space_replace,
-                                        brush_cell,
-                                    ));
-                                    text_stroke_start = Some((canvas.clone(), block_id.clone()));
-                                    typing_mode.begin(typing_reserved_inputs(
-                                        &effective_painter_bindings.borrow(),
-                                    ));
-                                }
-                            } else if tool_state.borrow().tool_for_hand(PaintHand::Left)
-                                == PaintTool::Lasso
-                            {
-                                // Lasso records its bound only; the fill lands
-                                // on release as one committed stroke.
-                                let current_breath = timeline_state.borrow().current_breath;
-                                if let Some(block_id) = shared_document
-                                    .active_raster_block_id(&active_layer_id, current_breath)
-                                {
-                                    left_stroke_start = Some((canvas.clone(), block_id.clone()));
-                                    lasso_stroke =
-                                        Some(LassoStroke::new(PaintHand::Left, position));
-                                }
-                            } else {
-                            // Paint strokes land on the raster block covering the playhead
-                            // breath; a breath in a gap has no canvas, so the stroke is rejected.
-                            let current_breath = timeline_state.borrow().current_breath;
-                            if let Some(block_id) = shared_document
-                                .active_raster_block_id(&active_layer_id, current_breath)
-                            {
-                                left_stroke_start = Some((canvas.clone(), block_id.clone()));
-                                stage_image_edit_chunk(
-                                    &mut shared_document,
-                                    &mut canvas,
-                                    &mut tool_state.borrow_mut(),
-                                    &mut selection_state,
-                                    [position],
-                                    PaintHand::Left,
-                                    bounds,
-                                    view_orientation,
-                                    &active_layer_id,
-                                    &block_id,
-                                );
-                            }
-                            }
-                        } else {
-                            tool_state.borrow_mut().apply_at_for_hand(
-                                &mut canvas,
-                                &mut selection_state,
-                                position,
-                                PaintHand::Left,
-                                bounds,
-                                view_orientation,
-                            );
-                        }
                     }
                 } else {
                 }
@@ -1821,9 +1762,7 @@ fn main() -> Result<()> {
                 &selection,
             );
             if handled_command_bar || handled_module || modules.is_pointer_captured() {
-                selection_stroke = None;
-                lasso_stroke = None;
-                right_drag_position = None;
+                pointer_strokes.cancel(PaintHand::Right);
             } else {
                 let bounds = *paint_canvas_bounds.borrow();
                 let position = CellPoint {
@@ -1836,103 +1775,30 @@ fn main() -> Result<()> {
                     && !PaintCanvasBoundsModule::is_gizmo_hit(paint_viewport, screen.x, screen.y)
                     && text_entry.as_ref().map_or(true, |entry| !entry.is_active())
                 {
-                    right_drag_position = Some(position);
-                    if tool_state.borrow().hand_state(PaintHand::Right).target
-                        == PaintTarget::Selection
-                    {
-                        // Lasso on the selection surface records its bound;
-                        // the enclosed region is selected on release.
-                        if tool_state.borrow().tool_for_hand(PaintHand::Right)
-                            == PaintTool::Lasso
-                        {
-                            lasso_stroke = Some(LassoStroke::new(PaintHand::Right, position));
-                        } else {
-                        let mode = thaum_painter_domain::painter_tools::shared::selection_behavior(
-                            tool_state.borrow().tool_for_hand(PaintHand::Right).id(),
-                        )
-                        .resolve(selection.borrow().mode(), SelectionMode::Subtract);
-                        let mut stroke = SelectionStroke::new(PaintHand::Right, mode);
-                        stroke.extend(tool_state.borrow().selection_points_for_hand(
-                            &canvas,
-                            position,
-                            PaintHand::Right,
-                            bounds,
-                            view_orientation,
+                    // Tool dispatch lives on the shared canvas-pointer seam;
+                    // only the text tool's typing session comes back here.
+                    if let Some(typing) = pointer_strokes.begin_press(
+                        &mut canvas_pointer_context(
+                            &tool_state,
+                            &selection,
+                            &mut canvas,
+                            &mut shared_document,
+                            &shared_document_paths,
+                            &mut shared_action_counter,
+                            &session_user_id,
+                            &mut active_layer_id,
+                        ),
+                        PaintHand::Right,
+                        position,
+                        bounds,
+                        view_orientation,
+                        timeline_state.borrow().current_breath,
+                    ) {
+                        text_entry = Some(typing.entry);
+                        text_stroke_start = Some(typing.stroke_start);
+                        typing_mode.begin(typing_reserved_inputs(
+                            &effective_painter_bindings.borrow(),
                         ));
-                        selection_stroke = Some(stroke);
-                        }
-                    } else {
-                        let target = tool_state.borrow().hand_state(PaintHand::Right).target;
-                        let mut selection_state = selection.borrow_mut();
-                        if target == PaintTarget::Image {
-                            // Text tool: same typing-session begin as the left hand.
-                            if tool_state.borrow().tool_for_hand(PaintHand::Right) == PaintTool::Text {
-                                let current_breath = timeline_state.borrow().current_breath;
-                                if let Some(block_id) = shared_document
-                                    .active_raster_block_id(&active_layer_id, current_breath)
-                                {
-                                    let brush_cell = tool_state
-                                        .borrow()
-                                        .text_brush_cell_for_hand(PaintHand::Right);
-                                    let (options, space_replace) = {
-                                        let ts = tool_state.borrow();
-                                        (ts.text_options, ts.text_space_replace)
-                                    };
-                                    text_entry = Some(TextEntryState::begin(
-                                        position,
-                                        view_orientation,
-                                        options,
-                                        space_replace,
-                                        brush_cell,
-                                    ));
-                                    text_stroke_start = Some((canvas.clone(), block_id.clone()));
-                                    typing_mode.begin(typing_reserved_inputs(
-                                        &effective_painter_bindings.borrow(),
-                                    ));
-                                }
-                            } else if tool_state.borrow().tool_for_hand(PaintHand::Right)
-                                == PaintTool::Lasso
-                            {
-                                // Lasso records its bound only; the fill lands
-                                // on release as one committed stroke.
-                                let current_breath = timeline_state.borrow().current_breath;
-                                if let Some(block_id) = shared_document
-                                    .active_raster_block_id(&active_layer_id, current_breath)
-                                {
-                                    right_stroke_start = Some((canvas.clone(), block_id.clone()));
-                                    lasso_stroke =
-                                        Some(LassoStroke::new(PaintHand::Right, position));
-                                }
-                            } else {
-                            let current_breath = timeline_state.borrow().current_breath;
-                            if let Some(block_id) = shared_document
-                                .active_raster_block_id(&active_layer_id, current_breath)
-                            {
-                                right_stroke_start = Some((canvas.clone(), block_id.clone()));
-                                stage_image_edit_chunk(
-                                    &mut shared_document,
-                                    &mut canvas,
-                                    &mut tool_state.borrow_mut(),
-                                    &mut selection_state,
-                                    [position],
-                                    PaintHand::Right,
-                                    bounds,
-                                    view_orientation,
-                                    &active_layer_id,
-                                    &block_id,
-                                );
-                            }
-                            }
-                        } else {
-                            tool_state.borrow_mut().apply_at_for_hand(
-                                &mut canvas,
-                                &mut selection_state,
-                                position,
-                                PaintHand::Right,
-                                bounds,
-                                view_orientation,
-                            );
-                        }
                     }
                 }
             }
@@ -1961,9 +1827,7 @@ fn main() -> Result<()> {
                     &selection,
                 );
                 if command_bar.contains(screen.x, screen.y) || modules.is_pointer_captured() {
-                    selection_stroke = None;
-                    lasso_stroke = None;
-                    left_drag_position = None;
+                    pointer_strokes.cancel(PaintHand::Left);
                 } else {
                     let bounds = *paint_canvas_bounds.borrow();
                     let position = CellPoint {
@@ -1975,58 +1839,22 @@ fn main() -> Result<()> {
                         && bounds.contains(position)
                         && text_entry.as_ref().map_or(true, |entry| !entry.is_active())
                     {
-                        let stroke_positions = left_drag_position
-                            .map(|last| interpolate_cell_path(last, position))
-                            .unwrap_or_else(|| vec![position]);
-                        if let Some(stroke) = lasso_stroke.as_mut() {
-                            if stroke.hand == PaintHand::Left {
-                                stroke.extend(&stroke_positions);
-                            }
-                        } else if let Some(stroke) = selection_stroke.as_mut() {
-                            if stroke.hand == PaintHand::Left {
-                                let tool_state_ref = tool_state.borrow();
-                                for anchor in &stroke_positions {
-                                    stroke.extend(tool_state_ref.selection_points_for_hand(
-                                        &canvas,
-                                        *anchor,
-                                        PaintHand::Left,
-                                        bounds,
-                                        view_orientation,
-                                    ));
-                                }
-                            }
-                        } else {
-                            let target = tool_state.borrow().hand_state(PaintHand::Left).target;
-                            let mut selection_state = selection.borrow_mut();
-                            if target == PaintTarget::Image {
-                                if let Some((_, block_id)) = left_stroke_start.as_ref() {
-                                    stage_image_edit_chunk(
-                                        &mut shared_document,
-                                        &mut canvas,
-                                        &mut tool_state.borrow_mut(),
-                                        &mut selection_state,
-                                        stroke_positions,
-                                        PaintHand::Left,
-                                        bounds,
-                                        view_orientation,
-                                        &active_layer_id,
-                                        block_id,
-                                    );
-                                }
-                            } else {
-                                for anchor in stroke_positions {
-                                    tool_state.borrow_mut().apply_at_for_hand(
-                                        &mut canvas,
-                                        &mut selection_state,
-                                        anchor,
-                                        PaintHand::Left,
-                                        bounds,
-                                        view_orientation,
-                                    );
-                                }
-                            }
-                        }
-                        left_drag_position = Some(position);
+                        pointer_strokes.continue_drag(
+                            &mut canvas_pointer_context(
+                                &tool_state,
+                                &selection,
+                                &mut canvas,
+                                &mut shared_document,
+                                &shared_document_paths,
+                                &mut shared_action_counter,
+                                &session_user_id,
+                                &mut active_layer_id,
+                            ),
+                            PaintHand::Left,
+                            position,
+                            bounds,
+                            view_orientation,
+                        );
                     }
                 }
             }
@@ -2035,10 +1863,23 @@ fn main() -> Result<()> {
                 let world = to_world(cursor);
                 let screen = to_screen(cursor);
                 modules.dispatch_captured_pointer_move(screen.x, screen.y);
+                // Same pending-action drain as the left-drag path: a captured
+                // pointer move can enqueue a layers-panel action, and waiting
+                // for a left event to apply it would strand the commit.
+                apply_layers_panel_action(
+                    layers_panel_state.borrow_mut().take_pending_action(),
+                    &mut shared_document,
+                    &shared_document_paths,
+                    &mut shared_action_counter,
+                    &session_user_id,
+                    &mut active_layer_id,
+                    &mut selected_property_id,
+                    &mut canvas,
+                    &timeline_state,
+                    &selection,
+                );
                 if command_bar.contains(screen.x, screen.y) || modules.is_pointer_captured() {
-                    selection_stroke = None;
-                    lasso_stroke = None;
-                    right_drag_position = None;
+                    pointer_strokes.cancel(PaintHand::Right);
                 } else {
                     let bounds = *paint_canvas_bounds.borrow();
                     let position = CellPoint {
@@ -2050,87 +1891,44 @@ fn main() -> Result<()> {
                         && bounds.contains(position)
                         && text_entry.as_ref().map_or(true, |entry| !entry.is_active())
                     {
-                        let stroke_positions = right_drag_position
-                            .map(|last| interpolate_cell_path(last, position))
-                            .unwrap_or_else(|| vec![position]);
-                        if let Some(stroke) = lasso_stroke.as_mut() {
-                            if stroke.hand == PaintHand::Right {
-                                stroke.extend(&stroke_positions);
-                            }
-                        } else if let Some(stroke) = selection_stroke.as_mut() {
-                            if stroke.hand == PaintHand::Right {
-                                let tool_state_ref = tool_state.borrow();
-                                for anchor in &stroke_positions {
-                                    stroke.extend(tool_state_ref.selection_points_for_hand(
-                                        &canvas,
-                                        *anchor,
-                                        PaintHand::Right,
-                                        bounds,
-                                        view_orientation,
-                                    ));
-                                }
-                            }
-                        } else {
-                            let target = tool_state.borrow().hand_state(PaintHand::Right).target;
-                            let mut selection_state = selection.borrow_mut();
-                            if target == PaintTarget::Image {
-                                if let Some((_, block_id)) = right_stroke_start.as_ref() {
-                                    stage_image_edit_chunk(
-                                        &mut shared_document,
-                                        &mut canvas,
-                                        &mut tool_state.borrow_mut(),
-                                        &mut selection_state,
-                                        stroke_positions,
-                                        PaintHand::Right,
-                                        bounds,
-                                        view_orientation,
-                                        &active_layer_id,
-                                        block_id,
-                                    );
-                                }
-                            } else {
-                                for anchor in stroke_positions {
-                                    tool_state.borrow_mut().apply_at_for_hand(
-                                        &mut canvas,
-                                        &mut selection_state,
-                                        anchor,
-                                        PaintHand::Right,
-                                        bounds,
-                                        view_orientation,
-                                    );
-                                }
-                            }
-                        }
-                        right_drag_position = Some(position);
+                        pointer_strokes.continue_drag(
+                            &mut canvas_pointer_context(
+                                &tool_state,
+                                &selection,
+                                &mut canvas,
+                                &mut shared_document,
+                                &shared_document_paths,
+                                &mut shared_action_counter,
+                                &session_user_id,
+                                &mut active_layer_id,
+                            ),
+                            PaintHand::Right,
+                            position,
+                            bounds,
+                            view_orientation,
+                        );
                     }
                 }
             }
         }
 
-        if selection_stroke.is_some()
+        if pointer_strokes.has_selection_stroke()
             && !frame.input.pointer_down
             && !frame.input.right_pointer_down
         {
-            if let Some(stroke) = selection_stroke.take() {
-                selection
-                    .borrow_mut()
-                    .apply_plane_points_with_mode(stroke.points, stroke.mode);
-                // Mirror the full 3D set into the document channel as an exact
-                // replacement — the channel is the shared truth, the plane cache
-                // is the interaction surface.
-                let points: Vec<CellPoint> = selection.borrow().plane().iter().collect();
-                commit_selection_channel(
+            pointer_strokes.finish_selection_stroke(
+                &mut canvas_pointer_context(
+                    &tool_state,
+                    &selection,
+                    &mut canvas,
                     &mut shared_document,
                     &shared_document_paths,
-                    points,
-                    SelectionMode::Replace,
-                    &mut active_layer_id,
-                    timeline_state.borrow().current_breath,
-                    &mut canvas,
-                    &selection,
                     &mut shared_action_counter,
-                );
-            }
+                    &session_user_id,
+                    &mut active_layer_id,
+                ),
+                timeline_state.borrow().current_breath,
+            );
         }
 
         if !typing_mode.is_active()
@@ -2201,10 +1999,10 @@ fn main() -> Result<()> {
         }
 
         if !frame.input.pointer_down {
-            left_drag_position = None;
+            pointer_strokes.clear_drag_position(PaintHand::Left);
         }
         if !frame.input.right_pointer_down {
-            right_drag_position = None;
+            pointer_strokes.clear_drag_position(PaintHand::Right);
         }
 
         if (left_pointer_was_down && !frame.input.pointer_down)
@@ -2234,67 +2032,21 @@ fn main() -> Result<()> {
             // A lasso bound closes here: the enclosed cells fill through the
             // hand's tool state (image target) or select through the hand's
             // resolved mode (selection target), then share the stroke commit.
-            if let Some(stroke) = lasso_stroke.take() {
-                let target = tool_state.borrow().hand_state(stroke.hand).target;
-                if target == PaintTarget::Image {
-                    tool_state.borrow_mut().apply_lasso_for_hand(
-                        &mut canvas,
-                        &selection.borrow(),
-                        &stroke.path,
-                        stroke.hand,
-                        view_orientation,
-                    );
-                } else {
-                    {
-                        let mut selection_state = selection.borrow_mut();
-                        let mode = thaum_painter_domain::painter_tools::shared::selection_behavior(
-                            tool_state.borrow().tool_for_hand(stroke.hand).id(),
-                        )
-                        .resolve(selection_state.mode(), SelectionMode::Subtract);
-                        selection_state.apply_plane_points_with_mode(
-                            tool_state.borrow().lasso_selection_points(
-                                &stroke.path,
-                                stroke.hand,
-                                view_orientation,
-                            ),
-                            mode,
-                        );
-                    }
-                    let points: Vec<CellPoint> = selection.borrow().plane().iter().collect();
-                    commit_selection_channel(
-                        &mut shared_document,
-                        &shared_document_paths,
-                        points,
-                        SelectionMode::Replace,
-                        &mut active_layer_id,
-                        timeline_state.borrow().current_breath,
-                        &mut canvas,
-                        &selection,
-                        &mut shared_action_counter,
-                    );
-                }
-            }
-            if let Err(err) = commit_staged_paint_stroke(
-                &mut shared_document,
-                &shared_document_paths,
-                &mut shared_action_counter,
-                &session_user_id,
-                &active_layer_id,
-                &mut canvas,
-                left_stroke_start.take(),
+            for error in pointer_strokes.finish_pointer_stroke(
+                &mut canvas_pointer_context(
+                    &tool_state,
+                    &selection,
+                    &mut canvas,
+                    &mut shared_document,
+                    &shared_document_paths,
+                    &mut shared_action_counter,
+                    &session_user_id,
+                    &mut active_layer_id,
+                ),
+                view_orientation,
+                timeline_state.borrow().current_breath,
             ) {
-                eprintln!("stroke commit failed (kept in memory): {err:#}");
-            }
-            if let Err(err) = commit_staged_paint_stroke(
-                &mut shared_document,
-                &shared_document_paths,
-                &mut shared_action_counter,
-                &session_user_id,
-                &active_layer_id,
-                &mut canvas,
-                right_stroke_start.take(),
-            ) {
-                eprintln!("stroke commit failed (kept in memory): {err:#}");
+                eprintln!("stroke commit failed (kept in memory): {error:#}");
             }
             apply_layers_panel_action(
                 layers_panel_state.borrow_mut().take_pending_action(),
@@ -2351,7 +2103,7 @@ fn main() -> Result<()> {
         groups.extend(modules.iter().map(|module| module.draw()));
         groups.extend(build_plane_selection_cell_groups(
             &selection.borrow(),
-            selection_stroke.as_ref(),
+            pointer_strokes.selection(),
             &canvas,
             ui_palette.get(UiColorRole::Vivid),
         ));
@@ -2359,7 +2111,7 @@ fn main() -> Result<()> {
         // preview built from the same lasso seam release consumes — each cell
         // flashes between its current character/weight recolored vivid and the
         // exact appearance release will paint. Never committed before release.
-        if let Some(stroke) = lasso_stroke.as_ref() {
+        if let Some(stroke) = pointer_strokes.lasso() {
             groups.push(build_lasso_path_cell_group(stroke));
             let target = tool_state.borrow().hand_state(stroke.hand).target;
             let previews = if target == PaintTarget::Image {
