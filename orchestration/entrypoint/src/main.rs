@@ -1463,9 +1463,24 @@ fn main() -> Result<()> {
         let paint_surface = PaintCanvasBoundsModule::content_rect(paint_viewport);
 
         // While typing mode owns the input surface, all pointer input is
-        // suppressed: clicks, drags, and panel interactions cannot reach
-        // modules or the canvas behind the session's back.
+        // suppressed: drags and panel interactions cannot reach modules or
+        // the canvas behind the session's back. A click is the user saying
+        // they want out of typing, so it ends the session (committing the
+        // pending stroke, like Escape) and is otherwise swallowed.
         if typing_mode.is_active() {
+            if frame.input.just_clicked.is_some() {
+                commit_staged_paint_stroke(
+                    &mut shared_document,
+                    &shared_document_paths,
+                    &mut shared_action_counter,
+                    &session_user_id,
+                    &active_layer_id,
+                    &mut canvas,
+                    text_stroke_start.take(),
+                )?;
+                text_entry = None;
+                typing_mode.end();
+            }
         } else if let Some(click) = frame.input.just_clicked {
             let world = to_world(click);
             let screen = to_screen(click);
