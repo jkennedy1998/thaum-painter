@@ -8,6 +8,8 @@ pub mod lasso;
 pub mod text;
 #[path = "rendering/camera/camera_viewport.rs"]
 pub mod camera_viewport;
+#[path = "rendering/camera/camera_actions.rs"]
+pub mod camera_actions;
 #[path = "file/document_locations.rs"]
 pub mod document_locations;
 #[path = "painter-session/session_document.rs"]
@@ -50,6 +52,8 @@ pub mod properties;
 pub mod render_space;
 #[path = "painter-session/selection/selection_state.rs"]
 pub mod selection_state;
+#[path = "painter-session/selection/selection_actions.rs"]
+pub mod selection_actions;
 #[path = "file/storage/storage.rs"]
 pub mod storage;
 #[path = "painter-session/timeline-state/timeline_state.rs"]
@@ -88,12 +92,14 @@ pub use manifest::{
     RasterSegment, Rgb, SavedCameraDefaults, TimeAssets, Voxel,
 };
 pub use material_picker_module::MaterialPickerModule;
+pub use camera_actions::{apply_painter_camera_action, apply_painter_pan_action};
 pub use paint_canvas_bounds_module::{DrawingSpaceWheelMode, PaintCanvasBoundsModule};
 pub use paint_color::PaintColor;
 pub use paint_color_block_module::PaintColorBlockModule;
 pub use paint_color_picker_module::PaintColorPickerModule;
 pub use properties::{block_covering_breath, breath_in_span, clamped_breath_span, span_end_breath};
 pub use render_space::{build_composition, build_data_lanes, build_render_space, RenderSpace};
+pub use selection_actions::apply_painter_selection_action;
 pub use selection_state::{
     flood_select_points, PainterSelection, PlaneSelection, SelectionMode, WorldSelection,
 };

@@ -23,6 +23,8 @@ Own live selection state for plane and world-oriented authoring flows.
   - selection contract
 - `selection_state.rs`
   - live plane/world selection state, selection mode, plane helper ops, edit gating, flood-select traversal, and live plane-bounds retargeting
+- `selection_actions.rs`
+  - one dispatch seam for the registry's selection actions (mode set, clear, invert, all); shape actions re-commit their plane points to the shared selection channel here
 
 ## dependencies
 - `/home/j/Repos/thaum-painter/domain/painter-document/`

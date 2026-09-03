@@ -29,6 +29,8 @@ Own the real, runnable consumer entrypoint that boots `thaum-renderer` for thaum
   - `thaum-painter-entrypoint` binary crate manifest
 - `src/main.rs`
   - boot + proof-scene entrypoint
+- `src/painter_modules.rs`
+  - the one place that assembles the module registry; the event loop consumes shared handles and never touches registration order
 - `run.sh`
   - rebuilds (with `CARGO_TARGET_DIR` redirected into this encapsulation's `artifacts/`) and launches the binary
 - `run.desktop`

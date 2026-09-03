@@ -12,22 +12,21 @@ use rfd::FileDialog;
 use thaum_renderer_domain::NumberFieldEdit;
 use thaum_painter_domain::{
     camera_viewport::{
-        apply_drawing_space_scroll, apply_hud_scroll, pan_hud_and_focus_right,
-        pan_hud_and_focus_up, reorient_camera_around_viewport_center, sync_canvas_bounds_to_camera,
+        apply_drawing_space_scroll, apply_hud_scroll, sync_canvas_bounds_to_camera,
         INITIAL_PAINT_CANVAS_BOUNDS, INITIAL_PAINT_CANVAS_VIEWPORT,
     }, document_locations::{
         load_document_from_root, new_unsaved_document, resolve_painter_file_root,
     }, layers_runtime::{
         apply_layers_panel_action, build_selected_layer_property_rows, resolved_active_layer_id,
-    }, render_space::build_document_layer_cell_groups, save_shared_document_snapshot, canvas_pointer::{CanvasPointerContext, CanvasPointerStrokes}, session_document::{
-        commit_selection_channel, commit_staged_paint_stroke, apply_shared_history_action,
+    }, camera_actions::{apply_painter_camera_action, apply_painter_pan_action},
+    render_space::build_document_layer_cell_groups, save_shared_document_snapshot, canvas_pointer::{CanvasPointerContext, CanvasPointerStrokes}, session_document::{
+        commit_staged_paint_stroke, apply_shared_history_action,
         recover_snapshot_conflict, stage_text_entry_change, sync_canvas_from_active_layer,
-    }, text_entry::{cursor_overlay_group, TextEntryKey, TextEntryOutcome, TextEntryState}, Canvas, DrawingSpaceWheelMode, GraphicPickerModule, HandSettingsModule, LayerRow, LayersPanelModule, LayersPanelState,
-    MaterialPickerModule, PaintCanvasBoundsModule, PaintColorBlockModule,
-    PaintColorPickerModule, PaintHand,
-    PaintTool, PainterSelection, PainterUserSessionState, PersistedPainterUiState, SelectionMode, SharedDocumentPaths,
-    SharedDocumentRuntime, TimelineState,
-    ToolDef, ToolState, ToolboxModule, CanvasBounds, DEFAULT_SELECTION_CHANNEL_ID,
+    }, text_entry::{cursor_overlay_group, TextEntryKey, TextEntryOutcome, TextEntryState}, Canvas, DrawingSpaceWheelMode, LayerRow, LayersPanelState,
+    PaintCanvasBoundsModule, PaintHand, PaintTool,
+    PainterSelection, PainterUserSessionState, PersistedPainterUiState, SelectionMode, SharedDocumentPaths,
+    SharedDocumentRuntime, TimelineState, apply_painter_selection_action,
+    ToolState, CanvasBounds, DEFAULT_SELECTION_CHANNEL_ID,
 };
 use thaum_renderer_boot::{
     boot_renderer, cell_clip_size_for_state, run_renderer_window_with_state_frame_provider,
@@ -36,13 +35,15 @@ use thaum_renderer_boot::{
 use thaum_renderer_domain::{
     camera_view_orientation_for_camera, remap_surface_units_to_active_plane_world,
     remap_surface_units_to_flat_2d_local, ActionBindingMap, ActionName, CellPoint, CommandBar,
-    CommandBarButton, CommandBarClickOutcome, Composition, ControlActionRow, ControlsPanelModule,
-    ControlsProfile, conflicting_actions, effective_bindings, format_raw_input,
+    CommandBarButton, CommandBarClickOutcome, Composition, ControlActionRow,
+    ControlsProfile, effective_bindings,
     ModulePointerButton, ModulePointerEvent, ModuleRect, ModuleRegistry,
     PersistedRendererUiSessionState, RawInput, TypingMode, TypingRoute, UiColorRole,
-    UiCustomizationModule, UiPalette,
+    UiPalette,
 };
 use winit::keyboard::KeyCode;
+
+mod painter_modules;
 
 fn development_asset_root() -> PathBuf {
     if let Ok(path) = env::var("THAUM_RENDERER_ASSET_ROOT") {
@@ -74,6 +75,103 @@ fn canvas_pointer_context<'a>(
         action_counter: shared_action_counter,
         session_user_id,
         active_layer_id,
+    }
+}
+
+/// Drains one pending layers-panel action into the session seams. The panel
+/// enqueues actions on many pointer paths (clicks, captured drags, releases)
+/// and every path must drain before the frame ends, or its commit is
+/// stranded in the queue until some later unrelated event.
+#[allow(clippy::too_many_arguments)] // session-bridge seam: one fn carries the live session state; struct-izing touches the entrypoint
+fn drain_layers_panel_action(
+    layers_panel_state: &Rc<RefCell<LayersPanelState>>,
+    shared_document: &mut SharedDocumentRuntime,
+    shared_document_paths: &SharedDocumentPaths,
+    shared_action_counter: &mut u64,
+    session_user_id: &str,
+    active_layer_id: &mut String,
+    selected_property_id: &mut Option<String>,
+    canvas: &mut Canvas,
+    timeline_state: &Rc<RefCell<TimelineState>>,
+    selection: &Rc<RefCell<PainterSelection>>,
+) {
+    apply_layers_panel_action(
+        layers_panel_state.borrow_mut().take_pending_action(),
+        shared_document,
+        shared_document_paths,
+        shared_action_counter,
+        session_user_id,
+        active_layer_id,
+        selected_property_id,
+        canvas,
+        timeline_state,
+        selection,
+    );
+}
+
+/// Runs one hand's canvas press through the shared seam when the click
+/// lands on drawable canvas: inside the paint surface, inside the world
+/// bounds, off every gizmo bar, and while no typing session owns the
+/// surface. Installs the text tool's typing session when the press starts
+/// one; every other press begins its stroke internally.
+#[allow(clippy::too_many_arguments)]
+fn begin_canvas_press_if_eligible(
+    pointer_strokes: &mut CanvasPointerStrokes,
+    tool_state: &Rc<RefCell<ToolState>>,
+    selection: &Rc<RefCell<PainterSelection>>,
+    canvas: &mut Canvas,
+    shared_document: &mut SharedDocumentRuntime,
+    shared_document_paths: &SharedDocumentPaths,
+    shared_action_counter: &mut u64,
+    session_user_id: &str,
+    active_layer_id: &mut String,
+    hand: PaintHand,
+    world: thaum_renderer_domain::WorldPoint,
+    screen: CellPoint,
+    paint_surface: ModuleRect,
+    paint_viewport: ModuleRect,
+    bounds: CanvasBounds,
+    view_orientation: thaum_renderer_domain::CameraViewOrientation,
+    current_breath: u32,
+    bindings: &ActionBindingMap,
+    text_entry: &mut Option<TextEntryState>,
+    text_stroke_start: &mut Option<(Canvas, String)>,
+    typing_mode: &mut TypingMode,
+) {
+    let position = CellPoint {
+        x: world.x,
+        y: world.y,
+        z: world.z,
+    };
+    if !paint_surface.contains(screen.x, screen.y)
+        || !bounds.contains(position)
+        || PaintCanvasBoundsModule::is_gizmo_hit(paint_viewport, screen.x, screen.y)
+        || text_entry.as_ref().map_or(false, |entry| entry.is_active())
+    {
+        return;
+    }
+    // Tool dispatch lives on the shared canvas-pointer seam; only the text
+    // tool's typing session comes back here.
+    if let Some(typing) = pointer_strokes.begin_press(
+        &mut canvas_pointer_context(
+            tool_state,
+            selection,
+            canvas,
+            shared_document,
+            shared_document_paths,
+            shared_action_counter,
+            session_user_id,
+            active_layer_id,
+        ),
+        hand,
+        position,
+        bounds,
+        view_orientation,
+        current_breath,
+    ) {
+        *text_entry = Some(typing.entry);
+        *text_stroke_start = Some(typing.stroke_start);
+        typing_mode.begin(typing_reserved_inputs(bindings));
     }
 }
 
@@ -903,7 +1001,7 @@ pub const LIVE_PAINTER_ACTIONS: &[&str] = &[
 
 /// Presentation rows for the controls panel: the declared action list with
 /// human labels. Drift tests keep these names locked to the registry.
-fn painter_control_rows() -> Vec<ControlActionRow> {
+pub(crate) fn painter_control_rows() -> Vec<ControlActionRow> {
     let rows = [
         ("tools", "Select Pencil", "painter_select_pencil"),
         ("tools", "Select Bucket", "painter_select_bucket"),
@@ -962,7 +1060,6 @@ fn main() -> Result<()> {
         session.renderer.camera.apply_to_runtime(&mut state.camera);
     }
 
-    let mut modules = ModuleRegistry::new();
     let ui_palette = UiPalette::default();
     // Per-user controls profile (overrides only), restored from the saved
     // session. Effective bindings are the declared defaults merged with it;
@@ -992,187 +1089,24 @@ fn main() -> Result<()> {
         shared_document.selection_points(DEFAULT_SELECTION_CHANNEL_ID),
     );
 
-    modules.register(Box::new(
-        ToolboxModule::new(
-            "painter_toolbox",
-            ModuleRect {
-                x0: -6,
-                y0: -1,
-                x1: 12,
-                y1: 5,
-            },
-            tool_state.clone(),
-            thaum_painter_domain::painter_tools::all()
-                .iter()
-                .filter_map(|descriptor| {
-                    Some(ToolDef {
-                        tool: PaintTool::from_id(descriptor.id)?,
-                        icon: descriptor.icon,
-                        label: descriptor.label,
-                    })
-                })
-                .collect(),
-        )
-        .with_palette(ui_palette.clone()),
-    ));
-    modules.register(Box::new(PaintColorPickerModule::new(
-        "painter_color_picker",
-        ModuleRect {
-            x0: 13,
-            y0: -8,
-            x1: 29,
-            y1: 0,
-        },
-        tool_state.clone(),
-        ui_palette.clone(),
-    )));
-    modules.register(Box::new(PaintColorBlockModule::new(
-        "painter_color_block",
-        ModuleRect {
-            x0: 13,
-            y0: -21,
-            x1: 31,
-            y1: -10,
-        },
-        tool_state.clone(),
-        ui_palette.clone(),
-    )));
-    modules.register(Box::new(
-        MaterialPickerModule::new(
-            "painter_material_picker",
-            ModuleRect {
-                x0: 32,
-                y0: -21,
-                x1: 48,
-                y1: -10,
-            },
-            tool_state.clone(),
-        )
-        .with_palette(ui_palette.clone()),
-    ));
-    modules.register(Box::new(
-        GraphicPickerModule::new(
-            "painter_graphic_picker",
-            ModuleRect {
-                x0: 31,
-                y0: -8,
-                x1: 70,
-                y1: 28,
-            },
-            tool_state.clone(),
-        )
-        .with_palette(ui_palette.clone()),
-    ));
     // Shared in-place number-field edit state for the hand-settings panel:
     // the module opens it on a field click, the typing seam routes the keys,
     // and Enter commits the value through the tool state.
     let number_edit: Rc<RefCell<Option<NumberFieldEdit>>> = Rc::new(RefCell::new(None));
-    modules.register(Box::new(
-        HandSettingsModule::new(
-            "painter_hand_settings",
-            ModuleRect {
-                x0: 13,
-                y0: 2,
-                x1: 43,
-                y1: 15,
-            },
-            tool_state.clone(),
-            selection.clone(),
-            number_edit.clone(),
-        )
-        .with_palette(ui_palette.clone()),
-    ));
-    modules.register(Box::new(PaintCanvasBoundsModule::new(
-        "paint_canvas_bounds",
-        paint_canvas_viewport.clone(),
-        drawing_space_wheel_mode.clone(),
-        ui_palette.clone(),
-    )));
     let layers_panel_state = Rc::new(RefCell::new(LayersPanelState::default()));
-    modules.register(Box::new(
-        LayersPanelModule::new(
-            "painter_layers_panel",
-            ModuleRect {
-                x0: 25,
-                y0: -24,
-                x1: 70,
-                y1: -3,
-            },
-            layers_panel_state.clone(),
-        )
-        .with_palette(ui_palette.clone()),
-    ));
-    modules.register(Box::new(UiCustomizationModule::new(
-        "painter_ui_customization",
-        ModuleRect {
-            x0: 44,
-            y0: 2,
-            x1: 66,
-            y1: 12,
-        },
-        ui_palette.clone(),
-        {
-            let tool_state = tool_state.clone();
-            move || {
-                let rgb = tool_state.borrow().left_hand.color.preview_rgb();
-                [rgb.0, rgb.1, rgb.2]
-            }
-        },
-        {
-            let tool_state = tool_state.clone();
-            move || {
-                let rgb = tool_state.borrow().right_hand.color.preview_rgb();
-                [rgb.0, rgb.1, rgb.2]
-            }
-        },
-    )));
-    modules.register(Box::new(ControlsPanelModule::new(
-        "painter_controls_panel",
-        ModuleRect {
-            x0: 4,
-            y0: 13,
-            x1: 44,
-            y1: 47,
-        },
-        ui_palette.clone(),
-        painter_control_rows(),
-        {
-            let effective = effective_painter_bindings.clone();
-            move |action| {
-                effective
-                    .borrow()
-                    .bindings_for(action)
-                    .first()
-                    .map(format_raw_input)
-                    .unwrap_or_else(|| "unbound".to_string())
-            }
-        },
-        {
-            let effective = effective_painter_bindings.clone();
-            move |action| {
-                conflicting_actions(&effective.borrow(), action)
-                    .iter()
-                    .filter_map(|other| {
-                        effective
-                            .borrow()
-                            .bindings_for(other)
-                            .first()
-                            .map(format_raw_input)
-                    })
-                    .collect()
-            }
-        },
-        {
-            let profile = controls_profile.clone();
-            let effective = effective_painter_bindings.clone();
-            let defaults = painter_bindings.clone();
-            move |action, binding| {
-                profile.borrow_mut().set_override(action, binding);
-                *effective.borrow_mut() =
-                    effective_bindings(&defaults, &profile.borrow());
-            }
-        },
-    )));
+    let mut modules = painter_modules::build_painter_modules(
+        &tool_state,
+        &selection,
+        &number_edit,
+        &layers_panel_state,
+        &paint_canvas_viewport,
+        &drawing_space_wheel_mode,
+        &controls_profile,
+        &effective_painter_bindings,
+        &painter_bindings,
+        &ui_palette,
+    );
+
     if let Some(session) = &persisted_session {
         session.renderer.palette.apply_to_runtime(&ui_palette);
         modules.apply_persisted_ui_state(&session.renderer.modules);
@@ -1286,42 +1220,11 @@ fn main() -> Result<()> {
             }
             // Held pan resolves through the effective binding map too, so a
             // remap moves the continuous pan behavior along with the press.
+            // The seam only consumes pan actions; everything else a held key
+            // might bind is inert here.
             let held_actions = painter_key_actions(&effective_painter_bindings.borrow(), *key);
-            let binds = |name: &str| {
-                held_actions
-                    .iter()
-                    .any(|action| action.0.as_str() == name)
-            };
-            // Inverted from the camera's own right/up so the content
-            // visually moves the way the key points, not the way the
-            // camera's aim point moves.
-            if binds("painter_pan_left") {
-                if hovering_canvas_bounds {
-                    state.camera.pan_focus_right(1);
-                } else {
-                    pan_hud_and_focus_right(&mut state.camera, 1);
-                }
-            }
-            if binds("painter_pan_right") {
-                if hovering_canvas_bounds {
-                    state.camera.pan_focus_right(-1);
-                } else {
-                    pan_hud_and_focus_right(&mut state.camera, -1);
-                }
-            }
-            if binds("painter_pan_up") {
-                if hovering_canvas_bounds {
-                    state.camera.pan_focus_up(-1);
-                } else {
-                    pan_hud_and_focus_up(&mut state.camera, -1);
-                }
-            }
-            if binds("painter_pan_down") {
-                if hovering_canvas_bounds {
-                    state.camera.pan_focus_up(1);
-                } else {
-                    pan_hud_and_focus_up(&mut state.camera, 1);
-                }
+            for action in &held_actions {
+                apply_painter_pan_action(&mut state.camera, &action.0, hovering_canvas_bounds);
             }
         }
         for key in &frame.input.just_pressed_keys {
@@ -1462,6 +1365,30 @@ fn main() -> Result<()> {
                     tool_state.borrow_mut().set_tool_for_hand(hand, tool);
                     continue;
                 }
+                // Camera actions (pan/swing/roll/depth/zoom) live on the
+                // domain seam; the hover split of the pan route is owned there.
+                if apply_painter_camera_action(
+                    &mut state.camera,
+                    &action.0,
+                    *paint_canvas_viewport.borrow(),
+                    hovering_canvas_bounds,
+                ) {
+                    continue;
+                }
+                // Selection mode/shape actions live on the domain seam; shape
+                // changes commit their plane points to the shared channel there.
+                if apply_painter_selection_action(
+                    &action.0,
+                    &selection,
+                    &mut shared_document,
+                    &shared_document_paths,
+                    &mut shared_action_counter,
+                    &mut active_layer_id,
+                    timeline_state.borrow().current_breath,
+                    &mut canvas,
+                )? {
+                    continue;
+                }
                 match action.0.as_str() {
                     "painter_play_pause" => {
                         // Space toggles playback over the document's loop
@@ -1484,114 +1411,6 @@ fn main() -> Result<()> {
                                 &mut canvas,
                             );
                         }
-                    }
-                    "painter_pan_left" if hovering_canvas_bounds => {
-                        state.camera.pan_focus_right(1)
-                    }
-                    "painter_pan_left" => pan_hud_and_focus_right(&mut state.camera, 1),
-                    "painter_pan_right" if hovering_canvas_bounds => {
-                        state.camera.pan_focus_right(-1)
-                    }
-                    "painter_pan_right" => pan_hud_and_focus_right(&mut state.camera, -1),
-                    "painter_pan_up" if hovering_canvas_bounds => {
-                        state.camera.pan_focus_up(-1)
-                    }
-                    "painter_pan_up" => pan_hud_and_focus_up(&mut state.camera, -1),
-                    "painter_pan_down" if hovering_canvas_bounds => {
-                        state.camera.pan_focus_up(1)
-                    }
-                    "painter_pan_down" => pan_hud_and_focus_up(&mut state.camera, 1),
-                    "painter_swing_left" => reorient_camera_around_viewport_center(
-                        &mut state.camera,
-                        *paint_canvas_viewport.borrow(),
-                        |camera| camera.swing_left(),
-                    ),
-                    "painter_swing_right" => reorient_camera_around_viewport_center(
-                        &mut state.camera,
-                        *paint_canvas_viewport.borrow(),
-                        |camera| camera.swing_right(),
-                    ),
-                    "painter_swing_up" => reorient_camera_around_viewport_center(
-                        &mut state.camera,
-                        *paint_canvas_viewport.borrow(),
-                        |camera| camera.swing_up(),
-                    ),
-                    "painter_swing_down" => reorient_camera_around_viewport_center(
-                        &mut state.camera,
-                        *paint_canvas_viewport.borrow(),
-                        |camera| camera.swing_down(),
-                    ),
-                    "painter_roll_counter_clockwise" => reorient_camera_around_viewport_center(
-                        &mut state.camera,
-                        *paint_canvas_viewport.borrow(),
-                        |camera| camera.roll = camera.roll.rotate_counter_clockwise(),
-                    ),
-                    "painter_roll_clockwise" => reorient_camera_around_viewport_center(
-                        &mut state.camera,
-                        *paint_canvas_viewport.borrow(),
-                        |camera| camera.roll = camera.roll.rotate_clockwise(),
-                    ),
-                    "painter_focus_depth_toward" => state.camera.pan_focus_depth(-1),
-                    "painter_focus_depth_away" => state.camera.pan_focus_depth(1),
-                    "painter_zoom_out" => state.camera.zoom_out(),
-                    "painter_zoom_in" => state.camera.zoom_in(),
-                    "painter_selection_mode_replace" => {
-                        selection.borrow_mut().set_mode(SelectionMode::Replace)
-                    }
-                    "painter_selection_mode_additive" => {
-                        selection.borrow_mut().set_mode(SelectionMode::Additive)
-                    }
-                    "painter_selection_mode_subtract" => {
-                        selection.borrow_mut().set_mode(SelectionMode::Subtract)
-                    }
-                    "painter_selection_mode_intersect" => {
-                        selection.borrow_mut().set_mode(SelectionMode::Intersect)
-                    }
-                    "painter_selection_clear" => {
-                        selection.borrow_mut().clear_plane();
-                        commit_selection_channel(
-                            &mut shared_document,
-                            &shared_document_paths,
-                            std::iter::empty(),
-                            SelectionMode::Replace,
-                            &mut active_layer_id,
-                            timeline_state.borrow().current_breath,
-                            &mut canvas,
-                            &selection,
-                            &mut shared_action_counter,
-                        );
-                    }
-                    "painter_selection_invert" => {
-                        selection.borrow_mut().invert_plane();
-                        let points: Vec<CellPoint> =
-                            selection.borrow().plane().iter().collect();
-                        commit_selection_channel(
-                            &mut shared_document,
-                            &shared_document_paths,
-                            points,
-                            SelectionMode::Replace,
-                            &mut active_layer_id,
-                            timeline_state.borrow().current_breath,
-                            &mut canvas,
-                            &selection,
-                            &mut shared_action_counter,
-                        );
-                    }
-                    "painter_selection_all" => {
-                        selection.borrow_mut().select_all_plane();
-                        let points: Vec<CellPoint> =
-                            selection.borrow().plane().iter().collect();
-                        commit_selection_channel(
-                            &mut shared_document,
-                            &shared_document_paths,
-                            points,
-                            SelectionMode::Replace,
-                            &mut active_layer_id,
-                            timeline_state.borrow().current_breath,
-                            &mut canvas,
-                            &selection,
-                            &mut shared_action_counter,
-                        );
                     }
                     "painter_undo" => apply_shared_history_action(
                         &mut shared_document,
@@ -1767,8 +1586,8 @@ fn main() -> Result<()> {
                 Some(_) => true,
                 None => false,
             };
-            apply_layers_panel_action(
-                layers_panel_state.borrow_mut().take_pending_action(),
+            drain_layers_panel_action(
+                &layers_panel_state,
                 &mut shared_document,
                 &shared_document_paths,
                 &mut shared_action_counter,
@@ -1782,44 +1601,29 @@ fn main() -> Result<()> {
             if handled_command_bar || handled_module || modules.is_pointer_captured() {
                 pointer_strokes.cancel(PaintHand::Left);
             } else {
-                let bounds = *paint_canvas_bounds.borrow();
-                let position = CellPoint {
-                    x: world.x,
-                    y: world.y,
-                    z: world.z,
-                };
-                if paint_surface.contains(screen.x, screen.y)
-                    && bounds.contains(position)
-                    && !PaintCanvasBoundsModule::is_gizmo_hit(paint_viewport, screen.x, screen.y)
-                    && text_entry.as_ref().map_or(true, |entry| !entry.is_active())
-                {
-                    // Tool dispatch lives on the shared canvas-pointer seam;
-                    // only the text tool's typing session comes back here.
-                    if let Some(typing) = pointer_strokes.begin_press(
-                        &mut canvas_pointer_context(
-                            &tool_state,
-                            &selection,
-                            &mut canvas,
-                            &mut shared_document,
-                            &shared_document_paths,
-                            &mut shared_action_counter,
-                            &session_user_id,
-                            &mut active_layer_id,
-                        ),
-                        PaintHand::Left,
-                        position,
-                        bounds,
-                        view_orientation,
-                        timeline_state.borrow().current_breath,
-                    ) {
-                        text_entry = Some(typing.entry);
-                        text_stroke_start = Some(typing.stroke_start);
-                        typing_mode.begin(typing_reserved_inputs(
-                            &effective_painter_bindings.borrow(),
-                        ));
-                    }
-                } else {
-                }
+                begin_canvas_press_if_eligible(
+                    &mut pointer_strokes,
+                    &tool_state,
+                    &selection,
+                    &mut canvas,
+                    &mut shared_document,
+                    &shared_document_paths,
+                    &mut shared_action_counter,
+                    &session_user_id,
+                    &mut active_layer_id,
+                    PaintHand::Left,
+                    world,
+                    screen,
+                    paint_surface,
+                    paint_viewport,
+                    *paint_canvas_bounds.borrow(),
+                    view_orientation,
+                    timeline_state.borrow().current_breath,
+                    &effective_painter_bindings.borrow(),
+                    &mut text_entry,
+                    &mut text_stroke_start,
+                    &mut typing_mode,
+                );
             }
         } else if let Some(click) = frame.input.just_right_clicked {
             let world = to_world(click);
@@ -1846,8 +1650,8 @@ fn main() -> Result<()> {
                 Some(Some(_)) => true,
                 _ => false,
             };
-            apply_layers_panel_action(
-                layers_panel_state.borrow_mut().take_pending_action(),
+            drain_layers_panel_action(
+                &layers_panel_state,
                 &mut shared_document,
                 &shared_document_paths,
                 &mut shared_action_counter,
@@ -1861,43 +1665,29 @@ fn main() -> Result<()> {
             if handled_command_bar || handled_module || modules.is_pointer_captured() {
                 pointer_strokes.cancel(PaintHand::Right);
             } else {
-                let bounds = *paint_canvas_bounds.borrow();
-                let position = CellPoint {
-                    x: world.x,
-                    y: world.y,
-                    z: world.z,
-                };
-                if paint_surface.contains(screen.x, screen.y)
-                    && bounds.contains(position)
-                    && !PaintCanvasBoundsModule::is_gizmo_hit(paint_viewport, screen.x, screen.y)
-                    && text_entry.as_ref().map_or(true, |entry| !entry.is_active())
-                {
-                    // Tool dispatch lives on the shared canvas-pointer seam;
-                    // only the text tool's typing session comes back here.
-                    if let Some(typing) = pointer_strokes.begin_press(
-                        &mut canvas_pointer_context(
-                            &tool_state,
-                            &selection,
-                            &mut canvas,
-                            &mut shared_document,
-                            &shared_document_paths,
-                            &mut shared_action_counter,
-                            &session_user_id,
-                            &mut active_layer_id,
-                        ),
-                        PaintHand::Right,
-                        position,
-                        bounds,
-                        view_orientation,
-                        timeline_state.borrow().current_breath,
-                    ) {
-                        text_entry = Some(typing.entry);
-                        text_stroke_start = Some(typing.stroke_start);
-                        typing_mode.begin(typing_reserved_inputs(
-                            &effective_painter_bindings.borrow(),
-                        ));
-                    }
-                }
+                begin_canvas_press_if_eligible(
+                    &mut pointer_strokes,
+                    &tool_state,
+                    &selection,
+                    &mut canvas,
+                    &mut shared_document,
+                    &shared_document_paths,
+                    &mut shared_action_counter,
+                    &session_user_id,
+                    &mut active_layer_id,
+                    PaintHand::Right,
+                    world,
+                    screen,
+                    paint_surface,
+                    paint_viewport,
+                    *paint_canvas_bounds.borrow(),
+                    view_orientation,
+                    timeline_state.borrow().current_breath,
+                    &effective_painter_bindings.borrow(),
+                    &mut text_entry,
+                    &mut text_stroke_start,
+                    &mut typing_mode,
+                );
             }
             // A number-field click just began an in-place edit; typing mode
             // owns the keyboard until a click or Escape ends the session.
@@ -1911,8 +1701,8 @@ fn main() -> Result<()> {
                 let world = to_world(cursor);
                 let screen = to_screen(cursor);
                 modules.dispatch_captured_pointer_move(screen.x, screen.y);
-                apply_layers_panel_action(
-                    layers_panel_state.borrow_mut().take_pending_action(),
+                drain_layers_panel_action(
+                    &layers_panel_state,
                     &mut shared_document,
                     &shared_document_paths,
                     &mut shared_action_counter,
@@ -1960,8 +1750,8 @@ fn main() -> Result<()> {
                 // Same pending-action drain as the left-drag path: a captured
                 // pointer move can enqueue a layers-panel action, and waiting
                 // for a left event to apply it would strand the commit.
-                apply_layers_panel_action(
-                    layers_panel_state.borrow_mut().take_pending_action(),
+                drain_layers_panel_action(
+                    &layers_panel_state,
                     &mut shared_document,
                     &shared_document_paths,
                     &mut shared_action_counter,
@@ -2136,8 +1926,8 @@ fn main() -> Result<()> {
             ) {
                 eprintln!("stroke commit failed (kept in memory): {error:#}");
             }
-            apply_layers_panel_action(
-                layers_panel_state.borrow_mut().take_pending_action(),
+            drain_layers_panel_action(
+                &layers_panel_state,
                 &mut shared_document,
                 &shared_document_paths,
                 &mut shared_action_counter,

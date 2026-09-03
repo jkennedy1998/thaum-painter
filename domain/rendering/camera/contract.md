@@ -23,6 +23,8 @@ Own app-side camera intent and focus-resolution rules before state is handed to 
   - camera contract
 - `camera_viewport.rs`
   - app-side camera→plane mapping and viewport-scroll intent (`CanvasBounds` derivation from the live camera, HUD/drawing-space wheel handling, viewport-centered swing/roll)
+- `camera_actions.rs`
+  - one dispatch seam for the registry's camera actions (pan with its hover-dependent HUD/canvas split, swing, roll, depth focus, zoom); the entrypoint resolves action names and calls this seam
 
 ## dependencies
 - `/home/j/Repos/thaum-painter/domain/painter-document/`
