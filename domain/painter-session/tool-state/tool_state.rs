@@ -25,6 +25,20 @@ pub enum PaintTool {
     Text,
 }
 
+impl PaintTool {
+    /// The tool-specific property row ids this tool uses in the properties
+    /// panel. Standard hand rows (weight, masks, locks, target) live outside
+    /// this manifest; a panel hides any tool row neither equipped hand's tool
+    /// declares, so tools can share property UI while the panel stays thin.
+    pub fn property_row_ids(self) -> &'static [&'static str] {
+        match self {
+            PaintTool::Brush | PaintTool::Erase => &["brush_size"],
+            PaintTool::Fill => &["fill_diagonal"],
+            PaintTool::Text => &[],
+        }
+    }
+}
+
 /// Which authored channel a hand may paint, select through, or lock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaintChannel {
@@ -522,6 +536,14 @@ mod tests {
         assert_eq!(tool_state.left_tool, PaintTool::Brush);
         assert_eq!(tool_state.right_tool, PaintTool::Fill);
         assert_eq!(tool_state.active_hand, PaintHand::Right);
+    }
+
+    #[test]
+    fn each_tool_declares_its_own_property_rows() {
+        assert_eq!(PaintTool::Brush.property_row_ids(), &["brush_size"]);
+        assert_eq!(PaintTool::Erase.property_row_ids(), &["brush_size"]);
+        assert_eq!(PaintTool::Fill.property_row_ids(), &["fill_diagonal"]);
+        assert!(PaintTool::Text.property_row_ids().is_empty());
     }
 
     #[test]

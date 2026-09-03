@@ -1258,6 +1258,11 @@ fn main() -> Result<()> {
                     }
                     TextEntryOutcome::Idle | TextEntryOutcome::Ignored => {}
                         }
+                        // The owned key belongs to the session alone: it must
+                        // not also reach module key capture or live dispatch,
+                        // or typed chars that share a binding (W/A/S/D pan,
+                        // P/B tool select) fire while typing.
+                        continue;
                     }
                     // Reserved camera/depth inputs fall through to module key
                     // capture and live binding dispatch below.

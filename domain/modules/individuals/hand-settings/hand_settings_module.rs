@@ -166,7 +166,8 @@ impl HandSettingsModule {
             lock_columns.push(column);
         }
 
-        vec![
+        // Standard hand rows never change with the equipped tools.
+        let mut rows = vec![
             PropertyRow::Info {
                 label: "tools".into(),
                 value: format!(
@@ -207,6 +208,12 @@ impl HandSettingsModule {
                 token_width: 4,
             },
             PropertyRow::Matrix {
+                id: "lock".into(),
+                label: "Lock".into(),
+                columns: lock_columns,
+                token_width: 4,
+            },
+            PropertyRow::Matrix {
                 id: "target".into(),
                 label: "target".into(),
                 columns: target_columns,
@@ -218,25 +225,33 @@ impl HandSettingsModule {
                 columns: mode_columns,
                 token_width: 4,
             },
-            PropertyRow::Matrix {
+        ];
+
+        // Tool rows only appear when either equipped hand's tool declares
+        // them, so the panel stays thin as tools gain properties.
+        if Self::tool_row_used(&state, "brush_size") {
+            rows.push(PropertyRow::Matrix {
                 id: "brush_size".into(),
                 label: "size".into(),
                 columns: brush_size_columns,
                 token_width: 2,
-            },
-            PropertyRow::Matrix {
+            });
+        }
+        if Self::tool_row_used(&state, "fill_diagonal") {
+            rows.push(PropertyRow::Matrix {
                 id: "fill_diagonal".into(),
                 label: "fill".into(),
                 columns: fill_diag_columns,
                 token_width: 4,
-            },
-            PropertyRow::Matrix {
-                id: "lock".into(),
-                label: "Lock".into(),
-                columns: lock_columns,
-                token_width: 4,
-            },
-        ]
+            });
+        }
+
+        rows
+    }
+
+    fn tool_row_used(state: &ToolState, row_id: &str) -> bool {
+        state.left_tool.property_row_ids().contains(&row_id)
+            || state.right_tool.property_row_ids().contains(&row_id)
     }
 
     fn apply_property_hit(&mut self, hit: PropertyHit) {
@@ -614,6 +629,39 @@ mod tests {
         });
 
         assert!(state.borrow().right_hand.locks.weight);
+    }
+
+    #[test]
+    fn rows_only_include_tool_properties_the_equipped_tools_use() {
+        let state = tool_state();
+        let module = HandSettingsModule::new("hands", rect(), state.clone(), selection());
+
+        let row_ids = |module: &HandSettingsModule| -> Vec<String> {
+            module
+                .build_rows()
+                .into_iter()
+                .filter_map(|row| match row {
+                    PropertyRow::Matrix { id, .. } => Some(id),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        // Default hands: brush left, erase right — brush size shows, fill hides.
+        let default_ids = row_ids(&module);
+        assert!(default_ids.contains(&"brush_size".to_string()));
+        assert!(!default_ids.contains(&"fill_diagonal".to_string()));
+
+        state
+            .borrow_mut()
+            .set_tool_for_hand(PaintHand::Right, PaintTool::Fill);
+        let mixed_ids = row_ids(&module);
+        assert!(mixed_ids.contains(&"brush_size".to_string()));
+        assert!(mixed_ids.contains(&"fill_diagonal".to_string()));
+
+        // Standard rows stay put regardless of the equipped tools.
+        assert!(mixed_ids.contains(&"weight".to_string()));
+        assert!(mixed_ids.contains(&"lock".to_string()));
     }
 
     #[test]
