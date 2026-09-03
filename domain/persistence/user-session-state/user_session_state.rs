@@ -32,8 +32,6 @@ pub struct PersistedPainterUiState {
     #[serde(default)]
     pub command_bar: PersistedCommandBarState,
     #[serde(default)]
-    pub current_document_root: Option<String>,
-    #[serde(default)]
     pub active_layer_id: Option<String>,
     /// Restored playhead breath. Boot clamps it to a breath the active layer's
     /// raster track actually covers, so a restored playhead can never sit in a
@@ -92,7 +90,6 @@ impl PersistedPainterUiState {
         drawing_space_wheel_mode: DrawingSpaceWheelMode,
         selection_mode: SelectionMode,
         command_bar: &CommandBar,
-        current_document_root: Option<&str>,
         active_layer_id: Option<&str>,
         current_breath: u32,
         tool_state: &ToolState,
@@ -101,7 +98,6 @@ impl PersistedPainterUiState {
             drawing_space_wheel_mode: wheel_mode_name(drawing_space_wheel_mode).to_string(),
             selection_mode: selection_mode_name(selection_mode).to_string(),
             command_bar: command_bar.persisted_state(),
-            current_document_root: current_document_root.map(str::to_string),
             active_layer_id: active_layer_id.map(str::to_string),
             current_breath,
             tool_state: PersistedToolState::from_runtime(tool_state),
@@ -262,6 +258,7 @@ fn wheel_mode_name(mode: DrawingSpaceWheelMode) -> &'static str {
     match mode {
         DrawingSpaceWheelMode::Pan => "pan",
         DrawingSpaceWheelMode::Depth => "depth",
+        DrawingSpaceWheelMode::Time => "time",
     }
 }
 
@@ -269,6 +266,7 @@ fn wheel_mode_from_name(name: &str) -> Option<DrawingSpaceWheelMode> {
     match name {
         "pan" => Some(DrawingSpaceWheelMode::Pan),
         "depth" => Some(DrawingSpaceWheelMode::Depth),
+        "time" => Some(DrawingSpaceWheelMode::Time),
         _ => None,
     }
 }
@@ -308,22 +306,12 @@ fn hand_from_name(name: &str) -> Option<PaintHand> {
 }
 
 fn tool_name(tool: PaintTool) -> &'static str {
-    match tool {
-        PaintTool::Brush => "brush",
-        PaintTool::Erase => "erase",
-        PaintTool::Fill => "fill",
-        PaintTool::Text => "text",
-    }
+    // Persistence names are the tool's stable registration id.
+    tool.id()
 }
 
 fn tool_from_name(name: &str) -> Option<PaintTool> {
-    match name {
-        "brush" => Some(PaintTool::Brush),
-        "erase" => Some(PaintTool::Erase),
-        "fill" => Some(PaintTool::Fill),
-        "text" => Some(PaintTool::Text),
-        _ => None,
-    }
+    PaintTool::from_id(name)
 }
 
 fn target_name(target: PaintTarget) -> &'static str {
@@ -415,10 +403,6 @@ pub fn save_painter_user_session_state(path: &Path, state: &PainterUserSessionSt
     })
 }
 
-fn path_to_string(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn build_user_session_state(
     user_id: &str,
@@ -426,7 +410,6 @@ pub fn build_user_session_state(
     modules: &ModuleRegistry,
     ui_palette: &UiPalette,
     command_bar: &CommandBar,
-    current_document_root: Option<&Path>,
     active_layer_id: Option<&str>,
     current_breath: u32,
     drawing_space_wheel_mode: crate::DrawingSpaceWheelMode,
@@ -447,7 +430,6 @@ pub fn build_user_session_state(
             drawing_space_wheel_mode,
             selection_mode,
             command_bar,
-            current_document_root.map(path_to_string).as_deref(),
             active_layer_id,
             current_breath,
             tool_state,

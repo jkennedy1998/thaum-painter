@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use thaum_renderer_domain::{Cell, CellColor, CellGraphic, CellGroup, CellPoint, CellWeight, WorldPoint};
 
 use crate::selection_state::{PainterSelection, SelectionMode};
-use crate::tool_state::{PaintHand, PaintTool};
+use crate::tool_state::PaintHand;
 
 #[derive(Debug, Clone)]
 pub struct SelectionStroke {
@@ -29,15 +29,6 @@ impl SelectionStroke {
         I: IntoIterator<Item = CellPoint>,
     {
         self.points.extend(points);
-    }
-}
-
-/// Selection tool mapping: erase subtracts from the selection, brush/fill/text
-/// use the selection's own mode.
-pub fn selection_mode_for_tool(tool: PaintTool, selection_mode: SelectionMode) -> SelectionMode {
-    match tool {
-        PaintTool::Erase => SelectionMode::Subtract,
-        PaintTool::Brush | PaintTool::Fill | PaintTool::Text => selection_mode,
     }
 }
 

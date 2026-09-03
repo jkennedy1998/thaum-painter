@@ -22,8 +22,6 @@ Own the canonical thaum-painter saved file shape, including the manifest and eve
   - default
 - `import-export/`
   - default
-- `migration/`
-  - default
 
 ## contents
 - `contract.md`
@@ -59,5 +57,5 @@ via: contract
 - this boundary should manifest and store all the things the renderer does not have.
 - if a field exists only because humans author, revise, transfer, or catalog work, it likely belongs here.
 - this seam should stay more encapsulated than the old broad painter-document design.
-- sub-boundaries should separate file shape, persistence surfaces, import/export wrappers, and legacy migration.
+- sub-boundaries should separate file shape, persistence surfaces, import/export wrappers, ect.
 - the current concrete saved-truth reference is `domain/file/manifest/example-thaum-painter-file-v1.json`.

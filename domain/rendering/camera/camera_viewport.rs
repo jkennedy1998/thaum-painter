@@ -226,6 +226,9 @@ pub fn apply_drawing_space_scroll(
     match mode {
         DrawingSpaceWheelMode::Pan => apply_drawing_space_pan_scroll(camera, delta_x, delta_y),
         DrawingSpaceWheelMode::Depth => apply_drawing_space_depth_scroll(camera, delta_y),
+        // Time is not a camera concern: the consumer steps the playhead
+        // against the document's loop window instead.
+        DrawingSpaceWheelMode::Time => {}
     }
 }
 

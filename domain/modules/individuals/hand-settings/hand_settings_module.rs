@@ -64,12 +64,7 @@ impl HandSettingsModule {
     }
 
     fn tool_label(tool: PaintTool) -> &'static str {
-        match tool {
-            PaintTool::Brush => "Brush",
-            PaintTool::Erase => "Erase",
-            PaintTool::Fill => "Fill",
-            PaintTool::Text => "Text",
-        }
+        crate::painter_tools::require_by_id(tool.id()).label
     }
 
     fn build_rows(&self) -> Vec<PropertyRow> {

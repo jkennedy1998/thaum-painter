@@ -148,6 +148,8 @@ pub fn apply_layers_panel_action(
             | LayersPanelAction::SelectProperty(..)
             | LayersPanelAction::ToggleAutoKey
             | LayersPanelAction::SetCurrentBreath(_)
+            | LayersPanelAction::TogglePlay
+            | LayersPanelAction::ToggleLoop
     );
     match action {
         LayersPanelAction::Select(layer_id) => {
@@ -197,6 +199,28 @@ pub fn apply_layers_panel_action(
         LayersPanelAction::ToggleAutoKey => {
             timeline_state.borrow_mut().toggle_auto_key();
         }
+        LayersPanelAction::TogglePlay => {
+            let window = shared_document.document_window();
+            let mut timeline = timeline_state.borrow_mut();
+            timeline.toggle_play();
+            // Starting playback from outside the window snaps to its start.
+            if timeline.playing
+                && (timeline.current_breath < window.start_breath
+                    || timeline.current_breath > window.end_breath)
+            {
+                timeline.set_current_breath(window.start_breath);
+                drop(timeline);
+                sync_canvas_from_active_layer(
+                    shared_document,
+                    active_layer_id,
+                    window.start_breath,
+                    canvas,
+                );
+            }
+        }
+        LayersPanelAction::ToggleLoop => {
+            timeline_state.borrow_mut().toggle_loop();
+        }
         LayersPanelAction::SetCurrentBreath(breath) => {
             timeline_state.borrow_mut().set_current_breath(breath);
             // Scrubbing the playhead switches which raster block the edit surface shows.
@@ -204,6 +228,9 @@ pub fn apply_layers_panel_action(
         }
         LayersPanelAction::SetLayerTiming(layer_id, start_breath, length_breaths) => {
             shared_document.set_layer_timing(&layer_id, start_breath, length_breaths);
+        }
+        LayersPanelAction::SetLoopWindow(start_breath, end_breath) => {
+            shared_document.set_document_window(start_breath, end_breath);
         }
         LayersPanelAction::SetPropertyBlockTiming(
             layer_id,
@@ -306,7 +333,7 @@ pub fn apply_layers_panel_action(
 mod tests {
     use super::*;
     use crate::storage::SharedDocumentSelection;
-    use crate::storage::{SharedDocumentFile, SharedDocumentLayer, SHARED_DOCUMENT_KIND, SHARED_DOCUMENT_SCHEMA_VERSION};
+    use crate::storage::{DocumentWindow, SharedDocumentFile, SharedDocumentLayer, SHARED_DOCUMENT_KIND, SHARED_DOCUMENT_SCHEMA_VERSION};
 
     fn document_with_layers(layer_ids: &[&str]) -> SharedDocumentFile {
         SharedDocumentFile {
@@ -328,6 +355,7 @@ mod tests {
                 .collect(),
             revision: 0,
             selection: SharedDocumentSelection::default(),
+            document_window: DocumentWindow::default(),
         }
     }
 

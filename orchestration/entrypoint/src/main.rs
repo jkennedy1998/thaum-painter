@@ -15,11 +15,10 @@ use thaum_painter_domain::{
         pan_hud_and_focus_up, reorient_camera_around_viewport_center, sync_canvas_bounds_to_camera,
         INITIAL_PAINT_CANVAS_BOUNDS, INITIAL_PAINT_CANVAS_VIEWPORT,
     }, document_locations::{
-        default_shared_document, load_document_from_root, new_unsaved_document,
-        resolve_painter_file_root, shared_document_id,
+        load_document_from_root, new_unsaved_document, resolve_painter_file_root,
     }, layers_runtime::{
         apply_layers_panel_action, build_selected_layer_property_rows, resolved_active_layer_id,
-    }, load_or_create_shared_document, render_space::build_document_layer_cell_groups, save_shared_document_snapshot, selection_stroke::{
+    }, render_space::build_document_layer_cell_groups, save_shared_document_snapshot, selection_stroke::{
         build_plane_selection_cell_group, interpolate_cell_path, SelectionStroke,
     }, session_document::{
         commit_selection_channel, commit_staged_paint_stroke,
@@ -82,10 +81,6 @@ fn painter_repo_root() -> PathBuf {
 
 fn painter_file_root() -> PathBuf {
     resolve_painter_file_root(&painter_repo_root())
-}
-
-fn path_to_string(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
 }
 
 fn slugify_file_stem(text: &str) -> String {
@@ -376,7 +371,18 @@ fn handle_command_bar_button(
         "file:save-as" => {
             if let Some(next_root) = prompt_save_document_root(&file_root, &shared_document.document.title) {
                 let next_paths = SharedDocumentPaths::new(next_root.clone());
-                save_shared_document_snapshot(&next_paths, shared_document)?;
+                if let Err(error) = save_shared_document_snapshot(&next_paths, shared_document) {
+                    recover_snapshot_conflict(
+                        &error,
+                        shared_document,
+                        &next_paths,
+                        active_layer_id,
+                        current_breath,
+                        canvas,
+                        selection,
+                        shared_action_counter,
+                    );
+                }
                 *shared_document_paths = next_paths;
                 *current_document_root = Some(next_root);
             }
@@ -392,7 +398,6 @@ fn build_user_session_state(
     modules: &ModuleRegistry,
     ui_palette: &UiPalette,
     command_bar: &CommandBar,
-    current_document_root: Option<&Path>,
     active_layer_id: Option<&str>,
     current_breath: u32,
     drawing_space_wheel_mode: DrawingSpaceWheelMode,
@@ -414,7 +419,6 @@ fn build_user_session_state(
             drawing_space_wheel_mode,
             selection_mode,
             command_bar,
-            current_document_root.map(path_to_string).as_deref(),
             active_layer_id,
             current_breath,
             tool_state,
@@ -633,6 +637,7 @@ fn raw_key_label(key: KeyCode) -> Option<String> {
         KeyCode::Numpad9 => "NUMPAD9",
         KeyCode::NumpadAdd => "NUMPAD_ADD",
         KeyCode::NumpadSubtract => "NUMPAD_SUB",
+        KeyCode::Space => "SPACE",
         _ => return None,
     };
     Some(label.to_string())
@@ -711,11 +716,13 @@ fn typing_reserved_inputs(bindings: &ActionBindingMap) -> Vec<RawInput> {
 /// dispatcher handles; `LIVE_PAINTER_ACTIONS` and the dispatch match below
 /// must stay in sync, which the drift tests assert in both directions.
 fn painter_tool_for_action(action: &ActionName) -> Option<PaintTool> {
-    match action.0.as_str() {
-        "painter_select_pencil" => Some(PaintTool::Brush),
-        "painter_select_bucket" => Some(PaintTool::Fill),
-        _ => None,
-    }
+    // Derived from the tool registry: a descriptor's select_action maps to
+    // its registered tool, so new tools become hotkey-equippable by
+    // declaring select_action + hotkey in their descriptor.
+    thaum_painter_domain::painter_tools::all()
+        .iter()
+        .find(|descriptor| descriptor.select_action == Some(action.0.as_str()))
+        .and_then(|descriptor| PaintTool::from_id(descriptor.id))
 }
 
 /// Every named action the entrypoint's live dispatch handles. The effective
@@ -748,6 +755,7 @@ pub const LIVE_PAINTER_ACTIONS: &[&str] = &[
     "painter_selection_all",
     "painter_undo",
     "painter_redo",
+    "painter_play_pause",
 ];
 
 /// Presentation rows for the controls panel: the declared action list with
@@ -798,31 +806,12 @@ fn main() -> Result<()> {
     let session_user_id = session_user_id();
     let session_state_path = painter_session_state_path(&session_user_id);
     let persisted_session = load_painter_user_session_state(&session_state_path)?;
-    let shared_document_id = shared_document_id();
-    let mut current_document_root = persisted_session
-        .as_ref()
-        .and_then(|session| session.painter.current_document_root.as_deref())
-        .map(PathBuf::from);
-    let (mut shared_document_paths, mut shared_document) = match current_document_root.as_deref() {
-        Some(root) => load_document_from_root(root).unwrap_or_else(|_| {
-            current_document_root = None;
-            let fallback_paths = painter_shared_document_paths(&shared_document_id);
-            let fallback_document = load_or_create_shared_document(
-                &fallback_paths,
-                default_shared_document(&shared_document_id),
-            )
-            .expect("failed to load fallback shared document");
-            (fallback_paths, fallback_document)
-        }),
-        None => {
-            let fallback_paths = painter_shared_document_paths(&shared_document_id);
-            let fallback_document = load_or_create_shared_document(
-                &fallback_paths,
-                default_shared_document(&shared_document_id),
-            )?;
-            (fallback_paths, fallback_document)
-        }
-    };
+    // Boot to a blank unsaved document: the user opens or saves explicitly. Restoring
+    // the last document from session state once pinned boot to a legacy file that
+    // would break silently on schema changes.
+    let mut shared_document = new_unsaved_document();
+    let mut shared_document_paths = painter_shared_document_paths(&shared_document.document.document_id);
+    let mut current_document_root: Option<PathBuf> = None;
 
     let mut state = boot_renderer(config)?;
     if let Some(session) = &persisted_session {
@@ -869,28 +858,16 @@ fn main() -> Result<()> {
                 y1: 5,
             },
             tool_state.clone(),
-            vec![
-                ToolDef {
-                    tool: PaintTool::Brush,
-                    icon: '✎',
-                    label: "Brush",
-                },
-                ToolDef {
-                    tool: PaintTool::Erase,
-                    icon: '◫',
-                    label: "Erase",
-                },
-                ToolDef {
-                    tool: PaintTool::Fill,
-                    icon: '▧',
-                    label: "Fill",
-                },
-                ToolDef {
-                    tool: PaintTool::Text,
-                    icon: 'T',
-                    label: "Text",
-                },
-            ],
+            thaum_painter_domain::painter_tools::all()
+                .iter()
+                .filter_map(|descriptor| {
+                    Some(ToolDef {
+                        tool: PaintTool::from_id(descriptor.id)?,
+                        icon: descriptor.icon,
+                        label: descriptor.label,
+                    })
+                })
+                .collect(),
         )
         .with_palette(ui_palette.clone()),
     ));
@@ -1123,6 +1100,9 @@ fn main() -> Result<()> {
     let mut shared_action_counter = shared_document.actions.len() as u64;
     let mut last_saved_session_text: Option<String> = None;
     let mut last_save_at = Instant::now() - Duration::from_secs(1);
+    // Playback advances one breath per tick while the timeline is playing.
+    const PLAYBACK_BREATH_INTERVAL: Duration = Duration::from_millis(125);
+    let mut last_playback_step = Instant::now();
 
     run_renderer_window_with_state_frame_provider(state, move |state, frame| {
         sync_renderer_background_from_ui_palette(state, &ui_palette);
@@ -1289,6 +1269,28 @@ fn main() -> Result<()> {
                     continue;
                 }
                 match action.0.as_str() {
+                    "painter_play_pause" => {
+                        // Space toggles playback over the document's loop
+                        // window; starting outside the window snaps to its
+                        // start (same as the panel's PLAY button).
+                        let window = shared_document.document_window();
+                        let was_playing = timeline_state.borrow().playing;
+                        timeline_state.borrow_mut().toggle_play();
+                        if !was_playing
+                            && (timeline_state.borrow().current_breath < window.start_breath
+                                || timeline_state.borrow().current_breath > window.end_breath)
+                        {
+                            timeline_state
+                                .borrow_mut()
+                                .set_current_breath(window.start_breath);
+                            sync_canvas_from_active_layer(
+                                &shared_document,
+                                &active_layer_id,
+                                window.start_breath,
+                                &mut canvas,
+                            );
+                        }
+                    }
                     "painter_pan_left" if hovering_canvas_bounds => {
                         state.camera.pan_focus_right(1)
                     }
@@ -1442,6 +1444,24 @@ fn main() -> Result<()> {
             remap_surface_units_to_flat_2d_local(camera, surface_units, cell_clip_size)
         };
         command_bar.set_nested_buttons("menu:modules", module_menu_buttons(&modules));
+        // Playback tick: while playing, step the playhead across the document
+        // loop window (wrapping when loop is on, stopping at the end when not)
+        // and resync the edit surface like a scrub does.
+        if last_playback_step.elapsed() >= PLAYBACK_BREATH_INTERVAL {
+            last_playback_step = Instant::now();
+            let window = shared_document.document_window();
+            if let Some(breath) = timeline_state
+                .borrow_mut()
+                .advance_playback(window.start_breath, window.end_breath)
+            {
+                sync_canvas_from_active_layer(
+                    &shared_document,
+                    &active_layer_id,
+                    breath,
+                    &mut canvas,
+                );
+            }
+        }
         layers_panel_state.borrow_mut().sync(
             shared_document
                 .layers()
@@ -1460,6 +1480,10 @@ fn main() -> Result<()> {
             selected_property_id.clone(),
             timeline_state.borrow().current_breath,
             timeline_state.borrow().auto_key_enabled,
+            shared_document.document_window().start_breath,
+            shared_document.document_window().end_breath,
+            timeline_state.borrow().playing,
+            timeline_state.borrow().loop_enabled,
         );
         command_bar.update_layout(cell_clip_size, state.camera.hud_pan_offset);
         let command_bar_hover = frame.input.cursor_position.map(to_screen);
@@ -1567,12 +1591,10 @@ fn main() -> Result<()> {
                     if tool_state.borrow().hand_state(PaintHand::Left).target
                         == PaintTarget::Selection
                     {
-                        let mode = match tool_state.borrow().tool_for_hand(PaintHand::Left) {
-                            PaintTool::Erase => SelectionMode::Subtract,
-                            PaintTool::Brush | PaintTool::Fill | PaintTool::Text => {
-                                selection.borrow().mode()
-                            }
-                        };
+                        let mode = thaum_painter_domain::painter_tools::shared::selection_behavior(
+                            tool_state.borrow().tool_for_hand(PaintHand::Left).id(),
+                        )
+                        .resolve(selection.borrow().mode(), SelectionMode::Subtract);
                         let mut stroke = SelectionStroke::new(PaintHand::Left, mode);
                         stroke.extend(tool_state.borrow().selection_points_for_hand(
                             &canvas,
@@ -1705,12 +1727,10 @@ fn main() -> Result<()> {
                     if tool_state.borrow().hand_state(PaintHand::Right).target
                         == PaintTarget::Selection
                     {
-                        let mode = match tool_state.borrow().tool_for_hand(PaintHand::Right) {
-                            PaintTool::Erase => SelectionMode::Subtract,
-                            PaintTool::Brush | PaintTool::Fill | PaintTool::Text => {
-                                selection.borrow().mode()
-                            }
-                        };
+                        let mode = thaum_painter_domain::painter_tools::shared::selection_behavior(
+                            tool_state.borrow().tool_for_hand(PaintHand::Right).id(),
+                        )
+                        .resolve(selection.borrow().mode(), SelectionMode::Subtract);
                         let mut stroke = SelectionStroke::new(PaintHand::Right, mode);
                         stroke.extend(tool_state.borrow().selection_points_for_hand(
                             &canvas,
@@ -1984,12 +2004,40 @@ fn main() -> Result<()> {
                         .is_some();
                 if !wheel_handled_by_command_bar && !wheel_handled_by_module {
                     if paint_viewport.contains(screen.x, screen.y) {
-                        apply_drawing_space_scroll(
-                            &mut state.camera,
-                            *drawing_space_wheel_mode.borrow(),
-                            frame.input.wheel_delta_x,
-                            frame.input.wheel_delta_y,
-                        );
+                        match *drawing_space_wheel_mode.borrow() {
+                            DrawingSpaceWheelMode::Time => {
+                                // Wheel steps the playhead through time,
+                                // wrapping at the loop-window edges: up =
+                                // forward (end wraps to start), down =
+                                // backward (start wraps to end).
+                                let window = shared_document.document_window();
+                                let current = timeline_state.borrow().current_breath;
+                                let next = if frame.input.wheel_delta_y > 0.0 {
+                                    if current >= window.end_breath {
+                                        window.start_breath
+                                    } else {
+                                        current + 1
+                                    }
+                                } else if current <= window.start_breath {
+                                    window.end_breath
+                                } else {
+                                    current - 1
+                                };
+                                timeline_state.borrow_mut().set_current_breath(next);
+                                sync_canvas_from_active_layer(
+                                    &shared_document,
+                                    &active_layer_id,
+                                    next,
+                                    &mut canvas,
+                                );
+                            }
+                            mode => apply_drawing_space_scroll(
+                                &mut state.camera,
+                                mode,
+                                frame.input.wheel_delta_x,
+                                frame.input.wheel_delta_y,
+                            ),
+                        }
                     } else {
                         apply_hud_scroll(
                             &mut state.camera,
@@ -2016,7 +2064,11 @@ fn main() -> Result<()> {
                 .cursor_position
                 .map(to_screen)
                 .unwrap_or_else(|| to_screen([0.0, 0.0]));
-            modules.dispatch_captured_pointer_up(screen.x, screen.y);
+            // Broadcast the release to every module, not just the captured
+            // one: a drag that never requested capture (or lost it) would
+            // otherwise keep following the pointer through hover moves
+            // forever, since its Up never arrived.
+            modules.dispatch_pointer_up_all(screen.x, screen.y);
         }
         // The pointer-up dispatch is where a layers-panel drag commits its single
         // timing action (or block swap), so the pending action must be applied right
@@ -2079,7 +2131,6 @@ fn main() -> Result<()> {
             &modules,
             &ui_palette,
             &command_bar,
-            current_document_root.as_deref(),
             Some(&active_layer_id),
             timeline_state.borrow().current_breath,
             *drawing_space_wheel_mode.borrow(),

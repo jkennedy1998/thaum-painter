@@ -26,16 +26,39 @@ pub enum PaintTool {
 }
 
 impl PaintTool {
-    /// The tool-specific property row ids this tool uses in the properties
-    /// panel. Standard hand rows (weight, masks, locks, target) live outside
-    /// this manifest; a panel hides any tool row neither equipped hand's tool
-    /// declares, so tools can share property UI while the panel stays thin.
-    pub fn property_row_ids(self) -> &'static [&'static str] {
+    /// Every live tool, in toolbox order. Drift-tested against the
+    /// painter-tools registry.
+    pub fn all() -> [PaintTool; 4] {
+        [PaintTool::Brush, PaintTool::Erase, PaintTool::Fill, PaintTool::Text]
+    }
+
+    /// Stable registration id (also the persistence name). One small bridge
+    /// between this enum and the painter-tools registry; the parity test
+    /// fails if the two drift apart.
+    pub fn id(self) -> &'static str {
         match self {
-            PaintTool::Brush | PaintTool::Erase => &["brush_size"],
-            PaintTool::Fill => &["fill_diagonal"],
-            PaintTool::Text => &[],
+            PaintTool::Brush => "brush",
+            PaintTool::Erase => "erase",
+            PaintTool::Fill => "fill",
+            PaintTool::Text => "text",
         }
+    }
+
+    pub fn from_id(id: &str) -> Option<PaintTool> {
+        match id {
+            "brush" => Some(PaintTool::Brush),
+            "erase" => Some(PaintTool::Erase),
+            "fill" => Some(PaintTool::Fill),
+            "text" => Some(PaintTool::Text),
+            _ => None,
+        }
+    }
+
+    /// The tool-specific property row ids this tool uses in the properties
+    /// panel, delegated to the tool's registered descriptor so the registry
+    /// stays the single source of registration truth.
+    pub fn property_row_ids(self) -> &'static [&'static str] {
+        crate::painter_tools::require_by_id(self.id()).property_row_ids
     }
 }
 
@@ -445,10 +468,8 @@ impl ToolState {
         orientation: CameraViewOrientation,
     ) {
         let points = self.selection_points_for_hand(canvas, position, hand, bounds, orientation);
-        let mode = match self.tool_for_hand(hand) {
-            PaintTool::Erase => SelectionMode::Subtract,
-            PaintTool::Brush | PaintTool::Fill | PaintTool::Text => selection.mode(),
-        };
+        let mode = crate::painter_tools::shared::selection_behavior(self.tool_for_hand(hand).id())
+            .resolve(selection.mode(), SelectionMode::Subtract);
         selection.apply_plane_points_with_mode(points, mode);
     }
 
@@ -544,6 +565,17 @@ mod tests {
         assert_eq!(PaintTool::Erase.property_row_ids(), &["brush_size"]);
         assert_eq!(PaintTool::Fill.property_row_ids(), &["fill_diagonal"]);
         assert!(PaintTool::Text.property_row_ids().is_empty());
+    }
+
+    #[test]
+    fn every_tool_maps_to_a_registered_descriptor() {
+        assert_eq!(PaintTool::all().len(), crate::painter_tools::all().len());
+        for tool in PaintTool::all() {
+            let descriptor = crate::painter_tools::require_by_id(tool.id());
+            assert_eq!(descriptor.property_row_ids, tool.property_row_ids());
+            assert!(PaintTool::from_id(descriptor.id) == Some(tool));
+        }
+        assert!(PaintTool::from_id("nonexistent").is_none());
     }
 
     #[test]

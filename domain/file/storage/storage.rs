@@ -103,6 +103,24 @@ fn next_property_block_id(blocks: &[SharedDocumentPropertyBlock]) -> String {
     format!("block-{next}")
 }
 
+/// The document's active timeline span: the loop window the playhead and
+/// (future) playback live inside. One bar on the layers-panel timeline edits
+/// it; it is document state, not per-layer timing, so it cannot be split or
+/// deleted the way property blocks can.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocumentWindow {
+    pub start_breath: u32,
+    pub end_breath: u32,
+}
+
+impl Default for DocumentWindow {
+    fn default() -> Self {
+        // Defaults to the panel's visible timeline span (24 breaths) so a new
+        // document's window bar covers exactly the ruler it is drawn on.
+        Self { start_breath: 0, end_breath: 23 }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SharedDocumentFile {
     pub file_kind: String,
@@ -123,6 +141,11 @@ pub struct SharedDocumentFile {
     /// through the document snapshot, not undo records.
     #[serde(default)]
     pub selection: SharedDocumentSelection,
+    /// The document's active timeline span, editable through the layers-panel
+    /// loop bar. `serde(default)` keeps older files (no window field) loading
+    /// at the 24-breath default span.
+    #[serde(default)]
+    pub document_window: DocumentWindow,
 }
 
 impl SharedDocumentFile {
@@ -148,6 +171,7 @@ impl SharedDocumentFile {
                 property_tracks: vec![default_raster_property_track(0, default_layer_length_breaths())],
             }],
             selection: SharedDocumentSelection::default(),
+            document_window: DocumentWindow::default(),
         }
     }
 
@@ -805,6 +829,20 @@ impl SharedDocumentRuntime {
     /// Sets a layer's visibility, which controls whether it contributes to
     /// `composited_canvas_in_layer_order`. Returns `false` if no such layer
     /// exists.
+    /// The document's active timeline span (loop window).
+    pub fn document_window(&self) -> DocumentWindow {
+        self.document.document_window
+    }
+
+    /// Reshapes the document's active timeline span. The end never drops below
+    /// the start, so the window stays a valid span (possibly one breath wide).
+    pub fn set_document_window(&mut self, start_breath: u32, end_breath: u32) {
+        self.document.document_window = DocumentWindow {
+            start_breath,
+            end_breath: end_breath.max(start_breath),
+        };
+    }
+
     pub fn set_layer_visible(&mut self, layer_id: &str, visible: bool) -> bool {
         let Some(layer) = self
             .document
@@ -1781,16 +1819,20 @@ pub fn save_shared_document_snapshot(
     // from this writer's view. If the on-disk log holds records this runtime never
     // replayed, rewriting it here would silently drop the other writer's edits.
     // A revision bump from the other writer is caught above; this catches the
-    // append-only case where the revision did not move.
-    let on_disk_record_count = count_action_records(&paths.actions_file_path)?;
-    let expected_record_count = runtime.actions_for_file().len();
-    if on_disk_record_count != expected_record_count {
-        return Err(anyhow::anyhow!(
-            "shared action log changed on disk (disk has {} records, this session accounts for {}); \
-             refusing to overwrite — reload the document to pick up the other writer's changes",
-            on_disk_record_count,
-            expected_record_count
-        ));
+    // append-only case where the revision did not move. Only applies when the
+    // target log already exists — a fresh root (save-as) has nothing to diverge
+    // from, and comparing it against this runtime's history would always fail.
+    if paths.actions_file_path.exists() {
+        let on_disk_record_count = count_action_records(&paths.actions_file_path)?;
+        let expected_record_count = runtime.actions_for_file().len();
+        if on_disk_record_count != expected_record_count {
+            return Err(anyhow::anyhow!(
+                "shared action log changed on disk (disk has {} records, this session accounts for {}); \
+                 refusing to overwrite — reload the document to pick up the other writer's changes",
+                on_disk_record_count,
+                expected_record_count
+            ));
+        }
     }
 
     let next_revision = runtime.revision + 1;
@@ -1949,6 +1991,7 @@ mod tests {
             ],
             revision: 0,
             selection: SharedDocumentSelection::default(),
+            document_window: DocumentWindow::default(),
         };
         let mut runtime = SharedDocumentRuntime::new(document);
         runtime.apply_action_record(SharedDocumentActionRecord::cell_patch_set(
@@ -2069,6 +2112,43 @@ mod tests {
 
         assert!(paths.document_file_path.exists());
         assert!(paths.actions_file_path.exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn save_as_to_a_fresh_root_accepts_this_runtime_action_history() {
+        // Regression: save-as used to compare the fresh target's (missing)
+        // actions log against this runtime's loaded history and always refuse,
+        // which crashed the entrypoint. A fresh root has nothing to diverge
+        // from — the snapshot carries baseline + recent records wholesale.
+        let unique = format!(
+            "thaum-painter-save-as-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let paths = SharedDocumentPaths::new(root.clone());
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        let stroke = SharedDocumentActionRecord::cell_patch_set(
+            "a1",
+            "doc-1",
+            "layer-1",
+            "u1",
+            "1",
+            vec![SharedCellPatch::new(point(2, 2), None, Some(&cell('#')))],
+            Some("block-1".to_string()),
+        );
+        runtime.push_history_record(stroke);
+
+        save_shared_document_snapshot(&paths, &mut runtime).unwrap();
+
+        assert!(paths.document_file_path.exists());
+        assert_eq!(count_action_records(&paths.actions_file_path).unwrap(), 1);
 
         let _ = fs::remove_dir_all(root);
     }

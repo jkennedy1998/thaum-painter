@@ -58,6 +58,8 @@ pub mod toolbar_module;
 pub mod toolbox_module;
 #[path = "persistence/user-session-state/user_session_state.rs"]
 pub mod user_session_state;
+#[path = "painter-tools/painter_tools.rs"]
+pub mod painter_tools;
 #[path = "tai/tai.rs"]
 pub mod tai;
 

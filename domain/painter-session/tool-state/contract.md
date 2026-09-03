@@ -11,7 +11,7 @@ Own live tool settings and active authoring-hand state for the painter session.
 - edit-channel masks
 - per-hand image-versus-selection target state
 - per-hand channel locks for selector updates
-- per-tool tool-specific property declarations (`PaintTool::property_row_ids`) so property panels can hide rows neither equipped tool uses
+- the `PaintTool` enum and per-tool session behavior match arms (edit/select semantics) — the thin enum <-> registry bridge and the property manifest delegation now read from `domain/painter-tools/`
 - text-entry and paste option state that belongs to the live session
 
 ## does not own
@@ -31,6 +31,7 @@ Own live tool settings and active authoring-hand state for the painter session.
 ## dependencies
 - `/home/j/Repos/thaum-painter/domain/painter-operations/`
 - `/home/j/Repos/thaum-painter/domain/painter-session/paint-color/`
+- `/home/j/Repos/thaum-painter/domain/painter-tools/`
 - `/home/j/Repos/thaum-painter/domain/file/storage/`
 
 ## exposed interfaces
@@ -58,4 +59,6 @@ Own live tool settings and active authoring-hand state for the painter session.
 - source-of-truth from J: once a selection exists, image-editing tools should have one common seam that limits edits to the selected cells so brush, erase, fill, rect tools, and future delete actions all obey the same rule.
 - source-of-truth from J: left/right channel locks for character, weight, or color were useful for in-depth illustration where only some layers should change.
 - source-of-truth from J: tools use properties; tools that share the same property UI reuse the same panel pieces, all tool properties stay tracked per tool, and the properties panel hides rows neither the left nor right hand's tool uses so panels stay thin as tools gain properties.
+- registration truth (id, label, icon, property rows, hotkey) moved to the `domain/painter-tools/` registry; this encapsulation keeps session behavior match arms until per-tool behavior migration and owns the small enum <-> registry bridge that drift-tests against the registry.
+- cross-tool rules are not re-decided here: the erase-forces-subtract selection rule and its future siblings live in `domain/painter-tools/shared/` and this encapsulation consumes them.
 - when graphic editing is disabled and the user edits an empty cell, painter now preserves that cell's implicit blank glyph (`' '`) rather than silently swapping in the hand's current graphic.

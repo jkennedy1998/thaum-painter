@@ -73,6 +73,15 @@ pub enum LayersPanelAction {
     BlankPropertyBlock(String, String, String),
     MergeBlankPropertyBlock(String, String, String, MergeDirection),
     SwapPropertyBlocks(String, String, String, String),
+    /// Commits a dragged loop-window bar: the document's active timeline span.
+    /// The bar itself cannot be split or deleted, so this is the only edit it
+    /// supports beyond hover styling.
+    SetLoopWindow(u32, u32),
+    /// Play/pause the animation over the loop window (Space is bound to this
+    /// in the registry; the bar row's PLAY button toggles it too).
+    TogglePlay,
+    /// Whether playback wraps at the window edges or stops at the end.
+    ToggleLoop,
 }
 
 /// Shared state between `LayersPanelModule` and its orchestration caller. The module only ever
@@ -86,6 +95,13 @@ pub struct LayersPanelState {
     pub selected_property_id: Option<String>,
     pub current_breath: u32,
     pub auto_key_enabled: bool,
+    /// The document's active timeline span (loop window), mirrored from the
+    /// real document each frame.
+    pub loop_window_start: u32,
+    pub loop_window_end: u32,
+    /// Live playback session state, mirrored from the timeline session.
+    pub playing: bool,
+    pub loop_enabled: bool,
     pending_action: Option<LayersPanelAction>,
 }
 
@@ -100,6 +116,10 @@ impl LayersPanelState {
         selected_property_id: Option<String>,
         current_breath: u32,
         auto_key_enabled: bool,
+        loop_window_start: u32,
+        loop_window_end: u32,
+        playing: bool,
+        loop_enabled: bool,
     ) {
         self.rows = rows;
         self.property_rows = property_rows;
@@ -107,6 +127,10 @@ impl LayersPanelState {
         self.selected_property_id = selected_property_id;
         self.current_breath = current_breath;
         self.auto_key_enabled = auto_key_enabled;
+        self.loop_window_start = loop_window_start;
+        self.loop_window_end = loop_window_end;
+        self.playing = playing;
+        self.loop_enabled = loop_enabled;
     }
 
     /// Takes the pending action, if any, for the orchestration layer to apply. At most one
@@ -134,7 +158,9 @@ const ROW_AUTO_KEY: usize = 0;
 #[cfg(test)]
 const ROW_RULER: usize = 1;
 #[cfg(test)]
-const ROW_ADD_LAYER: usize = 2;
+const ROW_LOOP_BAR: usize = 2;
+#[cfg(test)]
+const ROW_ADD_LAYER: usize = 3;
 
 const COL_VISIBLE: i32 = 1;
 const COL_LOCK: i32 = 3;
@@ -143,10 +169,19 @@ const COL_NAME: i32 = 7;
 const NAME_WIDTH: i32 = 10;
 const TIMELINE_START: i32 = COL_NAME + NAME_WIDTH + 1;
 
+/// PLAY/LOOP transport toggles on the loop-bar row, left of the timeline
+/// (loop window start/end labels sit above the bar on the auto-key row; the
+/// transport lives beside the bar it drives).
+const PLAY_BUTTON_START: i32 = 1;
+const PLAY_BUTTON_END: i32 = 8;
+const LOOP_BUTTON_START: i32 = 10;
+const LOOP_BUTTON_END: i32 = 17;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PanelRow {
     AutoKeyToggle,
     BreathRuler,
+    LoopBar,
     AddLayer,
     Layer(usize),
     Property(usize),
@@ -313,6 +348,38 @@ fn blank_merge_direction(hit: &PropertyBlockHit, block: &PropertyTrackBlock) -> 
     }
 }
 
+/// How a press-drag on the loop-window bar reshapes the document's active
+/// timeline span. The bar has no swap notion, so left and right body drags
+/// behave identically (unlike the property-track bars below); only the edges
+/// resize, matching the old system's edge drag without its destructive
+/// rewrite (the window is one bar, there is nothing to overwrite).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoopWindowDragMode {
+    Move,
+    TrimStart,
+    TrimEnd,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoopWindowHitMode {
+    EdgeStart,
+    EdgeEnd,
+    Body,
+}
+
+/// One in-flight loop-window drag. The document is untouched mid-flight —
+/// the bar previews at `preview_start/preview_end` — and exactly one
+/// `SetLoopWindow` commit is queued on pointer-up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LoopWindowDrag {
+    mode: LoopWindowDragMode,
+    orig_start: u32,
+    orig_end: u32,
+    anchor_breath: u32,
+    preview_start: u32,
+    preview_end: u32,
+}
+
 #[derive(Debug, Clone)]
 struct RecentRasterClick {
     hit: PropertyBlockHit,
@@ -332,6 +399,9 @@ pub struct LayersPanelModule {
     bar_drag: Option<BarDrag>,
     property_block_drag: Option<PropertyBlockDrag>,
     hovered_property_block: Option<PropertyBlockHit>,
+    loop_window_drag: Option<LoopWindowDrag>,
+    hovered_loop_window: bool,
+    hovered_playhead: bool,
     recent_raster_click: Option<RecentRasterClick>,
 }
 
@@ -353,6 +423,9 @@ impl LayersPanelModule {
             bar_drag: None,
             property_block_drag: None,
             hovered_property_block: None,
+            loop_window_drag: None,
+            hovered_loop_window: false,
+            hovered_playhead: false,
             recent_raster_click: None,
         }
     }
@@ -370,7 +443,12 @@ impl LayersPanelModule {
 
     fn visible_rows(&self) -> Vec<PanelRow> {
         let state = self.state.borrow();
-        let mut rows = vec![PanelRow::AutoKeyToggle, PanelRow::BreathRuler, PanelRow::AddLayer];
+        let mut rows = vec![
+            PanelRow::AutoKeyToggle,
+            PanelRow::BreathRuler,
+            PanelRow::LoopBar,
+            PanelRow::AddLayer,
+        ];
         for (index, row) in state.rows.iter().enumerate() {
             rows.push(PanelRow::Layer(index));
             if state.selected_id.as_deref() == Some(row.id.as_str()) {
@@ -425,6 +503,66 @@ impl LayersPanelModule {
     fn visible_timeline_end_breath(&self) -> u32 {
         let (start, end) = self.timeline_bounds();
         end.saturating_sub(start) as u32
+    }
+
+    /// The loop-window span to draw and hit-test right now: the in-flight
+    /// drag's preview span when one is active, otherwise the mirrored
+    /// document window (end clamped to never sit below the start).
+    fn loop_window_span(&self) -> (u32, u32) {
+        if let Some(drag) = &self.loop_window_drag {
+            return (drag.preview_start, drag.preview_end.max(drag.preview_start));
+        }
+        let state = self.state.borrow();
+        (state.loop_window_start, state.loop_window_end.max(state.loop_window_start))
+    }
+
+    /// Playhead styling: rests bright at weight 2, hovers vivid at weight 3,
+    /// and while its scrub drag is live goes vivid at weight 4.
+    fn playhead_style(&self) -> (thaum_renderer_domain::CellColor, thaum_renderer_domain::CellWeight) {
+        if self.scrubbing_ruler {
+            return (
+                self.palette.get(UiColorRole::Vivid),
+                thaum_renderer_domain::CellWeight::from_index_clamped(4),
+            );
+        }
+        if self.hovered_playhead {
+            return (
+                self.palette.get(UiColorRole::Vivid),
+                thaum_renderer_domain::CellWeight::from_index_clamped(3),
+            );
+        }
+        (
+            self.palette.get(UiColorRole::Bright),
+            thaum_renderer_domain::CellWeight::from_index_clamped(2),
+        )
+    }
+
+    fn loop_window_hit_at(&self, x: i32, y: i32) -> Option<LoopWindowHitMode> {
+        if !matches!(self.row_at(x, y), Some(PanelRow::LoopBar)) {
+            return None;
+        }
+        let local_x = x - self.rect.x0;
+        // Left of the timeline is the PLAY/LOOP transport, never the bar.
+        if local_x < TIMELINE_START {
+            return None;
+        }
+        let (start, end) = self.loop_window_span();
+        let breath = self.breath_at_x(local_x);
+        if breath < start || breath > end {
+            return None;
+        }
+        let start_x = self.x_for_breath(start);
+        let end_x = self.x_for_breath(end);
+        if start_x == end_x {
+            return Some(LoopWindowHitMode::Body);
+        }
+        if local_x - start_x <= 1 {
+            return Some(LoopWindowHitMode::EdgeStart);
+        }
+        if end_x - local_x <= 1 {
+            return Some(LoopWindowHitMode::EdgeEnd);
+        }
+        Some(LoopWindowHitMode::Body)
     }
 
     fn delete_column(&self) -> i32 {
@@ -807,16 +945,6 @@ impl Module for LayersPanelModule {
                         self.palette.get(UiColorRole::Dimmest),
                         timeline_end,
                     );
-                    let current_start = (playhead_x - (current_label.len() as i32 / 2))
-                        .clamp(timeline_start, timeline_end - current_label.len() as i32 + 1);
-                    push_text(
-                        &mut cells,
-                        current_start,
-                        y,
-                        &current_label,
-                        self.palette.get(UiColorRole::Vivid),
-                        timeline_end,
-                    );
                     let end_start = (timeline_end - end_label.len() as i32 + 1).max(timeline_start);
                     push_text(
                         &mut cells,
@@ -826,6 +954,51 @@ impl Module for LayersPanelModule {
                         self.palette.get(UiColorRole::Dimmest),
                         timeline_end,
                     );
+                    // Loop-window edge labels sit above the bar's ends; the
+                    // current-breath label below draws last so it wins any
+                    // column collision, like the old system's label priority.
+                    let (loop_start, loop_end) = self.loop_window_span();
+                    if loop_end > loop_start {
+                        let loop_start_label = loop_start.to_string();
+                        let loop_end_label = loop_end.to_string();
+                        let loop_start_x = (self.x_for_breath(loop_start)
+                            - (loop_start_label.len() as i32 / 2))
+                            .clamp(timeline_start, timeline_end - loop_start_label.len() as i32 + 1);
+                        push_text(
+                            &mut cells,
+                            loop_start_x,
+                            y,
+                            &loop_start_label,
+                            self.palette.get(UiColorRole::Medium),
+                            timeline_end,
+                        );
+                        let loop_end_x = (self.x_for_breath(loop_end)
+                            - (loop_end_label.len() as i32 / 2))
+                            .clamp(timeline_start, timeline_end - loop_end_label.len() as i32 + 1);
+                        push_text(
+                            &mut cells,
+                            loop_end_x,
+                            y,
+                            &loop_end_label,
+                            self.palette.get(UiColorRole::Medium),
+                            timeline_end,
+                        );
+                    }
+                    let current_start = (playhead_x - (current_label.len() as i32 / 2))
+                        .clamp(timeline_start, timeline_end - current_label.len() as i32 + 1);
+                    let (playhead_color, playhead_weight) = self.playhead_style();
+                    let mut current_cell = Cell {
+                        position: CellPoint { x: current_start, y, z: 0 },
+                        graphic: CellGraphic::Glyph(' '),
+                        color: playhead_color,
+                        weight: playhead_weight,
+                        ..Cell::default()
+                    };
+                    for (offset, ch) in current_label.chars().enumerate() {
+                        current_cell.position.x = current_start + offset as i32;
+                        current_cell.graphic = CellGraphic::Glyph(ch);
+                        cells.push(current_cell.clone());
+                    }
                 }
                 PanelRow::BreathRuler => {
                     for x in timeline_start..=timeline_end {
@@ -836,6 +1009,7 @@ impl Module for LayersPanelModule {
                             ..Cell::default()
                         });
                     }
+                    let (playhead_color, playhead_weight) = self.playhead_style();
                     cells.push(Cell {
                         position: CellPoint {
                             x: playhead_x,
@@ -843,9 +1017,83 @@ impl Module for LayersPanelModule {
                             z: 0,
                         },
                         graphic: CellGraphic::Glyph('║'),
-                        color: self.palette.get(UiColorRole::Vivid),
+                        color: playhead_color,
+                        weight: playhead_weight,
                         ..Cell::default()
                     });
+                }
+                PanelRow::LoopBar => {
+                    // Transport toggles left of the timeline, next to the bar
+                    // they drive: PLAY pauses/resumes playback over the
+                    // window, LOOP toggles wrap-at-edges.
+                    let play_label = if state.playing { "[||] STOP" } else { "[>] PLAY" };
+                    push_text(
+                        &mut cells,
+                        PLAY_BUTTON_START,
+                        y,
+                        play_label,
+                        if state.playing {
+                            self.palette.get(UiColorRole::Vivid)
+                        } else {
+                            self.palette.get(UiColorRole::Medium)
+                        },
+                        PLAY_BUTTON_END,
+                    );
+                    let loop_label = if state.loop_enabled { "[x] LOOP" } else { "[ ] LOOP" };
+                    push_text(
+                        &mut cells,
+                        LOOP_BUTTON_START,
+                        y,
+                        loop_label,
+                        if state.loop_enabled {
+                            self.palette.get(UiColorRole::Medium)
+                        } else {
+                            self.palette.get(UiColorRole::Dimmest)
+                        },
+                        LOOP_BUTTON_END,
+                    );
+                    for x in timeline_start..=timeline_end {
+                        cells.push(Cell {
+                            position: CellPoint { x, y, z: 0 },
+                            graphic: CellGraphic::Glyph('·'),
+                            color: self.palette.get(UiColorRole::Dimmest),
+                            ..Cell::default()
+                        });
+                    }
+                    let (loop_start, loop_end) = self.loop_window_span();
+                    let length = loop_end - loop_start + 1;
+                    let loop_start_x = self.x_for_breath(loop_start);
+                    let highlighted =
+                        self.loop_window_drag.is_some() || self.hovered_loop_window;
+                    let (color, weight) = if highlighted {
+                        (
+                            self.palette.get(UiColorRole::Vivid),
+                            thaum_renderer_domain::CellWeight::from_index_clamped(2),
+                        )
+                    } else {
+                        (
+                            self.palette.get(UiColorRole::Bright),
+                            thaum_renderer_domain::CellWeight::from_index_clamped(1),
+                        )
+                    };
+                    for local_index in 0..length {
+                        let x = loop_start_x + local_index as i32;
+                        if x > timeline_end {
+                            break;
+                        }
+                        cells.push(Cell {
+                            position: CellPoint { x, y, z: 0 },
+                            graphic: CellGraphic::Glyph(property_track_cell_graphic(
+                                false,
+                                true,
+                                length,
+                                local_index,
+                            )),
+                            color,
+                            weight,
+                            ..Cell::default()
+                        });
+                    }
                 }
                 PanelRow::AddLayer => {
                     push_text(
@@ -1058,6 +1306,47 @@ impl Module for LayersPanelModule {
                             self.scrubbing_ruler = true;
                         }
                     }
+                    PanelRow::LoopBar => {
+                        let local_x = x - self.rect.x0;
+                        let (timeline_start, _) = self.timeline_bounds();
+                        // Left of the timeline: the PLAY and LOOP transport
+                        // toggles that live next to the bar they drive.
+                        if local_x < timeline_start {
+                            if button == ModulePointerButton::Left {
+                                if (1..=PLAY_BUTTON_END).contains(&local_x) {
+                                    self.state
+                                        .borrow_mut()
+                                        .queue_action(LayersPanelAction::TogglePlay);
+                                } else if (LOOP_BUTTON_START..=LOOP_BUTTON_END)
+                                    .contains(&local_x)
+                                {
+                                    self.state
+                                        .borrow_mut()
+                                        .queue_action(LayersPanelAction::ToggleLoop);
+                                }
+                            }
+                            return;
+                        }
+                        let Some(hit) = self.loop_window_hit_at(x, y) else {
+                            return;
+                        };
+                        let (start, end) = self.loop_window_span();
+                        let anchor = self.breath_at_x(local_x);
+                        let mode = match hit {
+                            LoopWindowHitMode::EdgeStart => LoopWindowDragMode::TrimStart,
+                            LoopWindowHitMode::EdgeEnd => LoopWindowDragMode::TrimEnd,
+                            // No swaps on this bar: both buttons move it.
+                            LoopWindowHitMode::Body => LoopWindowDragMode::Move,
+                        };
+                        self.loop_window_drag = Some(LoopWindowDrag {
+                            mode,
+                            orig_start: start,
+                            orig_end: end,
+                            anchor_breath: anchor,
+                            preview_start: start,
+                            preview_end: end,
+                        });
+                    }
                     PanelRow::AddLayer => {
                         if button == ModulePointerButton::Left {
                             self.state.borrow_mut().queue_action(LayersPanelAction::AddRequested);
@@ -1117,6 +1406,9 @@ impl Module for LayersPanelModule {
             ModulePointerEvent::Move { x, y } => {
                 self.gizmo_state.note_pointer(&self.gizmos, self.rect, x, y);
                 self.hovered_property_block = self.property_block_hit_at(x, y);
+                self.hovered_loop_window = self.loop_window_hit_at(x, y).is_some();
+                self.hovered_playhead = matches!(self.row_at(x, y), Some(PanelRow::BreathRuler))
+                    && (x - self.rect.x0) == self.x_for_breath(self.state.borrow().current_breath);
                 if let Some(next_rect) = self.gizmo_state.drag_rect(x, y) {
                     self.rect = next_rect;
                 }
@@ -1126,6 +1418,36 @@ impl Module for LayersPanelModule {
                     self.state
                         .borrow_mut()
                         .queue_action(LayersPanelAction::SetCurrentBreath(breath));
+                }
+                // Compute the breath up front: `breath_at_x` borrows all of
+                // `self`, which conflicts with the mutable drag borrow below.
+                let loop_current = self
+                    .loop_window_drag
+                    .as_ref()
+                    .map(|_| (x - self.rect.x0, self.breath_at_x(x - self.rect.x0) as i64));
+                if let (Some((_, current)), Some(drag)) =
+                    (loop_current, self.loop_window_drag.as_mut())
+                {
+                    let delta = current - drag.anchor_breath as i64;
+                    let (new_start, new_end) = match drag.mode {
+                        LoopWindowDragMode::Move => {
+                            let length = drag.orig_end - drag.orig_start;
+                            let new_start = (drag.orig_start as i64 + delta).max(0) as u32;
+                            (new_start, new_start + length)
+                        }
+                        LoopWindowDragMode::TrimStart => {
+                            let new_start = (drag.orig_start as i64 + delta)
+                                .clamp(0, drag.orig_end as i64) as u32;
+                            (new_start, drag.orig_end)
+                        }
+                        LoopWindowDragMode::TrimEnd => {
+                            let new_end = (drag.orig_end as i64 + delta)
+                                .max(drag.orig_start as i64) as u32;
+                            (drag.orig_start, new_end)
+                        }
+                    };
+                    drag.preview_start = new_start;
+                    drag.preview_end = new_end;
                 }
                 if let Some(drag) = &self.bar_drag {
                     let local_x = x - self.rect.x0;
@@ -1228,6 +1550,14 @@ impl Module for LayersPanelModule {
                 self.gizmo_state.end_drag();
                 self.scrubbing_ruler = false;
                 self.bar_drag = None;
+                if let Some(drag) = self.loop_window_drag.take() {
+                    self.state
+                        .borrow_mut()
+                        .queue_action(LayersPanelAction::SetLoopWindow(
+                            drag.preview_start,
+                            drag.preview_end.max(drag.preview_start),
+                        ));
+                }
                 if let Some(drag) = self.property_block_drag.take() {
                     if drag.mode == PropertyDragMode::Swap {
                         if let Some(target_block_id) = drag.swap_target_block_id {
@@ -1281,6 +1611,7 @@ impl Module for LayersPanelModule {
             || self.scrubbing_ruler
             || self.bar_drag.is_some()
             || self.property_block_drag.is_some()
+            || self.loop_window_drag.is_some()
     }
 
     fn is_hidden(&self) -> bool {
@@ -1373,6 +1704,10 @@ mod tests {
             Some("raster".to_string()),
             0,
             false,
+            0,
+            23,
+            false,
+            true,
         );
         state
     }
@@ -1384,7 +1719,7 @@ mod tests {
 
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: COL_NAME,
-            y: panel.row_y(3),
+            y: panel.row_y(4),
             button: ModulePointerButton::Left,
         });
 
@@ -1401,7 +1736,7 @@ mod tests {
 
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: COL_NAME,
-            y: panel.row_y(4),
+            y: panel.row_y(5),
             button: ModulePointerButton::Left,
         });
 
@@ -1424,7 +1759,7 @@ mod tests {
         assert_eq!(
             group.cells.get(&CellPoint {
                 x: COL_NAME,
-                y: panel.row_y(4),
+                y: panel.row_y(5),
                 z: 0,
             }).map(|cell| cell.graphic.clone()),
             Some(CellGraphic::Glyph('R'))
@@ -1432,7 +1767,7 @@ mod tests {
         assert_eq!(
             group.cells.get(&CellPoint {
                 x: timeline_start,
-                y: panel.row_y(4),
+                y: panel.row_y(5),
                 z: 0,
             }).map(|cell| cell.graphic.clone()),
             Some(CellGraphic::Glyph('║'))
@@ -1467,14 +1802,14 @@ mod tests {
 
         panel.on_pointer_event(ModulePointerEvent::Move {
             x: timeline_start + 1,
-            y: panel.row_y(4),
+            y: panel.row_y(5),
         });
         let group = panel.draw();
         let cell = group
             .cells
             .get(&CellPoint {
                 x: timeline_start + 1,
-                y: panel.row_y(4),
+                y: panel.row_y(5),
                 z: 0,
             })
             .unwrap();
@@ -1488,7 +1823,7 @@ mod tests {
         let state = state_with_rows();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
-        let y = panel.row_y(4);
+        let y = panel.row_y(5);
 
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start,
@@ -1547,6 +1882,10 @@ mod tests {
             Some("raster".to_string()),
             0,
             false,
+            0,
+            23,
+            false,
+            true,
         );
         state
     }
@@ -1556,7 +1895,7 @@ mod tests {
         let state = state_with_two_gapped_content_blocks();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
-        let y = panel.row_y(4);
+        let y = panel.row_y(5);
 
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 2,
@@ -1594,7 +1933,7 @@ mod tests {
         let state = state_with_rows();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
-        let y = panel.row_y(4);
+        let y = panel.row_y(5);
 
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 2,
@@ -1624,7 +1963,7 @@ mod tests {
         let state = state_with_rows();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
-        let y = panel.row_y(4);
+        let y = panel.row_y(5);
 
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 2,
@@ -1667,6 +2006,10 @@ mod tests {
             Some("raster".to_string()),
             0,
             false,
+            0,
+            23,
+            false,
+            true,
         );
         state
     }
@@ -1676,7 +2019,7 @@ mod tests {
         let state = state_with_a_blank_between_two_content_blocks();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
-        let y = panel.row_y(4);
+        let y = panel.row_y(5);
 
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 4,
@@ -1706,7 +2049,7 @@ mod tests {
         let state = state_with_a_blank_between_two_content_blocks();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
-        let y = panel.row_y(4);
+        let y = panel.row_y(5);
 
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 6,
@@ -1736,7 +2079,7 @@ mod tests {
         let state = state_with_a_blank_between_two_content_blocks();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
-        let y = panel.row_y(4);
+        let y = panel.row_y(5);
 
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 5,
@@ -1778,6 +2121,10 @@ mod tests {
             Some("raster".to_string()),
             0,
             false,
+            0,
+            23,
+            false,
+            true,
         );
         state
     }
@@ -1787,7 +2134,7 @@ mod tests {
         let state = state_with_two_adjacent_content_blocks();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
-        let y = panel.row_y(4);
+        let y = panel.row_y(5);
 
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 2,
@@ -1824,7 +2171,7 @@ mod tests {
         let state = state_with_two_single_breath_blocks();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
-        let y = panel.row_y(4);
+        let y = panel.row_y(5);
 
         // Right-drag block-1 (breath 3) leftward: it grows left destructively.
         panel.on_pointer_event(ModulePointerEvent::Click {
@@ -1885,7 +2232,7 @@ mod tests {
         let state = state_with_two_single_breath_blocks();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
-        let y = panel.row_y(4);
+        let y = panel.row_y(5);
 
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 3,
@@ -1934,6 +2281,10 @@ mod tests {
             Some("raster".to_string()),
             0,
             false,
+            0,
+            23,
+            false,
+            true,
         );
         state
     }
@@ -1962,7 +2313,7 @@ mod tests {
 
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: COL_VISIBLE,
-            y: panel.row_y(6),
+            y: panel.row_y(7),
             button: ModulePointerButton::Left,
         });
 
@@ -1979,7 +2330,7 @@ mod tests {
 
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: COL_LOCK,
-            y: panel.row_y(3),
+            y: panel.row_y(4),
             button: ModulePointerButton::Left,
         });
 
@@ -1996,7 +2347,7 @@ mod tests {
 
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: panel.delete_column(),
-            y: panel.row_y(3),
+            y: panel.row_y(4),
             button: ModulePointerButton::Left,
         });
 
@@ -2076,7 +2427,7 @@ mod tests {
         let state = state_with_rows();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
-        let y = panel.row_y(3);
+        let y = panel.row_y(4);
 
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 2,
@@ -2095,7 +2446,7 @@ mod tests {
         let state = state_with_rows();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
-        let y = panel.row_y(3);
+        let y = panel.row_y(4);
 
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 4,
@@ -2114,7 +2465,7 @@ mod tests {
         let state = state_with_rows();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
-        let y = panel.row_y(3);
+        let y = panel.row_y(4);
 
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start,
@@ -2133,7 +2484,7 @@ mod tests {
         let state = state_with_rows();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
-        let y = panel.row_y(6);
+        let y = panel.row_y(7);
 
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start,
@@ -2155,7 +2506,7 @@ mod tests {
 
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: 0,
-            y: panel.row_y(6),
+            y: panel.row_y(7),
             button: ModulePointerButton::Left,
         });
 

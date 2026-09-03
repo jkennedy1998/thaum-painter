@@ -18,6 +18,9 @@ fn standard_gizmo_bar() -> GizmoBar {
 pub enum DrawingSpaceWheelMode {
     Pan,
     Depth,
+    /// Wheel steps the playhead through time, wrapping at the document
+    /// loop-window edges (scroll up = forward, down = backward).
+    Time,
 }
 
 impl DrawingSpaceWheelMode {
@@ -25,13 +28,15 @@ impl DrawingSpaceWheelMode {
         match self {
             DrawingSpaceWheelMode::Pan => 'P',
             DrawingSpaceWheelMode::Depth => 'D',
+            DrawingSpaceWheelMode::Time => 'T',
         }
     }
 
     fn cycle(self) -> Self {
         match self {
             DrawingSpaceWheelMode::Pan => DrawingSpaceWheelMode::Depth,
-            DrawingSpaceWheelMode::Depth => DrawingSpaceWheelMode::Pan,
+            DrawingSpaceWheelMode::Depth => DrawingSpaceWheelMode::Time,
+            DrawingSpaceWheelMode::Time => DrawingSpaceWheelMode::Pan,
         }
     }
 }
@@ -337,6 +342,13 @@ mod tests {
             button: ModulePointerButton::Left,
         });
         assert_eq!(*wheel_mode.borrow(), DrawingSpaceWheelMode::Depth);
+
+        module.on_pointer_event(ModulePointerEvent::Click {
+            x: 8,
+            y: 11,
+            button: ModulePointerButton::Left,
+        });
+        assert_eq!(*wheel_mode.borrow(), DrawingSpaceWheelMode::Time);
 
         module.on_pointer_event(ModulePointerEvent::Click {
             x: 8,

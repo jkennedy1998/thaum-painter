@@ -5,3 +5,9 @@ Cargo.lock
 # runtime user documents and session state (never version these)
 context/painter/painter-files/
 orchestration/artifacts/
+
+# stray save-test outputs at repo root
+/file1
+/file2
+/file3
+/'file1

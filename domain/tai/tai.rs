@@ -40,6 +40,11 @@ pub fn painter_bindings() -> ActionBindingMap {
     map.bind(ActionName::new("painter_pan_right"), RawInput::Key("D".to_string()));
     map.bind(ActionName::new("painter_pan_up"), RawInput::Key("W".to_string()));
     map.bind(ActionName::new("painter_pan_down"), RawInput::Key("S".to_string()));
+    // Playback transport (also on the layers-panel loop-bar row).
+    map.bind(
+        ActionName::new("painter_play_pause"),
+        RawInput::Key("SPACE".to_string()),
+    );
     // Camera swing / roll / focus-depth.
     map.bind(
         ActionName::new("painter_swing_left"),
@@ -171,6 +176,23 @@ mod tests {
                 report.passed(),
                 "tai {id} misses: {:?}",
                 report.expectation_misses
+            );
+        }
+    }
+
+    #[test]
+    fn registered_tool_hotkeys_match_declared_bindings() {
+        let bindings = painter_bindings();
+        for descriptor in crate::painter_tools::all() {
+            let (Some(action), Some(hotkey)) = (descriptor.select_action, descriptor.hotkey)
+            else {
+                continue;
+            };
+            assert_eq!(
+                bindings.bindings_for(&ActionName::new(action)),
+                &[RawInput::Key(hotkey.to_string())],
+                "tool {} expects {hotkey} bound to {action}",
+                descriptor.id
             );
         }
     }
