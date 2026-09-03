@@ -69,10 +69,12 @@ pub fn lasso_points(path: &[CellPoint], orientation: CameraViewOrientation) -> V
         .collect()
 }
 
-/// Even-odd rasterization of one implicitly closed polygon in (right, up)
-/// view space: the bound's edges (interpolated) plus the interior, computed
-/// per cell center so concave paths and self-adjacent drags behave
-/// predictably.
+/// Even-odd-free rasterization of one implicitly closed polygon in (right,
+/// up) view space: the drawn path acts as a watertight boundary wall and the
+/// enclosed region is found by flood-filling from outside the bound. Unlike
+/// a parity test, self-crossing freehand paths (pointer jitter, backtrack
+/// near the closure) cannot cancel regions — every cell inside the drawn
+/// loop fills.
 fn rasterize_closed_polygon(vertices: &[(i32, i32)]) -> BTreeSet<(i32, i32)> {
     let mut cells: BTreeSet<(i32, i32)> = BTreeSet::new();
 
@@ -90,9 +92,38 @@ fn rasterize_closed_polygon(vertices: &[(i32, i32)]) -> BTreeSet<(i32, i32)> {
     let max_x = vertices.iter().map(|p| p.0).max().unwrap();
     let min_y = vertices.iter().map(|p| p.1).min().unwrap();
     let max_y = vertices.iter().map(|p| p.1).max().unwrap();
+
+    // Flood-fill the bounding box from its outer ring; the 4-connected
+    // boundary wall keeps the outside from leaking in, so every unreached
+    // non-boundary cell is enclosed by the drawn loop.
+    let mut outside: BTreeSet<(i32, i32)> = BTreeSet::new();
+    let mut frontier: Vec<(i32, i32)> = Vec::new();
+    for y in (min_y - 1)..=(max_y + 1) {
+        for x in (min_x - 1)..=(max_x + 1) {
+            let on_ring = x == min_x - 1 || x == max_x + 1 || y == min_y - 1 || y == max_y + 1;
+            if on_ring && !cells.contains(&(x, y)) {
+                outside.insert((x, y));
+                frontier.push((x, y));
+            }
+        }
+    }
+    while let Some((x, y)) = frontier.pop() {
+        for neighbor in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)] {
+            if neighbor.0 < min_x - 1
+                || neighbor.0 > max_x + 1
+                || neighbor.1 < min_y - 1
+                || neighbor.1 > max_y + 1
+            {
+                continue;
+            }
+            if !cells.contains(&neighbor) && outside.insert(neighbor) {
+                frontier.push(neighbor);
+            }
+        }
+    }
     for y in min_y..=max_y {
         for x in min_x..=max_x {
-            if point_inside(x, y, vertices) {
+            if !outside.contains(&(x, y)) {
                 cells.insert((x, y));
             }
         }
@@ -101,33 +132,27 @@ fn rasterize_closed_polygon(vertices: &[(i32, i32)]) -> BTreeSet<(i32, i32)> {
     cells
 }
 
-fn point_inside(x: i32, y: i32, vertices: &[(i32, i32)]) -> bool {
-    let center_x = x as f32 + 0.5;
-    let center_y = y as f32 + 0.5;
-    let mut inside = false;
-    for index in 0..vertices.len() {
-        let (ax, ay) = vertices[index];
-        let (bx, by) = vertices[(index + 1) % vertices.len()];
-        if (ay as f32 > center_y) != (by as f32 > center_y) {
-            let span_y = by as f32 - ay as f32;
-            let edge_x = ax as f32 + (center_y - ay as f32) / span_y * (bx - ax) as f32;
-            if center_x < edge_x {
-                inside = !inside;
-            }
-        }
-    }
-    inside
-}
-
+/// Interpolates one edge in 4-connected steps (x and y never advance in the
+/// same step), so the drawn boundary is watertight — diagonal-only steps
+/// would let the outside flood fill leak through corner gaps.
 fn edge_points(a: (i32, i32), b: (i32, i32)) -> Vec<(i32, i32)> {
     let steps = (b.0 - a.0).abs().max((b.1 - a.1).abs()).max(1);
-    let mut points = Vec::with_capacity(steps as usize + 1);
-    for step in 0..=steps {
+    let mut points = Vec::with_capacity(steps as usize * 2 + 1);
+    let mut current = a;
+    points.push(current);
+    for step in 1..=steps {
         let t = step as f32 / steps as f32;
-        points.push((
+        let next = (
             (a.0 as f32 + t * (b.0 - a.0) as f32).round() as i32,
             (a.1 as f32 + t * (b.1 - a.1) as f32).round() as i32,
-        ));
+        );
+        // Elbow cell keeps each step 4-connected.
+        if next.0 != current.0 && next.1 != current.1 {
+            current = (next.0, current.1);
+            points.push(current);
+        }
+        current = next;
+        points.push(current);
     }
     points
 }
@@ -234,6 +259,68 @@ mod tests {
         ] {
             assert!(filled.contains(&cell), "missing view-plane cell {cell:?}");
         }
+    }
+
+    #[test]
+    fn a_self_crossing_freehand_circle_still_fills_every_enclosed_cell() {
+        // Simulates a real freehand drag: round path with pointer jitter and
+        // a backtrack near the closure. Even-odd parity would cancel cells
+        // wherever the path crosses itself; the boundary/flood-fill fill
+        // must cover every cell inside the drawn loop.
+        let mut path = Vec::new();
+        let (cx, cy, r) = (20.0f32, 15.0f32, 12.0f32);
+        for step in 0..=80 {
+            let angle = step as f32 / 80.0 * std::f32::consts::TAU;
+            let jitter = if step % 7 == 0 { -1.5 } else { 0.0 };
+            path.push(point(
+                (cx + (r + jitter) * angle.cos()).round() as i32,
+                (cy + (r + jitter) * angle.sin()).round() as i32,
+            ));
+        }
+        // Backtrack segment near the end (pointer hesitates backward).
+        for step in (70..=80).rev() {
+            let angle = step as f32 / 80.0 * std::f32::consts::TAU;
+            path.push(point(
+                (cx + r * angle.cos()).round() as i32,
+                (cy + r * angle.sin()).round() as i32,
+            ));
+        }
+        let cells: BTreeSet<(i32, i32)> = lasso_points(&path, flat_view())
+            .iter()
+            .map(|p| (p.x, p.y))
+            .collect();
+        // Every cell comfortably inside the ideal circle must be filled —
+        // jitter dents the boundary but cannot punch holes in the fill.
+        for y in 0..30 {
+            for x in 0..35 {
+                let dx = x as f32 - cx;
+                let dy = y as f32 - cy;
+                if dx * dx + dy * dy < (r - 2.0) * (r - 2.0) {
+                    assert!(
+                        cells.contains(&(x, y)),
+                        "interior cell ({x}, {y}) of a self-crossing lasso stayed unfilled"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_open_loose_end_still_closes_through_the_implicit_edge() {
+        // A C-shaped drag whose endpoints are connected by the implicit
+        // closing edge encloses its interior.
+        let path = [
+            point(0, 2),
+            point(0, 0),
+            point(3, 0),
+            point(3, 2),
+        ];
+        let cells: BTreeSet<(i32, i32)> = lasso_points(&path, flat_view())
+            .iter()
+            .map(|p| (p.x, p.y))
+            .collect();
+        assert!(cells.contains(&(1, 1)) && cells.contains(&(2, 1)));
+        assert!(!cells.contains(&(0, 3)) && !cells.contains(&(4, 4)));
     }
 
     #[test]
