@@ -3,6 +3,7 @@ use thaum_renderer_domain::{CameraViewOrientation, CellGraphic, CellMaterialId, 
 use crate::{
     brush::{self, Canvas, PaintedCell},
     fill::{self, CanvasBounds, FillConnectivity},
+    painter_tools::shared::{drag_behavior, DragBehavior},
     paint_color::PaintColor,
     selection_state::{flood_select_points, PainterSelection, SelectionMode},
     text::{TextLayoutOptions, DEFAULT_TEXT_LAYOUT_OPTIONS},
@@ -413,6 +414,12 @@ impl ToolState {
         bounds: CanvasBounds,
         orientation: CameraViewOrientation,
     ) -> Vec<CellPoint> {
+        // Only per-position tools produce edit points here; release-bound
+        // tools (lasso fills on release) and typing-session tools (text
+        // stages through the session bridge) never do.
+        if drag_behavior(self.tool_for_hand(hand).id()) != DragBehavior::PerPosition {
+            return Vec::new();
+        }
         match self.tool_for_hand(hand) {
             PaintTool::Brush | PaintTool::Erase => {
                 self.brush_points_for_hand(position, hand, orientation)
@@ -423,12 +430,7 @@ impl ToolState {
                 bounds,
                 self.fill_connectivity_for_hand(hand),
             ),
-            // Lasso fills on release through `apply_lasso_for_hand`, so a
-            // per-position probe never produces edit points.
-            PaintTool::Lasso => Vec::new(),
-            // Text never paints through this seam; typing stages through the
-            // session bridge (`stage_text_entry_change`) instead.
-            PaintTool::Text => Vec::new(),
+            _ => Vec::new(),
         }
     }
 
@@ -441,6 +443,11 @@ impl ToolState {
         bounds: CanvasBounds,
         orientation: CameraViewOrientation,
     ) {
+        // Release-bound and typing-session tools never edit per position:
+        // lasso paints on release, text flows through the live typing session.
+        if drag_behavior(self.tool_for_hand(hand).id()) != DragBehavior::PerPosition {
+            return;
+        }
         let hand_state = self.hand_state(hand);
         let points = selection.filter_plane_edit_points(self.edit_points_for_hand(
             canvas,
@@ -473,11 +480,7 @@ impl ToolState {
                     brush::apply_brush(canvas, point, painted);
                 }
             }
-            // Lasso edits on release through `apply_lasso_for_hand`, never
-            // per position here.
-            PaintTool::Lasso => {}
-            // Text edits flow through the live typing session, not here.
-            PaintTool::Text => {}
+            _ => {}
         }
     }
 
@@ -489,6 +492,12 @@ impl ToolState {
         bounds: CanvasBounds,
         orientation: CameraViewOrientation,
     ) -> Vec<CellPoint> {
+        // Release-bound and typing-session tools never select per position:
+        // lasso selects its enclosed region on release through
+        // `lasso_selection_points`, text owns the keyboard instead.
+        if drag_behavior(self.tool_for_hand(hand).id()) != DragBehavior::PerPosition {
+            return Vec::new();
+        }
         let hand_state = self.hand_state(hand);
         match self.tool_for_hand(hand) {
             PaintTool::Brush => {
@@ -504,10 +513,7 @@ impl ToolState {
                 }
                 flood_select_points(canvas, position, bounds, hand_state.select_channels)
             }
-            // Lasso selects its enclosed region on release through
-            // `lasso_selection_points`, never per position here.
-            PaintTool::Lasso => Vec::new(),
-            PaintTool::Text => Vec::new(),
+            _ => Vec::new(),
         }
     }
 

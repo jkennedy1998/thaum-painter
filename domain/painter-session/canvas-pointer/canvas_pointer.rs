@@ -40,7 +40,7 @@ use crate::{
     lasso_stroke::{
         build_lasso_path_cell_group, build_lasso_preview_cell_groups, LassoStroke,
     },
-    painter_tools::shared::selection_behavior,
+    painter_tools::shared::{drag_behavior, selection_behavior, DragBehavior},
     selection_state::{PainterSelection, SelectionMode},
     selection_stroke::{
         build_plane_selection_cell_groups, interpolate_cell_path, SelectionStroke,
@@ -50,7 +50,7 @@ use crate::{
     },
     storage::{SharedDocumentPaths, SharedDocumentRuntime},
     text_entry::TextEntryState,
-    tool_state::{PaintHand, PaintTarget, PaintTool, ToolState},
+    tool_state::{PaintHand, PaintTarget, ToolState},
 };
 
 /// The canvas block plus snapshot a stroke started against; release diffs
@@ -186,7 +186,8 @@ impl CanvasPointerStrokes {
         let target = ctx.tool_state.borrow().hand_state(hand).target;
         match target {
             PaintTarget::Selection => {
-                if ctx.tool_state.borrow().tool_for_hand(hand) == PaintTool::Lasso
+                if drag_behavior(ctx.tool_state.borrow().tool_for_hand(hand).id())
+                    == DragBehavior::ReleaseBound
                 {
                     // The bound records only; the enclosed region selects on release.
                     self.lasso = Some(LassoStroke::new(hand, position));
@@ -210,11 +211,12 @@ impl CanvasPointerStrokes {
                 }
             }
             PaintTarget::Image => {
-                if ctx.tool_state.borrow().tool_for_hand(hand) == PaintTool::Text
+                if drag_behavior(ctx.tool_state.borrow().tool_for_hand(hand).id())
+                    == DragBehavior::TypingSession
                 {
-                    // Text: a click begins a typing session anchored at the
-                    // click cell with the hand's brush captured; typing then
-                    // owns the keyboard until Escape/exit.
+                    // Typing-session tools: a click begins a typing session
+                    // anchored at the click cell with the hand's brush
+                    // captured; typing then owns the keyboard until Escape/exit.
                     let block_id = ctx
                         .document
                         .active_raster_block_id(&ctx.active_layer_id, current_breath)?;
@@ -237,7 +239,8 @@ impl CanvasPointerStrokes {
                 let block_id = ctx
                     .document
                     .active_raster_block_id(&ctx.active_layer_id, current_breath)?;
-                if ctx.tool_state.borrow().tool_for_hand(hand) == PaintTool::Lasso
+                if drag_behavior(ctx.tool_state.borrow().tool_for_hand(hand).id())
+                    == DragBehavior::ReleaseBound
                 {
                     // The bound records only; the fill lands on release as one
                     // committed stroke.
@@ -485,6 +488,7 @@ mod tests {
         document_locations::new_unsaved_document,
         layers_runtime::resolved_active_layer_id,
         paint_color::PaintColor,
+        tool_state::PaintTool,
         session_document::sync_canvas_from_active_layer,
     };
 

@@ -1,8 +1,13 @@
-//! Cross-tool behavior rules shared by every registered tool. First
-//! resident: which selection mode a tool forces when its hand edits the
-//! selection surface. Geometry and shape computations join here as tools
-//! accumulate, so shared logic is written once and consumed through this
-//! standard seam.
+//! Cross-tool behavior rules shared by every registered tool. Residents:
+//! which selection mode a tool forces when its hand edits the selection
+//! surface, and how a tool behaves across a pointer drag. Geometry and
+//! shape computations join here as tools accumulate, so shared logic is
+//! written once and consumed through this standard seam.
+
+#[path = "stroke_rules.rs"]
+pub mod stroke_rules;
+
+pub use stroke_rules::{drag_behavior, DragBehavior};
 
 /// How a tool behaves when its hand edits the selection surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
