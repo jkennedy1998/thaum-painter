@@ -150,6 +150,10 @@ impl ChannelMask {
     pub fn any_enabled(&self) -> bool {
         self.graphic || self.color || self.weight
     }
+
+    pub fn all_enabled(&self) -> bool {
+        self.graphic && self.color && self.weight
+    }
 }
 
 pub type EditChannels = ChannelMask;
@@ -392,6 +396,17 @@ impl ToolState {
         // Unified empty-cell rule: an authored blank (space glyph) is empty —
         // its color/weight never survive as base values.
         let existing = brush::effective_cell(existing);
+        // Source-of-truth from J: if any of the three channels is locked, a
+        // stroke must not place on empty cells. A locked channel has no
+        // existing value to keep on an empty cell, so a partial edit cannot
+        // resolve there — the same no-op the gfx-locked case already had.
+        if existing.is_none() && !hand_state.edit_channels.all_enabled() {
+            return PaintedCell {
+                graphic: CellGraphic::Glyph(' '),
+                color: hand_state.color,
+                weight_index: hand_state.weight_index,
+            };
+        }
         let base_graphic = existing
             .map(|cell| cell.graphic.clone())
             .unwrap_or(CellGraphic::Glyph(' '));
@@ -710,10 +725,11 @@ impl ToolState {
             .filter(|(point, _)| selection.allows_plane_edit(*point))
             .filter_map(|(point, copied)| {
                 let existing = brush::effective_cell(canvas.get(&point));
-                // A gfx-locked stamp on an empty target edits nothing: a
-                // blank glyph carries no color or weight, so there is no
-                // recolor-in-place to do — the point is skipped entirely.
-                if !hand_state.edit_channels.graphic && existing.is_none() {
+                // Source-of-truth from J: a stamp with any locked channel
+                // edits nothing on an empty target — a locked channel has
+                // no existing value to keep there, so the point is skipped
+                // entirely (the gfx-locked case generalized).
+                if !hand_state.edit_channels.all_enabled() && existing.is_none() {
                     return None;
                 }
                 let upcoming = PaintedCell {
@@ -1150,6 +1166,79 @@ mod tests {
         // Unified empty-cell rule: a masked resolution on an empty cell is
         // an authored blank, and blanks carry nothing — nothing is stored.
         assert_eq!(canvas.get(&point(2, 2)), None);
+    }
+
+    #[test]
+    fn any_locked_channel_blocks_placing_on_empty_cells() {
+        // Source-of-truth from J: with any of the three channels locked, a
+        // stroke must not place on empty cells — only an all-unlocked hand
+        // authors new cells. A locked channel has no existing value to keep
+        // on an empty cell, so a partial edit cannot resolve there.
+        let mut tool_state = ToolState::default();
+        tool_state.left_hand.edit_channels.color = false;
+        tool_state.set_graphic_for_hand(PaintHand::Left, CellGraphic::Glyph('@'));
+        tool_state.set_color_for_hand(PaintHand::Left, color(9, 8, 7));
+        let mut canvas = Canvas::new();
+        let mut selection = selection();
+
+        tool_state.apply_at_for_hand(
+            &mut canvas,
+            &mut selection,
+            point(2, 2),
+            PaintHand::Left,
+            bounds(),
+            flat_view(),
+        );
+
+        assert_eq!(canvas.get(&point(2, 2)), None);
+
+        // The same stroke still restyles an existing cell in place: the
+        // color-locked resolution keeps the target's color and paints the
+        // hand's graphic and weight onto it.
+        brush::apply_brush(
+            &mut canvas,
+            point(3, 3),
+            PaintedCell {
+                graphic: CellGraphic::Glyph('A'),
+                color: color(1, 1, 1),
+                weight_index: 0,
+            },
+        );
+        tool_state.apply_at_for_hand(
+            &mut canvas,
+            &mut selection,
+            point(3, 3),
+            PaintHand::Left,
+            bounds(),
+            flat_view(),
+        );
+        assert_eq!(
+            canvas.get(&point(3, 3)).unwrap().graphic,
+            CellGraphic::Glyph('@')
+        );
+        assert_eq!(canvas.get(&point(3, 3)).unwrap().color, color(1, 1, 1));
+    }
+
+    #[test]
+    fn fully_unlocked_hands_still_place_on_empty_cells() {
+        let mut tool_state = ToolState::default();
+        tool_state.set_graphic_for_hand(PaintHand::Left, CellGraphic::Glyph('@'));
+        let mut canvas = Canvas::new();
+        let mut selection = selection();
+
+        tool_state.apply_at_for_hand(
+            &mut canvas,
+            &mut selection,
+            point(2, 2),
+            PaintHand::Left,
+            bounds(),
+            flat_view(),
+        );
+
+        assert_eq!(
+            canvas.get(&point(2, 2)).unwrap().graphic,
+            CellGraphic::Glyph('@')
+        );
     }
 
     #[test]
@@ -1782,6 +1871,28 @@ mod tests {
         // Unified empty-cell rule: a space carries no color or weight, so a
         // gfx-locked stamp has nothing to edit on an empty target — the
         // point is skipped entirely instead of staging an authored blank.
+        assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn any_locked_channel_stamp_skips_empty_target_cells() {
+        // Source-of-truth from J: one locked channel of any kind is enough
+        // to block stamping onto empty cells.
+        let mut tool_state = ToolState::default();
+        tool_state
+            .hand_state_mut(PaintHand::Left)
+            .edit_channels
+            .weight = false;
+        let canvas = Canvas::new();
+
+        let changes = tool_state.stamp_changes_for_hand(
+            &canvas,
+            &selection(),
+            &copy_data(&[(0, 0, 'a')]),
+            point(5, 5),
+            PaintHand::Left,
+        );
+
         assert!(changes.is_empty());
     }
 

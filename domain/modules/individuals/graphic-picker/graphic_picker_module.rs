@@ -233,7 +233,7 @@ impl GraphicPickerModule {
         self
     }
 
-    fn build_glyph_rows(&self) -> Vec<ContentRow> {
+    fn build_scroll_rows(&self) -> Vec<ContentRow> {
         let (content_width, _) = PanelChrome::content_size(self.rect);
         let columns = content_width.max(1) as usize;
         let mut rows = Vec::new();
@@ -243,28 +243,24 @@ impl GraphicPickerModule {
                 rows.push(ContentRow::Glyphs(glyph_row.to_vec()));
             }
         }
-        rows.push(ContentRow::Text("GLYPHS", UiColorRole::Bright));
+        // Source-of-truth from J: sprites are a standard category like the
+        // ascii sections, not a separated pinned block.
+        rows.push(ContentRow::SectionTitle("sprites".to_string()));
+        for index in 0..self.sprites.len() {
+            rows.push(ContentRow::Sprite(index));
+        }
         rows
     }
 
-    /// Rows the scroll offset moves through: the glyph content only. The
-    /// sprite block stays pinned to the panel bottom and never crops.
+    /// Rows the scroll offset moves through: the whole category list.
     fn max_scroll_rows(&self) -> usize {
         let (_, content_height) = PanelChrome::content_size(self.rect);
-        let reserved = self.sprite_block_height() + self.recent_block_height();
-        let available = (content_height - reserved).max(0) as usize;
-        self.build_glyph_rows().len().saturating_sub(available)
+        let available = (content_height - self.recent_block_height()).max(0) as usize;
+        self.build_scroll_rows().len().saturating_sub(available)
     }
 
-    fn sprite_block_height(&self) -> i32 {
-        if self.sprites.is_empty() {
-            0
-        } else {
-            self.sprites.len() as i32 + 2
-        }
-    }
-
-    /// Pinned top block: RECENT header plus one row of recent graphics.
+    /// Pinned block at the screen-top end of the module: RECENT header plus
+    /// one row of recent graphics. Stays put while the list scrolls under.
     fn recent_block_height(&self) -> i32 {
         2
     }
@@ -285,11 +281,13 @@ impl GraphicPickerModule {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_pinned_recent_block(
         &self,
         content_x: i32,
         content_y: i32,
         content_width: i32,
+        content_height_param: i32,
         cells: &mut Vec<Cell>,
         hits: &mut Vec<LayoutHit>,
     ) {
@@ -309,8 +307,8 @@ impl GraphicPickerModule {
                 });
             }
         };
-        let header_y = content_y;
-        let row_y = content_y + 1;
+        let header_y = content_y + content_height_param - 1;
+        let row_y = header_y - 1;
         draw_text("RECENT", header_y, UiColorRole::Bright, cells);
         let recent = self.recent.borrow();
         for (index, graphic) in recent.iter().enumerate() {
@@ -335,75 +333,6 @@ impl GraphicPickerModule {
                 x1: (x + RECENT_PITCH - 1).min(max_x),
                 y: row_y,
                 graphic: graphic.clone(),
-            });
-        }
-    }
-
-    fn draw_pinned_sprite_block(
-        &self,
-        state: &std::cell::Ref<'_, ToolState>,
-        content_x: i32,
-        content_y: i32,
-        content_width: i32,
-        content_height: i32,
-        cells: &mut Vec<Cell>,
-        hits: &mut Vec<LayoutHit>,
-    ) {
-        if self.sprites.is_empty() {
-            return;
-        }
-        let max_x = content_x + content_width - 1;
-        let bottom_y = content_y + content_height - 1;
-        let sprite_count = self.sprites.len() as i32;
-        let draw_text = |text: &str, x: i32, y: i32, role: UiColorRole, cells: &mut Vec<Cell>| {
-            for (index, glyph) in text.chars().enumerate() {
-                let x = x + index as i32;
-                if x > max_x {
-                    break;
-                }
-                cells.push(Cell {
-                    position: CellPoint { x, y, z: 0 },
-                    graphic: CellGraphic::Glyph(glyph),
-                    color: self.palette.get(role),
-                    weight: CellWeight::from_index_clamped(2),
-                    ..Cell::default()
-                });
-            }
-        };
-        draw_text("SPRITES", content_x, bottom_y, UiColorRole::Bright, cells);
-        for (index, sprite) in self.sprites.iter().enumerate() {
-            let y = bottom_y - sprite_count + 1 + index as i32;
-            let graphic = CellGraphic::Sprite(SpriteGraphic::new(&sprite.path));
-            let indicator = assignment_indicator(state, &graphic);
-            let role = assignment_role(state, &graphic);
-            cells.push(Cell {
-                position: CellPoint {
-                    x: content_x,
-                    y,
-                    z: 0,
-                },
-                graphic: CellGraphic::Glyph(indicator),
-                color: self.palette.get(role),
-                weight: preview_weight(state, &graphic),
-                ..Cell::default()
-            });
-            cells.push(Cell {
-                position: CellPoint {
-                    x: content_x + 2,
-                    y,
-                    z: 0,
-                },
-                graphic: graphic.clone(),
-                color: preview_color(state, &graphic, &self.palette),
-                weight: preview_weight(state, &graphic),
-                ..Cell::default()
-            });
-            draw_text(&sprite.label, content_x + 4, y, role, cells);
-            hits.push(LayoutHit::Sprite {
-                x0: content_x,
-                x1: max_x,
-                y,
-                graphic,
             });
         }
     }
@@ -451,8 +380,7 @@ impl GraphicPickerModule {
             }
         };
 
-        self.draw_pinned_sprite_block(
-            &state,
+        self.draw_pinned_recent_block(
             content_x,
             content_y,
             content_width,
@@ -461,14 +389,15 @@ impl GraphicPickerModule {
             &mut hits,
         );
 
-        self.draw_pinned_recent_block(content_x, content_y, content_width, &mut cells, &mut hits);
-
-        let reserved = self.sprite_block_height() + self.recent_block_height();
-        let available = (content_height - reserved).max(0) as usize;
-        let rows = self.build_glyph_rows();
+        // Flat2d panels render larger local y higher on screen, so the
+        // screen-top of the content is the largest-y row: walk row_index 0
+        // (screen-topmost scroll row) downward from just under RECENT.
+        let available = (content_height - self.recent_block_height()).max(0) as usize;
+        let rows = self.build_scroll_rows();
         let scroll = (self.scroll_rows as usize).min(self.max_scroll_rows());
+        let first_y = content_y + content_height - self.recent_block_height() - 1;
         for (row_index, row) in rows.iter().skip(scroll).take(available).enumerate() {
-            let y = content_y + self.recent_block_height() + row_index as i32;
+            let y = first_y - row_index as i32;
             match row {
                 ContentRow::Text(text, role) => draw_text(text, content_x, y, *role, &mut cells),
                 ContentRow::Blank => {}
@@ -496,7 +425,41 @@ impl GraphicPickerModule {
                         hits.push(LayoutHit::Glyph { x, y, graphic });
                     }
                 }
-                ContentRow::Sprite(_) => {}
+                ContentRow::Sprite(index) => {
+                    let sprite = &self.sprites[*index];
+                    let graphic = CellGraphic::Sprite(SpriteGraphic::new(&sprite.path));
+                    let indicator = assignment_indicator(&state, &graphic);
+                    let role = assignment_role(&state, &graphic);
+                    cells.push(Cell {
+                        position: CellPoint {
+                            x: content_x,
+                            y,
+                            z: 0,
+                        },
+                        graphic: CellGraphic::Glyph(indicator),
+                        color: self.palette.get(role),
+                        weight: preview_weight(&state, &graphic),
+                        ..Cell::default()
+                    });
+                    cells.push(Cell {
+                        position: CellPoint {
+                            x: content_x + 2,
+                            y,
+                            z: 0,
+                        },
+                        graphic: graphic.clone(),
+                        color: preview_color(&state, &graphic, &self.palette),
+                        weight: preview_weight(&state, &graphic),
+                        ..Cell::default()
+                    });
+                    draw_text(&sprite.label, content_x + 4, y, role, &mut cells);
+                    hits.push(LayoutHit::Sprite {
+                        x0: content_x,
+                        x1: max_x,
+                        y,
+                        graphic,
+                    });
+                }
             }
         }
 
@@ -773,6 +736,8 @@ mod tests {
     fn right_clicking_a_sprite_assigns_the_right_hand_graphic() {
         let state = tool_state();
         let mut module = GraphicPickerModule::new("graphics", rect(), state.clone());
+        // Sprites are a standard category at the end of the scroll list.
+        scroll_to_bottom(&mut module);
         let (x, y) = sprite_hit(&module, "proofs/grass.png");
 
         module.on_pointer_event(ModulePointerEvent::Click {
@@ -904,7 +869,7 @@ mod tests {
         );
         let first_glyph_row = |module: &GraphicPickerModule| {
             module
-                .build_glyph_rows()
+                .build_scroll_rows()
                 .iter()
                 .find_map(|row| match row {
                     ContentRow::Glyphs(glyphs) => Some(glyphs.len()),
@@ -938,11 +903,14 @@ mod tests {
         });
 
         let (cells, _) = module.build_layout();
-        let row_y = PanelChrome::content_origin().1 + 1;
+        let recent_row_y =
+            PanelChrome::content_origin().1 + PanelChrome::content_size(rect()).1 - 2;
         let x_of = |needle: char| {
             cells
                 .iter()
-                .find(|cell| cell.position.y == row_y && cell.graphic == CellGraphic::Glyph(needle))
+                .find(|cell| {
+                    cell.position.y == recent_row_y && cell.graphic == CellGraphic::Glyph(needle)
+                })
                 .expect("recent glyph should render")
                 .position
                 .x
