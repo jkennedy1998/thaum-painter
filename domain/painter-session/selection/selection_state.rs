@@ -588,13 +588,19 @@ mod tests {
         let mut selection = PainterSelection::new(bounds());
         selection.restore_points([
             point(1, 1),
-            CellPoint { x: -3, y: -3, z: -2 },
+            CellPoint {
+                x: -3,
+                y: -3,
+                z: -2,
+            },
         ]);
 
         assert!(selection.plane().contains(point(1, 1)));
-        assert!(selection
-            .plane()
-            .contains(CellPoint { x: -3, y: -3, z: -2 }));
+        assert!(selection.plane().contains(CellPoint {
+            x: -3,
+            y: -3,
+            z: -2
+        }));
     }
 
     #[test]

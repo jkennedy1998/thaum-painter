@@ -78,7 +78,10 @@ fn default_layer_length_breaths() -> u32 {
     24
 }
 
-fn default_raster_property_track(start_breath: u32, length_breaths: u32) -> SharedDocumentPropertyTrack {
+fn default_raster_property_track(
+    start_breath: u32,
+    length_breaths: u32,
+) -> SharedDocumentPropertyTrack {
     SharedDocumentPropertyTrack {
         property_id: "raster".to_string(),
         blocks: vec![SharedDocumentPropertyBlock {
@@ -117,7 +120,10 @@ impl Default for DocumentWindow {
     fn default() -> Self {
         // Defaults to the panel's visible timeline span (24 breaths) so a new
         // document's window bar covers exactly the ruler it is drawn on.
-        Self { start_breath: 0, end_breath: 23 }
+        Self {
+            start_breath: 0,
+            end_breath: 23,
+        }
     }
 }
 
@@ -168,7 +174,10 @@ impl SharedDocumentFile {
                 locked: false,
                 start_breath: 0,
                 length_breaths: default_layer_length_breaths(),
-                property_tracks: vec![default_raster_property_track(0, default_layer_length_breaths())],
+                property_tracks: vec![default_raster_property_track(
+                    0,
+                    default_layer_length_breaths(),
+                )],
             }],
             selection: SharedDocumentSelection::default(),
             document_window: DocumentWindow::default(),
@@ -525,10 +534,8 @@ impl SharedDocumentRuntime {
                 .find(|track| track.property_id == "raster")
             {
                 for block in &track.blocks {
-                    block_canvases.insert(
-                        (layer.layer_id.clone(), block.id.clone()),
-                        Canvas::new(),
-                    );
+                    block_canvases
+                        .insert((layer.layer_id.clone(), block.id.clone()), Canvas::new());
                 }
             }
             applied_action_ids_by_layer.insert(layer.layer_id.clone(), Vec::new());
@@ -589,7 +596,13 @@ impl SharedDocumentRuntime {
     /// The selected points of one selection channel, as runtime cell points.
     pub fn selection_points(&self, channel_id: &str) -> Vec<CellPoint> {
         self.selection_channel(channel_id)
-            .map(|channel| channel.points.iter().map(PersistedCellPoint::to_runtime).collect())
+            .map(|channel| {
+                channel
+                    .points
+                    .iter()
+                    .map(PersistedCellPoint::to_runtime)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -611,10 +624,8 @@ impl SharedDocumentRuntime {
     where
         I: IntoIterator<Item = CellPoint>,
     {
-        let incoming: BTreeSet<PersistedCellPoint> = points
-            .into_iter()
-            .map(PersistedCellPoint::from)
-            .collect();
+        let incoming: BTreeSet<PersistedCellPoint> =
+            points.into_iter().map(PersistedCellPoint::from).collect();
         let channel = self.ensure_selection_channel_mut(channel_id);
         let before = channel.points.clone();
         match mode {
@@ -626,11 +637,7 @@ impl SharedDocumentRuntime {
                 }
             }
             SharedSelectionWriteMode::Intersect => {
-                channel.points = channel
-                    .points
-                    .intersection(&incoming)
-                    .cloned()
-                    .collect();
+                channel.points = channel.points.intersection(&incoming).cloned().collect();
             }
         }
         channel.points != before
@@ -718,7 +725,11 @@ impl SharedDocumentRuntime {
         &self.document.layers
     }
 
-    pub fn property_track(&self, layer_id: &str, property_id: &str) -> Option<&SharedDocumentPropertyTrack> {
+    pub fn property_track(
+        &self,
+        layer_id: &str,
+        property_id: &str,
+    ) -> Option<&SharedDocumentPropertyTrack> {
         self.document
             .layers
             .iter()
@@ -780,9 +791,13 @@ impl SharedDocumentRuntime {
             locked: false,
             start_breath: 0,
             length_breaths: default_layer_length_breaths(),
-            property_tracks: vec![default_raster_property_track(0, default_layer_length_breaths())],
+            property_tracks: vec![default_raster_property_track(
+                0,
+                default_layer_length_breaths(),
+            )],
         });
-        self.block_canvases.insert((layer_id.clone(), "block-1".to_string()), Canvas::new());
+        self.block_canvases
+            .insert((layer_id.clone(), "block-1".to_string()), Canvas::new());
         self.applied_action_ids_by_layer
             .insert(layer_id.clone(), Vec::new());
         self.undone_action_ids_by_layer
@@ -800,7 +815,9 @@ impl SharedDocumentRuntime {
     /// exists.
     pub fn remove_layer(&mut self, layer_id: &str) -> bool {
         let before = self.document.layers.len();
-        self.document.layers.retain(|layer| layer.layer_id != layer_id);
+        self.document
+            .layers
+            .retain(|layer| layer.layer_id != layer_id);
         if self.document.layers.len() == before {
             return false;
         }
@@ -875,7 +892,12 @@ impl SharedDocumentRuntime {
     /// Sets the breath range shown by a layer's own timeline bar in the layers panel. Purely an
     /// authoring/UI concept for now — it does not gate compositing. Returns `false` if no such
     /// layer exists.
-    pub fn set_layer_timing(&mut self, layer_id: &str, start_breath: u32, length_breaths: u32) -> bool {
+    pub fn set_layer_timing(
+        &mut self,
+        layer_id: &str,
+        start_breath: u32,
+        length_breaths: u32,
+    ) -> bool {
         let Some(layer) = self
             .document
             .layers
@@ -917,11 +939,8 @@ impl SharedDocumentRuntime {
             .filter(|(other_index, _)| *other_index != index)
             .map(|(_, block)| (block.start_breath, block.length_breaths))
             .collect();
-        let (start, length) = clamped_breath_span(
-            &others,
-            original,
-            (start_breath, length_breaths.max(1)),
-        );
+        let (start, length) =
+            clamped_breath_span(&others, original, (start_breath, length_breaths.max(1)));
         let block = &mut track.blocks[index];
         block.start_breath = start;
         block.length_breaths = length;
@@ -963,8 +982,11 @@ impl SharedDocumentRuntime {
             .filter(|(other_index, _)| *other_index != index)
             .map(|(other_index, _)| other_index)
             .collect();
-        let pushed =
-            pushed_breath_span(&other_spans, original, (start_breath, length_breaths.max(1)));
+        let pushed = pushed_breath_span(
+            &other_spans,
+            original,
+            (start_breath, length_breaths.max(1)),
+        );
         track.blocks[index].start_breath = pushed.edited.0;
         track.blocks[index].length_breaths = pushed.edited.1;
         for (other_index, (start, length)) in pushed.shifted {
@@ -1210,7 +1232,12 @@ impl SharedDocumentRuntime {
     /// Turns a content block into a blank placeholder covering the same breath range, leaving
     /// the track's coverage continuous. The block's painted content is discarded — a blank
     /// block renders empty. Returns `false` if no such block exists.
-    pub fn blank_property_block(&mut self, layer_id: &str, property_id: &str, block_id: &str) -> bool {
+    pub fn blank_property_block(
+        &mut self,
+        layer_id: &str,
+        property_id: &str,
+        block_id: &str,
+    ) -> bool {
         let Some(track) = self.ensure_property_track_mut(layer_id, property_id) else {
             return false;
         };
@@ -1290,14 +1317,28 @@ impl SharedDocumentRuntime {
         let Some(track) = self.ensure_property_track_mut(layer_id, property_id) else {
             return false;
         };
-        let Some(source_index) = track.blocks.iter().position(|block| block.id == source_block_id) else {
+        let Some(source_index) = track
+            .blocks
+            .iter()
+            .position(|block| block.id == source_block_id)
+        else {
             return false;
         };
-        let Some(target_index) = track.blocks.iter().position(|block| block.id == target_block_id) else {
+        let Some(target_index) = track
+            .blocks
+            .iter()
+            .position(|block| block.id == target_block_id)
+        else {
             return false;
         };
-        let source_span = (track.blocks[source_index].start_breath, track.blocks[source_index].length_breaths);
-        let target_span = (track.blocks[target_index].start_breath, track.blocks[target_index].length_breaths);
+        let source_span = (
+            track.blocks[source_index].start_breath,
+            track.blocks[source_index].length_breaths,
+        );
+        let target_span = (
+            track.blocks[target_index].start_breath,
+            track.blocks[target_index].length_breaths,
+        );
         track.blocks[source_index].start_breath = target_span.0;
         track.blocks[source_index].length_breaths = target_span.1;
         track.blocks[target_index].start_breath = source_span.0;
@@ -1470,11 +1511,7 @@ impl SharedDocumentRuntime {
                 .iter_mut()
                 .find(|track| track.property_id == "raster")
             {
-                if let Some(block) = track
-                    .blocks
-                    .iter_mut()
-                    .find(|block| block.id == block_id)
-                {
+                if let Some(block) = track.blocks.iter_mut().find(|block| block.id == block_id) {
                     block.is_blank = false;
                 }
             }
@@ -1485,10 +1522,7 @@ impl SharedDocumentRuntime {
     /// the inverse patches so the caller can persist the undo as a passive
     /// `CellPatchSet` revert record. One undo = one whole committed stroke.
     pub fn undo_top_action(&mut self, layer_id: &str) -> Option<HistoryRevertPatches> {
-        let action_id = self
-            .applied_action_ids_by_layer
-            .get_mut(layer_id)?
-            .pop()?;
+        let action_id = self.applied_action_ids_by_layer.get_mut(layer_id)?.pop()?;
         let applied = self.patches_by_action_id.get(&action_id)?;
         let canvas = self
             .block_canvases
@@ -1514,10 +1548,7 @@ impl SharedDocumentRuntime {
     /// Pops the layer's last undone action and re-applies it, returning the
     /// re-application patches for a passive revert record.
     pub fn redo_top_action(&mut self, layer_id: &str) -> Option<HistoryRevertPatches> {
-        let action_id = self
-            .undone_action_ids_by_layer
-            .get_mut(layer_id)?
-            .pop()?;
+        let action_id = self.undone_action_ids_by_layer.get_mut(layer_id)?.pop()?;
         let applied = self.patches_by_action_id.get(&action_id)?;
         let canvas = self
             .block_canvases
@@ -1955,7 +1986,8 @@ mod tests {
             Some(&cell('#'))
         );
 
-        let replayed = SharedDocumentRuntime::replay(runtime.document.clone(), runtime.actions.clone());
+        let replayed =
+            SharedDocumentRuntime::replay(runtime.document.clone(), runtime.actions.clone());
         assert_eq!(
             replayed.canvas_for_layer("layer-1", 0),
             runtime.canvas_for_layer("layer-1", 0)
@@ -1977,7 +2009,10 @@ mod tests {
                     locked: false,
                     start_breath: 0,
                     length_breaths: default_layer_length_breaths(),
-                    property_tracks: vec![default_raster_property_track(0, default_layer_length_breaths())],
+                    property_tracks: vec![default_raster_property_track(
+                        0,
+                        default_layer_length_breaths(),
+                    )],
                 },
                 SharedDocumentLayer {
                     layer_id: "layer-2".to_string(),
@@ -1986,7 +2021,10 @@ mod tests {
                     locked: false,
                     start_breath: 0,
                     length_breaths: default_layer_length_breaths(),
-                    property_tracks: vec![default_raster_property_track(0, default_layer_length_breaths())],
+                    property_tracks: vec![default_raster_property_track(
+                        0,
+                        default_layer_length_breaths(),
+                    )],
                 },
             ],
             revision: 0,
@@ -2212,7 +2250,13 @@ mod tests {
             SharedCellPatch::new(p(2, 1), None, Some(&cell('B'))),
         ];
         let record = SharedDocumentActionRecord::cell_patch_set(
-            "a1", "doc-1", "layer-1", "u1", "1", patches, Some("block-1".to_string()),
+            "a1",
+            "doc-1",
+            "layer-1",
+            "u1",
+            "1",
+            patches,
+            Some("block-1".to_string()),
         );
         runtime.apply_action_record(record);
         assert_eq!(runtime.block_canvas("layer-1", "block-1").unwrap().len(), 2);
@@ -2302,12 +2346,24 @@ mod tests {
         session.apply_action_record(paint("a2", (2, 1), 'B'));
         let revert_b = session.undo_top_action("layer-1").unwrap();
         session.push_history_record(SharedDocumentActionRecord::revert_patch_set(
-            "r1", "doc-1", "layer-1", "u1", "2", revert_b.patches, Some("block-1".to_string()),
+            "r1",
+            "doc-1",
+            "layer-1",
+            "u1",
+            "2",
+            revert_b.patches,
+            Some("block-1".to_string()),
             revert_b.action_id,
         ));
         let revert_a = session.undo_top_action("layer-1").unwrap();
         session.push_history_record(SharedDocumentActionRecord::revert_patch_set(
-            "r2", "doc-1", "layer-1", "u1", "3", revert_a.patches, Some("block-1".to_string()),
+            "r2",
+            "doc-1",
+            "layer-1",
+            "u1",
+            "3",
+            revert_a.patches,
+            Some("block-1".to_string()),
             revert_a.action_id,
         ));
         assert!(session
@@ -2400,7 +2456,8 @@ mod tests {
         // A second writer loads the same file, saves first, and bumps the disk
         // revision — simulating another user (or app instance) winning the race.
         let mut rival = load_or_create_shared_document(&paths, {
-            let mut fallback = SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
+            let mut fallback =
+                SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
             fallback.revision = writer.revision();
             fallback
         })
@@ -2418,7 +2475,8 @@ mod tests {
 
         // Reloading the document re-seeds the revision, so saving works again.
         let mut recovered = load_or_create_shared_document(&paths, {
-            let mut fallback = SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
+            let mut fallback =
+                SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
             fallback.revision = survivor.revision;
             fallback
         })
@@ -2489,17 +2547,29 @@ mod tests {
         // Local undo history is gone: the rival's content is live, and the next
         // save succeeds from the re-seeded revision.
         assert_eq!(
-            writer.canvas_for_layer("layer-1", 0).unwrap().get(&point(2, 2)).map(|c| c.graphic.clone()),
+            writer
+                .canvas_for_layer("layer-1", 0)
+                .unwrap()
+                .get(&point(2, 2))
+                .map(|c| c.graphic.clone()),
             Some(cell('Y').graphic)
         );
-        assert!(writer.canvas_for_layer("layer-1", 0).unwrap().get(&point(1, 1)).is_none());
+        assert!(writer
+            .canvas_for_layer("layer-1", 0)
+            .unwrap()
+            .get(&point(1, 1))
+            .is_none());
         save_shared_document_snapshot(&paths, &mut writer).unwrap();
         assert_eq!(writer.revision(), rival.revision() + 1);
 
         // One undo reverts the rival's stroke; a second undo finds nothing, so the
         // local session's pre-reload history did not survive the reload.
         assert!(writer.undo_top_action("layer-1").is_some());
-        assert!(writer.canvas_for_layer("layer-1", 0).unwrap().get(&point(2, 2)).is_none());
+        assert!(writer
+            .canvas_for_layer("layer-1", 0)
+            .unwrap()
+            .get(&point(2, 2))
+            .is_none());
         assert!(writer.undo_top_action("layer-1").is_none());
 
         let _ = fs::remove_dir_all(root);
@@ -2567,11 +2637,7 @@ mod tests {
         let patch_count = 2000;
         let patches: Vec<SharedCellPatch> = (0..patch_count)
             .map(|i| {
-                SharedCellPatch::new(
-                    point(i as i32 % 64, i as i32 / 64),
-                    None,
-                    Some(&cell('X')),
-                )
+                SharedCellPatch::new(point(i as i32 % 64, i as i32 / 64), None, Some(&cell('X')))
             })
             .collect();
         let record_for = |writer: &str| {
@@ -2660,7 +2726,9 @@ mod tests {
 
         // An unknown channel id is created on demand rather than rejected.
         assert!(runtime.apply_selection_points(
-            "private", [p(0, 0)], SharedSelectionWriteMode::Additive
+            "private",
+            [p(0, 0)],
+            SharedSelectionWriteMode::Additive
         ));
         assert!(runtime.selection_contains("private", p(0, 0)));
     }
@@ -2690,9 +2758,8 @@ mod tests {
 
         save_shared_document_snapshot(&paths, &mut runtime).unwrap();
         let reloaded = load_or_create_shared_document(&paths, {
-            let mut fallback = SharedDocumentFile::single_layer(
-                "doc-1", "Doc", "layer-1", "Layer 1",
-            );
+            let mut fallback =
+                SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
             fallback.selection = runtime.document.selection.clone();
             fallback
         })
@@ -2752,7 +2819,9 @@ mod tests {
 
         assert!(runtime.set_layer_visible("layer-1", true));
         assert_eq!(
-            runtime.composited_canvas_in_layer_order(0).get(&point(0, 0)),
+            runtime
+                .composited_canvas_in_layer_order(0)
+                .get(&point(0, 0)),
             Some(&cell('A'))
         );
 
@@ -2969,11 +3038,7 @@ mod tests {
         // No two blocks in the channel share a breath.
         let first = (blocks[0].start_breath, blocks[0].length_breaths);
         let second = (blocks[1].start_breath, blocks[1].length_breaths);
-        assert!(!breath_in_span(
-            second.0,
-            first.0,
-            first.1
-        ));
+        assert!(!breath_in_span(second.0, first.0, first.1));
     }
 
     #[test]
@@ -3116,7 +3181,10 @@ mod tests {
         ));
 
         assert_eq!(
-            runtime.canvas_for_layer("layer-1", 5).unwrap().get(&point(0, 0)),
+            runtime
+                .canvas_for_layer("layer-1", 5)
+                .unwrap()
+                .get(&point(0, 0)),
             Some(&cell('A'))
         );
         // block-2 has no content yet, so later breaths render empty.
@@ -3124,7 +3192,8 @@ mod tests {
         // A breath in a gap between blocks has no canvas at all.
         assert!(runtime.canvas_for_layer("layer-1", 99).is_none());
 
-        let replayed = SharedDocumentRuntime::replay(runtime.document.clone(), runtime.actions.clone());
+        let replayed =
+            SharedDocumentRuntime::replay(runtime.document.clone(), runtime.actions.clone());
         assert_eq!(
             replayed.canvas_for_layer("layer-1", 5),
             runtime.canvas_for_layer("layer-1", 5)
@@ -3163,14 +3232,26 @@ mod tests {
         ));
 
         let blocks = &runtime.property_track("layer-1", "raster").unwrap().blocks;
-        assert!(!blocks.iter().find(|block| block.id == "block-2").unwrap().is_blank);
+        assert!(
+            !blocks
+                .iter()
+                .find(|block| block.id == "block-2")
+                .unwrap()
+                .is_blank
+        );
         assert_eq!(
-            runtime.canvas_for_layer("layer-1", 10).unwrap().get(&point(0, 0)),
+            runtime
+                .canvas_for_layer("layer-1", 10)
+                .unwrap()
+                .get(&point(0, 0)),
             Some(&cell('B'))
         );
         // The first block's content is untouched.
         assert_eq!(
-            runtime.canvas_for_layer("layer-1", 0).unwrap().get(&point(0, 0)),
+            runtime
+                .canvas_for_layer("layer-1", 0)
+                .unwrap()
+                .get(&point(0, 0)),
             Some(&cell('A'))
         );
     }
@@ -3193,12 +3274,16 @@ mod tests {
         ));
 
         assert_eq!(
-            runtime.canvas_for_layer("layer-1", 10).unwrap().get(&point(0, 0)),
+            runtime
+                .canvas_for_layer("layer-1", 10)
+                .unwrap()
+                .get(&point(0, 0)),
             Some(&cell('A'))
         );
         assert!(runtime.canvas_for_layer("layer-1", 0).unwrap().is_empty());
 
-        let replayed = SharedDocumentRuntime::replay(runtime.document.clone(), runtime.actions.clone());
+        let replayed =
+            SharedDocumentRuntime::replay(runtime.document.clone(), runtime.actions.clone());
         assert_eq!(
             replayed.canvas_for_layer("layer-1", 10),
             runtime.canvas_for_layer("layer-1", 10)
@@ -3226,7 +3311,10 @@ mod tests {
         // visibly moves to the exchanged span; block-2 covers breaths 0..7 and shows
         // its own (empty) content there.
         assert_eq!(
-            runtime.canvas_for_layer("layer-1", 10).unwrap().get(&point(0, 0)),
+            runtime
+                .canvas_for_layer("layer-1", 10)
+                .unwrap()
+                .get(&point(0, 0)),
             Some(&cell('A'))
         );
         assert!(runtime.canvas_for_layer("layer-1", 0).unwrap().is_empty());

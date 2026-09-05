@@ -215,12 +215,10 @@ mod tests {
         // Anchor one hand to the picker's current selection so at least one
         // drawn color cell (the preview swatch) is guaranteed to match.
         let selected = module.inner.selected_rgb();
-        tool_state
-            .borrow_mut()
-            .set_color_for_hand(
-                PaintHand::Left,
-                PaintColor::flat_rgb(selected[0], selected[1], selected[2]),
-            );
+        tool_state.borrow_mut().set_color_for_hand(
+            PaintHand::Left,
+            PaintColor::flat_rgb(selected[0], selected[1], selected[2]),
+        );
 
         let group = module.draw();
         let mut highlighted = 0;

@@ -76,14 +76,16 @@ pub fn apply_painter_camera_action(
         "painter_swing_down" => {
             reorient_camera_around_viewport_center(camera, viewport, |camera| camera.swing_down())
         }
-        "painter_roll_counter_clockwise" => reorient_camera_around_viewport_center(
-            camera,
-            viewport,
-            |camera| camera.roll = camera.roll.rotate_counter_clockwise(),
-        ),
-        "painter_roll_clockwise" => reorient_camera_around_viewport_center(camera, viewport, |camera| {
-            camera.roll = camera.roll.rotate_clockwise()
-        }),
+        "painter_roll_counter_clockwise" => {
+            reorient_camera_around_viewport_center(camera, viewport, |camera| {
+                camera.roll = camera.roll.rotate_counter_clockwise()
+            })
+        }
+        "painter_roll_clockwise" => {
+            reorient_camera_around_viewport_center(camera, viewport, |camera| {
+                camera.roll = camera.roll.rotate_clockwise()
+            })
+        }
         "painter_focus_depth_toward" => camera.pan_focus_depth(-1),
         "painter_focus_depth_away" => camera.pan_focus_depth(1),
         "painter_zoom_out" => camera.zoom_out(),
@@ -102,7 +104,11 @@ mod tests {
     #[test]
     fn pan_actions_split_between_hud_and_canvas_routes() {
         let mut hud_pan = Camera::default();
-        assert!(apply_painter_pan_action(&mut hud_pan, "painter_pan_left", false));
+        assert!(apply_painter_pan_action(
+            &mut hud_pan,
+            "painter_pan_left",
+            false
+        ));
         assert!(hud_pan.hud_pan_offset.x > 0);
         assert_ne!(hud_pan.focus_target, WorldPoint::origin());
 
@@ -147,7 +153,11 @@ mod tests {
     #[test]
     fn unknown_actions_are_left_for_the_caller() {
         let mut camera = Camera::default();
-        assert!(!apply_painter_pan_action(&mut camera, "painter_play_pause", false));
+        assert!(!apply_painter_pan_action(
+            &mut camera,
+            "painter_play_pause",
+            false
+        ));
         assert!(!apply_painter_camera_action(
             &mut camera,
             "painter_play_pause",

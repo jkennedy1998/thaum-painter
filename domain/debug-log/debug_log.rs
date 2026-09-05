@@ -240,9 +240,7 @@ mod tests {
     }
 
     fn lines_contain(message: &str) -> bool {
-        recent_lines()
-            .iter()
-            .any(|line| line.ends_with(message))
+        recent_lines().iter().any(|line| line.ends_with(message))
     }
 
     #[test]

@@ -1,5 +1,8 @@
-use std::{cell::RefCell, rc::Rc, time::{Duration, Instant}};
-
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use thaum_renderer_domain::{
     Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, GizmoBar, GizmoClickOutcome,
@@ -285,9 +288,13 @@ fn resolve_property_drag_mode(
     button: ModulePointerButton,
 ) -> Option<(PropertyDragMode, PropertyTimingResolution)> {
     if hit.is_blank {
-        return if button == ModulePointerButton::Right && hit.mode == PropertyBlockHitMode::BlankCenter
+        return if button == ModulePointerButton::Right
+            && hit.mode == PropertyBlockHitMode::BlankCenter
         {
-            Some((PropertyDragMode::Swap, PropertyTimingResolution::Destructive))
+            Some((
+                PropertyDragMode::Swap,
+                PropertyTimingResolution::Destructive,
+            ))
         } else {
             None
         };
@@ -300,16 +307,28 @@ fn resolve_property_drag_mode(
     };
     match hit.mode {
         PropertyBlockHitMode::BodySingle => Some(if is_right {
-            (PropertyDragMode::DynamicResize, PropertyTimingResolution::Destructive)
+            (
+                PropertyDragMode::DynamicResize,
+                PropertyTimingResolution::Destructive,
+            )
         } else {
-            (PropertyDragMode::Move, PropertyTimingResolution::Destructive)
+            (
+                PropertyDragMode::Move,
+                PropertyTimingResolution::Destructive,
+            )
         }),
         PropertyBlockHitMode::EdgeStart => Some((PropertyDragMode::TrimStart, edge_resolution)),
         PropertyBlockHitMode::EdgeEnd => Some((PropertyDragMode::TrimEnd, edge_resolution)),
         PropertyBlockHitMode::BodyMove => Some(if is_right {
-            (PropertyDragMode::Move, PropertyTimingResolution::Destructive)
+            (
+                PropertyDragMode::Move,
+                PropertyTimingResolution::Destructive,
+            )
         } else {
-            (PropertyDragMode::Swap, PropertyTimingResolution::Destructive)
+            (
+                PropertyDragMode::Swap,
+                PropertyTimingResolution::Destructive,
+            )
         }),
         PropertyBlockHitMode::BlankStart
         | PropertyBlockHitMode::BlankEnd
@@ -504,12 +523,20 @@ impl LayersPanelModule {
             return (drag.preview_start, drag.preview_end.max(drag.preview_start));
         }
         let state = self.state.borrow();
-        (state.loop_window_start, state.loop_window_end.max(state.loop_window_start))
+        (
+            state.loop_window_start,
+            state.loop_window_end.max(state.loop_window_start),
+        )
     }
 
     /// Playhead styling: rests bright at weight 2, hovers vivid at weight 3,
     /// and while its scrub drag is live goes vivid at weight 4.
-    fn playhead_style(&self) -> (thaum_renderer_domain::CellColor, thaum_renderer_domain::CellWeight) {
+    fn playhead_style(
+        &self,
+    ) -> (
+        thaum_renderer_domain::CellColor,
+        thaum_renderer_domain::CellWeight,
+    ) {
         if self.scrubbing_ruler {
             return (
                 self.palette.get(UiColorRole::Vivid),
@@ -561,7 +588,11 @@ impl LayersPanelModule {
     }
 
     fn property_bar_bounds(&self, property: &PropertyTrackRow) -> Option<(u32, u32)> {
-        let start = property.blocks.iter().map(|block| block.start_breath).min()?;
+        let start = property
+            .blocks
+            .iter()
+            .map(|block| block.start_breath)
+            .min()?;
         let end = property
             .blocks
             .iter()
@@ -570,7 +601,11 @@ impl LayersPanelModule {
         Some((start, end))
     }
 
-    fn layer_visible_for_property(&self, state: &LayersPanelState, property: &PropertyTrackRow) -> bool {
+    fn layer_visible_for_property(
+        &self,
+        state: &LayersPanelState,
+        property: &PropertyTrackRow,
+    ) -> bool {
         state
             .rows
             .iter()
@@ -607,7 +642,10 @@ impl LayersPanelModule {
         property: &PropertyTrackRow,
         block: &PropertyTrackBlock,
         breath: u32,
-    ) -> (thaum_renderer_domain::CellColor, thaum_renderer_domain::CellWeight) {
+    ) -> (
+        thaum_renderer_domain::CellColor,
+        thaum_renderer_domain::CellWeight,
+    ) {
         let hover_matches_block = self
             .hovered_property_block
             .as_ref()
@@ -674,15 +712,16 @@ impl LayersPanelModule {
             .find(|property| {
                 property.layer_id == hit.layer_id && property.property_id == hit.property_id
             })
-            .and_then(|property| property.blocks.iter().find(|block| block.id == hit.block_id))
+            .and_then(|property| {
+                property
+                    .blocks
+                    .iter()
+                    .find(|block| block.id == hit.block_id)
+            })
             .cloned()
     }
 
-    fn handle_property_block_click(
-        &mut self,
-        hit: PropertyBlockHit,
-        button: ModulePointerButton,
-    ) {
+    fn handle_property_block_click(&mut self, hit: PropertyBlockHit, button: ModulePointerButton) {
         const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
         let now = Instant::now();
         let is_double_click = self
@@ -709,43 +748,54 @@ impl LayersPanelModule {
                 if button == ModulePointerButton::Right {
                     if let Some(block) = self.find_property_block(&hit) {
                         let direction = blank_merge_direction(&hit, &block);
-                        self.state.borrow_mut().queue_action(LayersPanelAction::MergeBlankPropertyBlock(
-                            hit.layer_id,
-                            hit.property_id,
-                            hit.block_id,
-                            direction,
-                        ));
+                        self.state.borrow_mut().queue_action(
+                            LayersPanelAction::MergeBlankPropertyBlock(
+                                hit.layer_id,
+                                hit.property_id,
+                                hit.block_id,
+                                direction,
+                            ),
+                        );
                     }
                 }
                 return;
             }
             if button == ModulePointerButton::Left && hit.mode == PropertyBlockHitMode::BodyMove {
-                self.state.borrow_mut().queue_action(LayersPanelAction::SplitPropertyBlock(
-                    hit.layer_id,
-                    hit.property_id,
-                    hit.block_id,
-                    hit.breath,
-                ));
+                self.state
+                    .borrow_mut()
+                    .queue_action(LayersPanelAction::SplitPropertyBlock(
+                        hit.layer_id,
+                        hit.property_id,
+                        hit.block_id,
+                        hit.breath,
+                    ));
                 return;
             }
             if button == ModulePointerButton::Right {
-                self.state.borrow_mut().queue_action(LayersPanelAction::BlankPropertyBlock(
-                    hit.layer_id,
-                    hit.property_id,
-                    hit.block_id,
-                ));
+                self.state
+                    .borrow_mut()
+                    .queue_action(LayersPanelAction::BlankPropertyBlock(
+                        hit.layer_id,
+                        hit.property_id,
+                        hit.block_id,
+                    ));
             }
             return;
         }
 
-        self.state.borrow_mut().queue_action(LayersPanelAction::SelectProperty(
-            hit.layer_id.clone(),
-            hit.property_id.clone(),
-        ));
+        self.state
+            .borrow_mut()
+            .queue_action(LayersPanelAction::SelectProperty(
+                hit.layer_id.clone(),
+                hit.property_id.clone(),
+            ));
 
         if hit.is_blank
             && button == ModulePointerButton::Left
-            && matches!(hit.mode, PropertyBlockHitMode::BlankCenter | PropertyBlockHitMode::BlankSingle)
+            && matches!(
+                hit.mode,
+                PropertyBlockHitMode::BlankCenter | PropertyBlockHitMode::BlankSingle
+            )
         {
             self.state
                 .borrow_mut()
@@ -892,20 +942,21 @@ impl Module for LayersPanelModule {
         let content_right = self.content_right();
         let visible_rows = self.visible_rows();
 
-        let push_text = |cells: &mut Vec<Cell>, start_x: i32, y: i32, text: &str, color, max_x: i32| {
-            for (column, glyph) in text.chars().enumerate() {
-                let x = start_x + column as i32;
-                if x > max_x {
-                    break;
+        let push_text =
+            |cells: &mut Vec<Cell>, start_x: i32, y: i32, text: &str, color, max_x: i32| {
+                for (column, glyph) in text.chars().enumerate() {
+                    let x = start_x + column as i32;
+                    if x > max_x {
+                        break;
+                    }
+                    cells.push(Cell {
+                        position: CellPoint { x, y, z: 0 },
+                        graphic: CellGraphic::Glyph(glyph),
+                        color,
+                        ..Cell::default()
+                    });
                 }
-                cells.push(Cell {
-                    position: CellPoint { x, y, z: 0 },
-                    graphic: CellGraphic::Glyph(glyph),
-                    color,
-                    ..Cell::default()
-                });
-            }
-        };
+            };
 
         let (timeline_start, timeline_end) = self.timeline_bounds();
         let playhead_x = self.x_for_breath(state.current_breath);
@@ -954,7 +1005,10 @@ impl Module for LayersPanelModule {
                         let loop_end_label = loop_end.to_string();
                         let loop_start_x = (self.x_for_breath(loop_start)
                             - (loop_start_label.len() as i32 / 2))
-                            .clamp(timeline_start, timeline_end - loop_start_label.len() as i32 + 1);
+                            .clamp(
+                                timeline_start,
+                                timeline_end - loop_start_label.len() as i32 + 1,
+                            );
                         push_text(
                             &mut cells,
                             loop_start_x,
@@ -965,7 +1019,10 @@ impl Module for LayersPanelModule {
                         );
                         let loop_end_x = (self.x_for_breath(loop_end)
                             - (loop_end_label.len() as i32 / 2))
-                            .clamp(timeline_start, timeline_end - loop_end_label.len() as i32 + 1);
+                            .clamp(
+                                timeline_start,
+                                timeline_end - loop_end_label.len() as i32 + 1,
+                            );
                         push_text(
                             &mut cells,
                             loop_end_x,
@@ -975,11 +1032,17 @@ impl Module for LayersPanelModule {
                             timeline_end,
                         );
                     }
-                    let current_start = (playhead_x - (current_label.len() as i32 / 2))
-                        .clamp(timeline_start, timeline_end - current_label.len() as i32 + 1);
+                    let current_start = (playhead_x - (current_label.len() as i32 / 2)).clamp(
+                        timeline_start,
+                        timeline_end - current_label.len() as i32 + 1,
+                    );
                     let (playhead_color, playhead_weight) = self.playhead_style();
                     let mut current_cell = Cell {
-                        position: CellPoint { x: current_start, y, z: 0 },
+                        position: CellPoint {
+                            x: current_start,
+                            y,
+                            z: 0,
+                        },
                         graphic: CellGraphic::Glyph(' '),
                         color: playhead_color,
                         weight: playhead_weight,
@@ -1017,7 +1080,11 @@ impl Module for LayersPanelModule {
                     // Transport toggles left of the timeline, next to the bar
                     // they drive: PLAY pauses/resumes playback over the
                     // window, LOOP toggles wrap-at-edges.
-                    let play_label = if state.playing { "[||] STOP" } else { "[>] PLAY" };
+                    let play_label = if state.playing {
+                        "[||] STOP"
+                    } else {
+                        "[>] PLAY"
+                    };
                     push_text(
                         &mut cells,
                         PLAY_BUTTON_START,
@@ -1030,7 +1097,11 @@ impl Module for LayersPanelModule {
                         },
                         PLAY_BUTTON_END,
                     );
-                    let loop_label = if state.loop_enabled { "[x] LOOP" } else { "[ ] LOOP" };
+                    let loop_label = if state.loop_enabled {
+                        "[x] LOOP"
+                    } else {
+                        "[ ] LOOP"
+                    };
                     push_text(
                         &mut cells,
                         LOOP_BUTTON_START,
@@ -1054,8 +1125,7 @@ impl Module for LayersPanelModule {
                     let (loop_start, loop_end) = self.loop_window_span();
                     let length = loop_end - loop_start + 1;
                     let loop_start_x = self.x_for_breath(loop_start);
-                    let highlighted =
-                        self.loop_window_drag.is_some() || self.hovered_loop_window;
+                    let highlighted = self.loop_window_drag.is_some() || self.hovered_loop_window;
                     let (color, weight) = if highlighted {
                         (
                             self.palette.get(UiColorRole::Vivid),
@@ -1119,7 +1189,11 @@ impl Module for LayersPanelModule {
                         ..Cell::default()
                     });
                     cells.push(Cell {
-                        position: CellPoint { x: COL_LOCK, y, z: 0 },
+                        position: CellPoint {
+                            x: COL_LOCK,
+                            y,
+                            z: 0,
+                        },
                         graphic: CellGraphic::Glyph(lock_glyph),
                         color: text_color,
                         ..Cell::default()
@@ -1134,7 +1208,14 @@ impl Module for LayersPanelModule {
                         color: text_color,
                         ..Cell::default()
                     });
-                    push_text(&mut cells, COL_NAME, y, &row.name, text_color, timeline_start - 2);
+                    push_text(
+                        &mut cells,
+                        COL_NAME,
+                        y,
+                        &row.name,
+                        text_color,
+                        timeline_start - 2,
+                    );
 
                     for x in timeline_start..=timeline_end {
                         cells.push(Cell {
@@ -1284,7 +1365,9 @@ impl Module for LayersPanelModule {
                 match row_kind {
                     PanelRow::AutoKeyToggle => {
                         if button == ModulePointerButton::Left {
-                            self.state.borrow_mut().queue_action(LayersPanelAction::ToggleAutoKey);
+                            self.state
+                                .borrow_mut()
+                                .queue_action(LayersPanelAction::ToggleAutoKey);
                         }
                     }
                     PanelRow::BreathRuler => {
@@ -1308,9 +1391,7 @@ impl Module for LayersPanelModule {
                                     self.state
                                         .borrow_mut()
                                         .queue_action(LayersPanelAction::TogglePlay);
-                                } else if (LOOP_BUTTON_START..=LOOP_BUTTON_END)
-                                    .contains(&local_x)
-                                {
+                                } else if (LOOP_BUTTON_START..=LOOP_BUTTON_END).contains(&local_x) {
                                     self.state
                                         .borrow_mut()
                                         .queue_action(LayersPanelAction::ToggleLoop);
@@ -1340,7 +1421,9 @@ impl Module for LayersPanelModule {
                     }
                     PanelRow::AddLayer => {
                         if button == ModulePointerButton::Left {
-                            self.state.borrow_mut().queue_action(LayersPanelAction::AddRequested);
+                            self.state
+                                .borrow_mut()
+                                .queue_action(LayersPanelAction::AddRequested);
                         }
                     }
                     PanelRow::Layer(row_index) => {
@@ -1385,10 +1468,12 @@ impl Module for LayersPanelModule {
                             self.handle_property_block_click(hit, button);
                         } else if let Some(property) = property {
                             if button == ModulePointerButton::Left {
-                                self.state.borrow_mut().queue_action(LayersPanelAction::SelectProperty(
-                                    property.layer_id,
-                                    property.property_id,
-                                ));
+                                self.state.borrow_mut().queue_action(
+                                    LayersPanelAction::SelectProperty(
+                                        property.layer_id,
+                                        property.property_id,
+                                    ),
+                                );
                             }
                         }
                     }
@@ -1428,12 +1513,13 @@ impl Module for LayersPanelModule {
                         }
                         LoopWindowDragMode::TrimStart => {
                             let new_start = (drag.orig_start as i64 + delta)
-                                .clamp(0, drag.orig_end as i64) as u32;
+                                .clamp(0, drag.orig_end as i64)
+                                as u32;
                             (new_start, drag.orig_end)
                         }
                         LoopWindowDragMode::TrimEnd => {
-                            let new_end = (drag.orig_end as i64 + delta)
-                                .max(drag.orig_start as i64) as u32;
+                            let new_end =
+                                (drag.orig_end as i64 + delta).max(drag.orig_start as i64) as u32;
                             (drag.orig_start, new_end)
                         }
                     };
@@ -1464,21 +1550,20 @@ impl Module for LayersPanelModule {
                             (drag.orig_start, new_length)
                         }
                     };
-                    self.state.borrow_mut().queue_action(LayersPanelAction::SetLayerTiming(
-                        drag.layer_id.clone(),
-                        new_start,
-                        new_length,
-                    ));
+                    self.state
+                        .borrow_mut()
+                        .queue_action(LayersPanelAction::SetLayerTiming(
+                            drag.layer_id.clone(),
+                            new_start,
+                            new_length,
+                        ));
                 }
                 // Compute the breath up front: `breath_at_x` borrows all of
                 // `self`, which conflicts with the mutable drag borrow below.
-                let current_breath = self
-                    .property_block_drag
-                    .as_ref()
-                    .map(|_| {
-                        let local_x = x - self.rect.x0;
-                        self.breath_at_x(local_x) as i64
-                    });
+                let current_breath = self.property_block_drag.as_ref().map(|_| {
+                    let local_x = x - self.rect.x0;
+                    self.breath_at_x(local_x) as i64
+                });
                 if let (Some(current_breath), Some(drag)) =
                     (current_breath, self.property_block_drag.as_mut())
                 {
@@ -1509,7 +1594,8 @@ impl Module for LayersPanelModule {
                             PropertyDragMode::TrimStart => {
                                 let max_start = drag.orig_start + drag.orig_length - 1;
                                 let new_start = (drag.orig_start as i64 + delta)
-                                    .clamp(0, max_start as i64) as u32;
+                                    .clamp(0, max_start as i64)
+                                    as u32;
                                 let new_length = drag.orig_start + drag.orig_length - new_start;
                                 (new_start, new_length)
                             }
@@ -1527,7 +1613,8 @@ impl Module for LayersPanelModule {
                                     (new_start, orig_end - new_start + 1)
                                 } else {
                                     let new_end = (orig_end as i64 + delta)
-                                        .max(drag.orig_start as i64) as u32;
+                                        .max(drag.orig_start as i64)
+                                        as u32;
                                     (drag.orig_start, new_end - drag.orig_start + 1)
                                 }
                             }
@@ -1552,12 +1639,14 @@ impl Module for LayersPanelModule {
                 if let Some(drag) = self.property_block_drag.take() {
                     if drag.mode == PropertyDragMode::Swap {
                         if let Some(target_block_id) = drag.swap_target_block_id {
-                            self.state.borrow_mut().queue_action(LayersPanelAction::SwapPropertyBlocks(
-                                drag.layer_id,
-                                drag.property_id,
-                                drag.block_id,
-                                target_block_id,
-                            ));
+                            self.state.borrow_mut().queue_action(
+                                LayersPanelAction::SwapPropertyBlocks(
+                                    drag.layer_id,
+                                    drag.property_id,
+                                    drag.block_id,
+                                    target_block_id,
+                                ),
+                            );
                         }
                     } else if let Some((start, length)) = drag.last_requested {
                         // One commit per drag: the previewed span is applied exactly
@@ -1653,7 +1742,13 @@ mod tests {
         }
     }
 
-    fn property(layer_id: &str, property_id: &str, label: &str, kind: LayerPropertyKind, blocks: Vec<PropertyTrackBlock>) -> PropertyTrackRow {
+    fn property(
+        layer_id: &str,
+        property_id: &str,
+        label: &str,
+        kind: LayerPropertyKind,
+        blocks: Vec<PropertyTrackBlock>,
+    ) -> PropertyTrackRow {
         PropertyTrackRow {
             layer_id: layer_id.to_string(),
             property_id: property_id.to_string(),
@@ -1683,13 +1778,7 @@ mod tests {
                         is_blank: false,
                     }],
                 ),
-                property(
-                    "layer-1",
-                    "move",
-                    "MOVE",
-                    LayerPropertyKind::Move,
-                    vec![],
-                ),
+                property("layer-1", "move", "MOVE", LayerPropertyKind::Move, vec![]),
             ],
             Some("layer-1".to_string()),
             Some("raster".to_string()),
@@ -1748,19 +1837,25 @@ mod tests {
         let (timeline_start, _) = panel.timeline_bounds();
 
         assert_eq!(
-            group.cells.get(&CellPoint {
-                x: COL_NAME,
-                y: panel.row_y(5),
-                z: 0,
-            }).map(|cell| cell.graphic.clone()),
+            group
+                .cells
+                .get(&CellPoint {
+                    x: COL_NAME,
+                    y: panel.row_y(5),
+                    z: 0,
+                })
+                .map(|cell| cell.graphic.clone()),
             Some(CellGraphic::Glyph('R'))
         );
         assert_eq!(
-            group.cells.get(&CellPoint {
-                x: timeline_start,
-                y: panel.row_y(5),
-                z: 0,
-            }).map(|cell| cell.graphic.clone()),
+            group
+                .cells
+                .get(&CellPoint {
+                    x: timeline_start,
+                    y: panel.row_y(5),
+                    z: 0,
+                })
+                .map(|cell| cell.graphic.clone()),
             Some(CellGraphic::Glyph('║'))
         );
     }
@@ -1806,7 +1901,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(cell.color, UiPalette::default().get(UiColorRole::Vivid));
-        assert_eq!(cell.weight, thaum_renderer_domain::CellWeight::from_index_clamped(2));
+        assert_eq!(
+            cell.weight,
+            thaum_renderer_domain::CellWeight::from_index_clamped(2)
+        );
     }
 
     #[test]
@@ -1865,8 +1963,18 @@ mod tests {
                 "RASTER",
                 LayerPropertyKind::Raster,
                 vec![
-                    PropertyTrackBlock { id: "block-1".to_string(), start_breath: 0, length_breaths: 5, is_blank: false },
-                    PropertyTrackBlock { id: "block-2".to_string(), start_breath: 10, length_breaths: 5, is_blank: false },
+                    PropertyTrackBlock {
+                        id: "block-1".to_string(),
+                        start_breath: 0,
+                        length_breaths: 5,
+                        is_blank: false,
+                    },
+                    PropertyTrackBlock {
+                        id: "block-2".to_string(),
+                        start_breath: 10,
+                        length_breaths: 5,
+                        is_blank: false,
+                    },
                 ],
             )],
             Some("layer-1".to_string()),
@@ -1988,9 +2096,24 @@ mod tests {
                 "RASTER",
                 LayerPropertyKind::Raster,
                 vec![
-                    PropertyTrackBlock { id: "block-1".to_string(), start_breath: 0, length_breaths: 3, is_blank: false },
-                    PropertyTrackBlock { id: "block-2".to_string(), start_breath: 3, length_breaths: 5, is_blank: true },
-                    PropertyTrackBlock { id: "block-3".to_string(), start_breath: 8, length_breaths: 3, is_blank: false },
+                    PropertyTrackBlock {
+                        id: "block-1".to_string(),
+                        start_breath: 0,
+                        length_breaths: 3,
+                        is_blank: false,
+                    },
+                    PropertyTrackBlock {
+                        id: "block-2".to_string(),
+                        start_breath: 3,
+                        length_breaths: 5,
+                        is_blank: true,
+                    },
+                    PropertyTrackBlock {
+                        id: "block-3".to_string(),
+                        start_breath: 8,
+                        length_breaths: 3,
+                        is_blank: false,
+                    },
                 ],
             )],
             Some("layer-1".to_string()),
@@ -2104,8 +2227,18 @@ mod tests {
                 "RASTER",
                 LayerPropertyKind::Raster,
                 vec![
-                    PropertyTrackBlock { id: "block-1".to_string(), start_breath: 0, length_breaths: 5, is_blank: false },
-                    PropertyTrackBlock { id: "block-2".to_string(), start_breath: 5, length_breaths: 5, is_blank: false },
+                    PropertyTrackBlock {
+                        id: "block-1".to_string(),
+                        start_breath: 0,
+                        length_breaths: 5,
+                        is_blank: false,
+                    },
+                    PropertyTrackBlock {
+                        id: "block-2".to_string(),
+                        start_breath: 5,
+                        length_breaths: 5,
+                        is_blank: false,
+                    },
                 ],
             )],
             Some("layer-1".to_string()),
@@ -2264,8 +2397,18 @@ mod tests {
                 "RASTER",
                 LayerPropertyKind::Raster,
                 vec![
-                    PropertyTrackBlock { id: "block-1".to_string(), start_breath: 3, length_breaths: 1, is_blank: false },
-                    PropertyTrackBlock { id: "block-2".to_string(), start_breath: 6, length_breaths: 1, is_blank: false },
+                    PropertyTrackBlock {
+                        id: "block-1".to_string(),
+                        start_breath: 3,
+                        length_breaths: 1,
+                        is_blank: false,
+                    },
+                    PropertyTrackBlock {
+                        id: "block-2".to_string(),
+                        start_breath: 6,
+                        length_breaths: 1,
+                        is_blank: false,
+                    },
                 ],
             )],
             Some("layer-1".to_string()),

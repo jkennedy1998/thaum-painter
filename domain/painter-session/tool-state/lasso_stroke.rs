@@ -75,10 +75,7 @@ pub fn build_lasso_preview_cell_groups(
         // as-it-is phase an empty cell shows J's void marker — a vivid '●' at
         // weight 0 — instead of an invisible space, so lasso/stamp coverage
         // over voids stays readable while the flash shows the canvas as-is.
-        let current = preview
-            .current
-            .as_ref()
-            .filter(|cell| !is_blank_cell(cell));
+        let current = preview.current.as_ref().filter(|cell| !is_blank_cell(cell));
         current_group.insert(Cell {
             position: preview.point,
             graphic: current
@@ -159,7 +156,10 @@ mod tests {
         let upcoming: Vec<&Cell> = groups[1].iter_cells().collect();
         assert_eq!(upcoming.len(), 1);
         assert_eq!(upcoming[0].graphic, CellGraphic::Glyph('.'));
-        assert_eq!(upcoming[0].color, PaintColor::flat_rgb(9, 8, 7).to_cell_color());
+        assert_eq!(
+            upcoming[0].color,
+            PaintColor::flat_rgb(9, 8, 7).to_cell_color()
+        );
         assert_eq!(upcoming[0].shader_stack, vec![CELL_SHADER_VIVID_FLASH]);
     }
 

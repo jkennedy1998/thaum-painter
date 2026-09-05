@@ -385,9 +385,18 @@ mod tests {
 
         // Brush (selected by left) and Fill (selected by right) are weight
         // three; Erase is unselected and stays at the normal weight two.
-        assert_eq!(group.cells[&CellPoint { x: 5, y: 3, z: 0 }].weight, CellWeight::Three);
-        assert_eq!(group.cells[&CellPoint { x: 5, y: 2, z: 0 }].weight, CellWeight::Two);
-        assert_eq!(group.cells[&CellPoint { x: 5, y: 1, z: 0 }].weight, CellWeight::Three);
+        assert_eq!(
+            group.cells[&CellPoint { x: 5, y: 3, z: 0 }].weight,
+            CellWeight::Three
+        );
+        assert_eq!(
+            group.cells[&CellPoint { x: 5, y: 2, z: 0 }].weight,
+            CellWeight::Two
+        );
+        assert_eq!(
+            group.cells[&CellPoint { x: 5, y: 1, z: 0 }].weight,
+            CellWeight::Three
+        );
     }
 
     #[test]
@@ -404,7 +413,10 @@ mod tests {
         // Fill (y=1, unselected) brightens on hover; Brush (y=3,
         // left-selected) keeps its hand color.
         assert_eq!(group.cells[&CellPoint { x: 5, y: 1, z: 0 }].color, bright);
-        assert_eq!(group.cells[&CellPoint { x: 5, y: 3, z: 0 }].color, left_hand);
+        assert_eq!(
+            group.cells[&CellPoint { x: 5, y: 3, z: 0 }].color,
+            left_hand
+        );
     }
 
     #[test]

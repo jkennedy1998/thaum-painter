@@ -5,9 +5,8 @@ use thaum_renderer_domain::{
 };
 
 use crate::{
-    tool_state::ChannelMask,
-    DrawingSpaceWheelMode, HandState, PaintColor, PaintHand, PaintTarget, PaintTool, SelectionMode,
-    ToolState,
+    tool_state::ChannelMask, DrawingSpaceWheelMode, HandState, PaintColor, PaintHand, PaintTarget,
+    PaintTool, SelectionMode, ToolState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

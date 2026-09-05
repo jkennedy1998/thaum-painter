@@ -4,8 +4,8 @@ use crate::{
     brush::{self, Canvas, PaintedCell},
     clipboard::WorldCopyData,
     fill::{self, CanvasBounds, FillConnectivity},
-    painter_tools::shared::{drag_behavior, DragBehavior},
     paint_color::PaintColor,
+    painter_tools::shared::{drag_behavior, DragBehavior},
     selection_state::{flood_select_points, PainterSelection, SelectionMode},
     text::{TextLayoutOptions, DEFAULT_TEXT_LAYOUT_OPTIONS},
 };
@@ -874,12 +874,18 @@ mod tests {
     fn each_tool_declares_its_own_property_rows() {
         assert_eq!(PaintTool::Brush.property_row_ids(), &["brush_size"]);
         assert_eq!(PaintTool::Erase.property_row_ids(), &["brush_size"]);
-        assert_eq!(PaintTool::Fill.property_row_ids(), &["fill_diagonal", "fill_match_channels"]);
+        assert_eq!(
+            PaintTool::Fill.property_row_ids(),
+            &["fill_diagonal", "fill_match_channels"]
+        );
         assert_eq!(
             PaintTool::Text.property_row_ids(),
             &["text_char_step", "text_enter_step"]
         );
-        assert_eq!(PaintTool::Picker.property_row_ids(), &["picker_opposite_hand"]);
+        assert_eq!(
+            PaintTool::Picker.property_row_ids(),
+            &["picker_opposite_hand"]
+        );
     }
 
     #[test]
@@ -1726,7 +1732,10 @@ mod tests {
         tool_state.set_color_for_hand(PaintHand::Left, color(200, 0, 0));
         tool_state.set_weight_for_hand(PaintHand::Left, 3);
         // A color-locked hand restyles glyphs but keeps existing colors.
-        tool_state.hand_state_mut(PaintHand::Left).edit_channels.color = false;
+        tool_state
+            .hand_state_mut(PaintHand::Left)
+            .edit_channels
+            .color = false;
         let mut canvas = Canvas::new();
         brush::apply_brush(
             &mut canvas,
@@ -1756,7 +1765,10 @@ mod tests {
     #[test]
     fn gfx_locked_stamp_skips_empty_target_cells() {
         let mut tool_state = ToolState::default();
-        tool_state.hand_state_mut(PaintHand::Left).edit_channels.graphic = false;
+        tool_state
+            .hand_state_mut(PaintHand::Left)
+            .edit_channels
+            .graphic = false;
         let canvas = Canvas::new();
 
         let changes = tool_state.stamp_changes_for_hand(
@@ -1815,7 +1827,10 @@ mod tests {
 
         assert_eq!(previews.len(), 1);
         assert_eq!(previews[0].point, point(5, 5));
-        assert_eq!(previews[0].current.as_ref().unwrap().graphic, CellGraphic::Glyph('a'));
+        assert_eq!(
+            previews[0].current.as_ref().unwrap().graphic,
+            CellGraphic::Glyph('a')
+        );
         assert_eq!(previews[0].upcoming.graphic, CellGraphic::Glyph('a'));
     }
 }

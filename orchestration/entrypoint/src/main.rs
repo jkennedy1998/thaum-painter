@@ -1510,8 +1510,43 @@ fn main() -> Result<()> {
     const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(400);
     let mut cursor_blink_on = true;
     let mut cursor_blink_at = Instant::now();
+    // Demand-driven frame state: what the previous frame already consumed.
+    // When nothing changed, the closure leaves `state.composition` untouched
+    // and boot's scene cache reuses the built scene without any group
+    // rebuild, projection, or upload.
+    let mut last_frame_cursor: Option<[f32; 2]> = None;
+    let mut last_pointer_down = false;
+    let mut last_right_pointer_down = false;
+    let mut session_dirty = true;
+    // Producer-maintained composition generation: bumped on every full-path
+    // rebuild so boot's scene cache identifies the composition in O(1)
+    // instead of hashing its cells every frame.
+    let mut composition_revision: u64 = 0;
 
     run_renderer_window_with_state_frame_provider(state, move |state, frame| {
+        // Demand-driven frame gate: input, animation timers, or a pending
+        // session save make the frame dirty; otherwise the last composition
+        // stays in place and nothing rebuilds.
+        let input_dirty = !frame.input.just_pressed_keys.is_empty()
+            || !frame.input.pressed_keys.is_empty()
+            || frame.input.just_clicked.is_some()
+            || frame.input.just_right_clicked.is_some()
+            || frame.input.wheel_delta_x != 0.0
+            || frame.input.wheel_delta_y != 0.0
+            || frame.input.cursor_position != last_frame_cursor
+            || frame.input.pointer_down != last_pointer_down
+            || frame.input.right_pointer_down != last_right_pointer_down;
+        let playback_due = timeline_state.borrow().playing
+            && last_playback_step.elapsed() >= PLAYBACK_BREATH_INTERVAL;
+        let blink_due = typing_mode.is_active()
+            && cursor_blink_at.elapsed() >= CURSOR_BLINK_INTERVAL;
+        if !input_dirty && !playback_due && !blink_due && !session_dirty {
+            return Ok(());
+        }
+        last_frame_cursor = frame.input.cursor_position;
+        last_pointer_down = frame.input.pointer_down;
+        last_right_pointer_down = frame.input.right_pointer_down;
+
         sync_renderer_background_from_ui_palette(state, &ui_palette);
 
         // Which pan WASD should drive this frame: hovering the drawing
@@ -2245,13 +2280,19 @@ fn main() -> Result<()> {
             &controls_profile.borrow(),
         );
         if let Ok(session_text) = serde_json::to_string_pretty(&session_state) {
-            if last_saved_session_text.as_ref() != Some(&session_text)
-                && last_save_at.elapsed() >= Duration::from_millis(150)
-            {
-                if save_painter_user_session_state(&session_state_path, &session_state).is_ok() {
-                    last_saved_session_text = Some(session_text);
-                    last_save_at = Instant::now();
+            if last_saved_session_text.as_ref() != Some(&session_text) {
+                if last_save_at.elapsed() >= Duration::from_millis(150) {
+                    if save_painter_user_session_state(&session_state_path, &session_state).is_ok()
+                    {
+                        last_saved_session_text = Some(session_text);
+                        last_save_at = Instant::now();
+                        session_dirty = false;
+                    }
+                    // Save failed or throttled: stay dirty so a later idle
+                    // frame still comes back to persist the change.
                 }
+            } else {
+                session_dirty = false;
             }
         }
 
@@ -2292,13 +2333,6 @@ fn main() -> Result<()> {
                 })
             })
         };
-        eprintln!(
-            "[stamp-debug] tool={:?} hover_bounds={} cursor={:?} buffer={:?}",
-            tool_state.borrow().tool_for_hand(tool_state.borrow().active_hand).id(),
-            hovering_canvas_bounds,
-            frame.input.cursor_position.is_some(),
-            user_clipboards.clipboard_for_user(&session_user_id).is_some()
-        );
         pointer_strokes.set_stamp_hover(stamp_hover);
 
         let mut groups = build_document_layer_cell_groups(&shared_document, timeline_state.borrow().current_breath);
@@ -2338,8 +2372,10 @@ fn main() -> Result<()> {
         // camera-unit offsets from the focus target and hud pan moves only the
         // HUD (with the wheel/keys compensating focus). This is the shared
         // scene's Flat2d opt-in; default stays world-anchored.
+        composition_revision = composition_revision.wrapping_add(1);
         state.composition = Composition::ordered(groups)
             .with_natural_pass_order()
+            .with_revision(composition_revision)
             .with_flat_2d_screen_locked(true);
         Ok(())
     })

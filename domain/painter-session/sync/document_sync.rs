@@ -9,9 +9,7 @@
 //! document shape) stay on the `document.json` revision path — the loopback
 //! carries content edits (cell patches) and undo/redo history records only.
 
-use crate::storage::{
-    SharedDocumentActionRecord, SharedDocumentRuntime,
-};
+use crate::storage::{SharedDocumentActionRecord, SharedDocumentRuntime};
 
 /// One totally-ordered record log shared by every synced session — the
 /// loopback stand-in for the future multiplayer transport. Order of the log
@@ -70,7 +68,11 @@ impl SyncedDocumentSession {
     /// Publish a forward-edit record: apply it locally first (the canonical
     /// append-then-apply flow, minus the disk append), then append it to the
     /// shared log.
-    pub fn publish_action(&mut self, bus: &mut LoopbackActionBus, record: SharedDocumentActionRecord) {
+    pub fn publish_action(
+        &mut self,
+        bus: &mut LoopbackActionBus,
+        record: SharedDocumentActionRecord,
+    ) {
         self.runtime.apply_action_record(record.clone());
         bus.publish(record);
     }
@@ -117,8 +119,7 @@ mod tests {
     use thaum_renderer_domain::{CellGraphic, CellPoint};
 
     fn single_layer_document() -> SharedDocumentRuntime {
-        let document =
-            SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
+        let document = SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
         SharedDocumentRuntime::new(document)
     }
 
@@ -191,7 +192,10 @@ mod tests {
         assert_sessions_converged(&[&alice, &bob]);
         let canvas = canvas_for(&alice);
         assert_eq!(canvas.len(), 3);
-        assert_eq!(canvas.get(&CellPoint { x: 1, y: 0, z: 0 }), Some(&paint((0, 255, 0))));
+        assert_eq!(
+            canvas.get(&CellPoint { x: 1, y: 0, z: 0 }),
+            Some(&paint((0, 255, 0)))
+        );
     }
 
     #[test]
@@ -213,8 +217,12 @@ mod tests {
         let mut carol = session("carol");
 
         for x in 0..3i32 {
-            let record = stroke_record(&mut alice, CellPoint { x, y: 0, z: 0 }, (10 * x as u8 + 1, 0, 0));
-        alice.publish_action(&mut bus, record);
+            let record = stroke_record(
+                &mut alice,
+                CellPoint { x, y: 0, z: 0 },
+                (10 * x as u8 + 1, 0, 0),
+            );
+            alice.publish_action(&mut bus, record);
         }
         // Carol joins after three strokes already happened.
         assert_eq!(carol.sync_from_bus(&bus), 3);

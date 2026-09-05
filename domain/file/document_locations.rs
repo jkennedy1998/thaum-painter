@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
+use crate::session_document::action_timestamp_string;
 use crate::storage::{
     load_or_create_shared_document, SharedDocumentFile, SharedDocumentPaths, SharedDocumentRuntime,
 };
-use crate::session_document::action_timestamp_string;
 
 /// The default first layer every new document starts with.
 pub const INITIAL_LAYER_ID: &str = "layer-1";
@@ -20,10 +20,11 @@ pub fn shared_document_id() -> String {
     env::var("THAUM_SHARED_DOCUMENT_ID").unwrap_or_else(|_| "local-document".to_string())
 }
 
-pub fn painter_shared_document_paths(artifacts_root: &Path, document_id: &str) -> SharedDocumentPaths {
-    SharedDocumentPaths::new(
-        artifacts_root.join("shared-documents").join(document_id),
-    )
+pub fn painter_shared_document_paths(
+    artifacts_root: &Path,
+    document_id: &str,
+) -> SharedDocumentPaths {
+    SharedDocumentPaths::new(artifacts_root.join("shared-documents").join(document_id))
 }
 
 pub fn default_shared_document(document_id: &str) -> SharedDocumentFile {
@@ -62,7 +63,9 @@ pub fn resolve_painter_file_root(repo_root: &Path) -> PathBuf {
     target_root
 }
 
-pub fn load_document_from_root(root: &Path) -> Result<(SharedDocumentPaths, SharedDocumentRuntime)> {
+pub fn load_document_from_root(
+    root: &Path,
+) -> Result<(SharedDocumentPaths, SharedDocumentRuntime)> {
     let document_id = root
         .file_name()
         .and_then(|name| name.to_str())

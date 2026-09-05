@@ -44,10 +44,22 @@ pub fn painter_bindings() -> ActionBindingMap {
         RawInput::Key("V".to_string()),
     );
     // Drawing-space pan (context decides 3D focus pan vs HUD pan).
-    map.bind(ActionName::new("painter_pan_left"), RawInput::Key("A".to_string()));
-    map.bind(ActionName::new("painter_pan_right"), RawInput::Key("D".to_string()));
-    map.bind(ActionName::new("painter_pan_up"), RawInput::Key("W".to_string()));
-    map.bind(ActionName::new("painter_pan_down"), RawInput::Key("S".to_string()));
+    map.bind(
+        ActionName::new("painter_pan_left"),
+        RawInput::Key("A".to_string()),
+    );
+    map.bind(
+        ActionName::new("painter_pan_right"),
+        RawInput::Key("D".to_string()),
+    );
+    map.bind(
+        ActionName::new("painter_pan_up"),
+        RawInput::Key("W".to_string()),
+    );
+    map.bind(
+        ActionName::new("painter_pan_down"),
+        RawInput::Key("S".to_string()),
+    );
     // Playback transport (also on the layers-panel loop-bar row).
     map.bind(
         ActionName::new("painter_play_pause"),
@@ -87,12 +99,18 @@ pub fn painter_bindings() -> ActionBindingMap {
         RawInput::Key("NUMPAD3".to_string()),
     );
     // Zoom: keys plus the TAI wheel binding.
-    map.bind(ActionName::new("painter_zoom_out"), RawInput::Key("-".to_string()));
+    map.bind(
+        ActionName::new("painter_zoom_out"),
+        RawInput::Key("-".to_string()),
+    );
     map.bind(
         ActionName::new("painter_zoom_out"),
         RawInput::Key("NUMPAD_SUB".to_string()),
     );
-    map.bind(ActionName::new("painter_zoom_in"), RawInput::Key("=".to_string()));
+    map.bind(
+        ActionName::new("painter_zoom_in"),
+        RawInput::Key("=".to_string()),
+    );
     map.bind(
         ActionName::new("painter_zoom_in"),
         RawInput::Key("NUMPAD_ADD".to_string()),
@@ -129,8 +147,14 @@ pub fn painter_bindings() -> ActionBindingMap {
         RawInput::Key("X".to_string()),
     );
     // Shared-document history.
-    map.bind(ActionName::new("painter_undo"), RawInput::Key("Z".to_string()));
-    map.bind(ActionName::new("painter_redo"), RawInput::Key("Y".to_string()));
+    map.bind(
+        ActionName::new("painter_undo"),
+        RawInput::Key("Z".to_string()),
+    );
+    map.bind(
+        ActionName::new("painter_redo"),
+        RawInput::Key("Y".to_string()),
+    );
     // Clipboard: copy the selection as a 3D world copy. Pasting is the
     // stamp tool (V above); a THAUM3D OS-clipboard payload imports into the
     // own buffer when stamp is equipped.
@@ -199,8 +223,7 @@ mod tests {
     fn registered_tool_hotkeys_match_declared_bindings() {
         let bindings = painter_bindings();
         for descriptor in crate::painter_tools::all() {
-            let (Some(action), Some(hotkey)) = (descriptor.select_action, descriptor.hotkey)
-            else {
+            let (Some(action), Some(hotkey)) = (descriptor.select_action, descriptor.hotkey) else {
                 continue;
             };
             assert_eq!(

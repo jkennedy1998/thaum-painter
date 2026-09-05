@@ -88,7 +88,14 @@ pub fn stage_image_edit_chunk(
     let before = canvas.clone();
     let mut candidate = before.clone();
     for position in positions {
-        tool_state.apply_at_for_hand(&mut candidate, selection, position, hand, bounds, orientation);
+        tool_state.apply_at_for_hand(
+            &mut candidate,
+            selection,
+            position,
+            hand,
+            bounds,
+            orientation,
+        );
     }
     let patches = collect_canvas_patches(&before, &candidate);
     if patches.is_empty() {

@@ -38,14 +38,10 @@ use crate::{
     brush::{Canvas, PaintedCell},
     clipboard::WorldCopyData,
     fill::CanvasBounds,
-    lasso_stroke::{
-        build_lasso_path_cell_group, build_lasso_preview_cell_groups, LassoStroke,
-    },
+    lasso_stroke::{build_lasso_path_cell_group, build_lasso_preview_cell_groups, LassoStroke},
     painter_tools::shared::{drag_behavior, selection_behavior, DragBehavior},
     selection_state::{PainterSelection, SelectionMode},
-    selection_stroke::{
-        build_plane_selection_cell_groups, interpolate_cell_path, SelectionStroke,
-    },
+    selection_stroke::{build_plane_selection_cell_groups, interpolate_cell_path, SelectionStroke},
     session_document::{
         commit_selection_channel, commit_staged_paint_stroke, stage_image_edit_chunk,
         stage_painted_cells_chunk,
@@ -233,8 +229,9 @@ impl CanvasPointerStrokes {
                         let changes: Vec<(CellPoint, Option<PaintedCell>)> = {
                             let tool_state = ctx.tool_state.borrow();
                             let selection = ctx.selection.borrow();
-                            tool_state
-                                .stamp_changes_for_hand(ctx.canvas, &selection, &data, position, hand)
+                            tool_state.stamp_changes_for_hand(
+                                ctx.canvas, &selection, &data, position, hand,
+                            )
                         }
                         .into_iter()
                         .map(|(point, cell)| (point, Some(cell)))
@@ -263,10 +260,8 @@ impl CanvasPointerStrokes {
                     self.lasso = Some(LassoStroke::new(hand, position));
                     None
                 } else {
-                    let mode = selection_behavior(
-                        ctx.tool_state.borrow().tool_for_hand(hand).id(),
-                    )
-                    .resolve(ctx.selection.borrow().mode(), SelectionMode::Subtract);
+                    let mode = selection_behavior(ctx.tool_state.borrow().tool_for_hand(hand).id())
+                        .resolve(ctx.selection.borrow().mode(), SelectionMode::Subtract);
                     let mut stroke = SelectionStroke::new(hand, mode);
                     let points = ctx.tool_state.borrow().selection_points_for_hand(
                         ctx.canvas,
@@ -349,7 +344,8 @@ impl CanvasPointerStrokes {
         bounds: CanvasBounds,
         orientation: CameraViewOrientation,
     ) {
-        if drag_behavior(ctx.tool_state.borrow().tool_for_hand(hand).id()) == DragBehavior::ClickOnly
+        if drag_behavior(ctx.tool_state.borrow().tool_for_hand(hand).id())
+            == DragBehavior::ClickOnly
         {
             return;
         }
@@ -465,10 +461,9 @@ impl CanvasPointerStrokes {
             } else {
                 {
                     let mut selection_state = ctx.selection.borrow_mut();
-                    let mode = selection_behavior(
-                        ctx.tool_state.borrow().tool_for_hand(stroke.hand).id(),
-                    )
-                    .resolve(selection_state.mode(), SelectionMode::Subtract);
+                    let mode =
+                        selection_behavior(ctx.tool_state.borrow().tool_for_hand(stroke.hand).id())
+                            .resolve(selection_state.mode(), SelectionMode::Subtract);
                     let points = ctx.tool_state.borrow().lasso_selection_points(
                         &stroke.path,
                         stroke.hand,
@@ -571,16 +566,16 @@ impl CanvasPointerStrokes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use thaum_renderer_domain::{
-        camera_view_orientation_for_camera, CameraRoll, CameraSwing, CellColor, CellGraphic,
-    };
     use crate::{
         brush::{apply_brush, PaintedCell},
         document_locations::new_unsaved_document,
         layers_runtime::resolved_active_layer_id,
         paint_color::PaintColor,
-        tool_state::PaintTool,
         session_document::sync_canvas_from_active_layer,
+        tool_state::PaintTool,
+    };
+    use thaum_renderer_domain::{
+        camera_view_orientation_for_camera, CameraRoll, CameraSwing, CellColor, CellGraphic,
     };
 
     fn canvas_bounds() -> CanvasBounds {
@@ -620,10 +615,9 @@ mod tests {
         fn new() -> Self {
             let document = new_unsaved_document();
             let layer_id = resolved_active_layer_id(&document, None);
-            let document_paths = SharedDocumentPaths::new(std::env::temp_dir().join(format!(
-                "canvas-pointer-test-{}",
-                std::process::id()
-            )));
+            let document_paths = SharedDocumentPaths::new(
+                std::env::temp_dir().join(format!("canvas-pointer-test-{}", std::process::id())),
+            );
             let mut canvas = Canvas::new();
             sync_canvas_from_active_layer(&document, &layer_id, 0, &mut canvas);
             Self {
@@ -673,10 +667,35 @@ mod tests {
 
         let mut strokes = CanvasPointerStrokes::new();
         let bounds = canvas_bounds();
-        strokes.begin_press(&mut session.ctx(), PaintHand::Left, point(0, 0), bounds, flat_view(), 0);
-        strokes.continue_drag(&mut session.ctx(), PaintHand::Left, point(2, 0), bounds, flat_view());
-        strokes.continue_drag(&mut session.ctx(), PaintHand::Left, point(2, 2), bounds, flat_view());
-        strokes.continue_drag(&mut session.ctx(), PaintHand::Left, point(0, 2), bounds, flat_view());
+        strokes.begin_press(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(0, 0),
+            bounds,
+            flat_view(),
+            0,
+        );
+        strokes.continue_drag(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(2, 0),
+            bounds,
+            flat_view(),
+        );
+        strokes.continue_drag(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(2, 2),
+            bounds,
+            flat_view(),
+        );
+        strokes.continue_drag(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(0, 2),
+            bounds,
+            flat_view(),
+        );
         assert!(strokes.lasso().is_some());
 
         let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
@@ -698,12 +717,31 @@ mod tests {
 
         let mut strokes = CanvasPointerStrokes::new();
         let bounds = canvas_bounds();
-        strokes.begin_press(&mut session.ctx(), PaintHand::Left, point(0, 0), bounds, flat_view(), 0);
+        strokes.begin_press(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(0, 0),
+            bounds,
+            flat_view(),
+            0,
+        );
         let path_before = strokes.lasso().unwrap().path.clone();
-        strokes.continue_drag(&mut session.ctx(), PaintHand::Right, point(5, 5), bounds, flat_view());
+        strokes.continue_drag(
+            &mut session.ctx(),
+            PaintHand::Right,
+            point(5, 5),
+            bounds,
+            flat_view(),
+        );
         assert_eq!(strokes.lasso().unwrap().path, path_before);
 
-        strokes.continue_drag(&mut session.ctx(), PaintHand::Left, point(2, 0), bounds, flat_view());
+        strokes.continue_drag(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(2, 0),
+            bounds,
+            flat_view(),
+        );
         assert!(strokes.lasso().unwrap().path.len() > path_before.len());
     }
 
@@ -718,9 +756,22 @@ mod tests {
 
         let mut strokes = CanvasPointerStrokes::new();
         let bounds = canvas_bounds();
-        strokes.begin_press(&mut session.ctx(), PaintHand::Left, point(0, 0), bounds, flat_view(), 0);
+        strokes.begin_press(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(0, 0),
+            bounds,
+            flat_view(),
+            0,
+        );
         assert!(strokes.selection().is_some());
-        strokes.continue_drag(&mut session.ctx(), PaintHand::Left, point(1, 0), bounds, flat_view());
+        strokes.continue_drag(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(1, 0),
+            bounds,
+            flat_view(),
+        );
         strokes.finish_selection_stroke(&mut session.ctx(), 0);
 
         assert!(strokes.selection().is_none());
@@ -767,8 +818,21 @@ mod tests {
         }
         let mut strokes = CanvasPointerStrokes::new();
         let bounds = canvas_bounds();
-        strokes.begin_press(&mut session.ctx(), PaintHand::Left, point(0, 0), bounds, flat_view(), 0);
-        strokes.continue_drag(&mut session.ctx(), PaintHand::Left, point(2, 2), bounds, flat_view());
+        strokes.begin_press(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(0, 0),
+            bounds,
+            flat_view(),
+            0,
+        );
+        strokes.continue_drag(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(2, 2),
+            bounds,
+            flat_view(),
+        );
 
         // Open lasso bound: the bound path plus its flash-preview groups.
         let groups = strokes.overlay_cell_groups(&mut session.ctx(), flat_view(), vivid);
@@ -854,7 +918,14 @@ mod tests {
         let mut strokes = CanvasPointerStrokes::new();
         strokes.set_stamp_hover(Some(hover_for(PaintHand::Left, point(5, 5))));
         let bounds = canvas_bounds();
-        strokes.begin_press(&mut session.ctx(), PaintHand::Left, point(5, 5), bounds, flat_view(), 0);
+        strokes.begin_press(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(5, 5),
+            bounds,
+            flat_view(),
+            0,
+        );
         // The stamp lands with the copied cells' own appearance, staged
         // not committed yet.
         let painted = session.canvas.get(&point(5, 5)).unwrap();
@@ -863,7 +934,13 @@ mod tests {
         assert_eq!(session.action_counter, 0);
 
         // Drags never stamp: a click-only tool places exactly once.
-        strokes.continue_drag(&mut session.ctx(), PaintHand::Left, point(8, 8), bounds, flat_view());
+        strokes.continue_drag(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(8, 8),
+            bounds,
+            flat_view(),
+        );
         assert!(session.canvas.get(&point(8, 8)).is_none());
         assert!(session.canvas.get(&point(9, 8)).is_none());
 
@@ -882,7 +959,14 @@ mod tests {
 
         let mut strokes = CanvasPointerStrokes::new();
         let bounds = canvas_bounds();
-        strokes.begin_press(&mut session.ctx(), PaintHand::Left, point(5, 5), bounds, flat_view(), 0);
+        strokes.begin_press(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(5, 5),
+            bounds,
+            flat_view(),
+            0,
+        );
         assert!(session.canvas.get(&point(5, 5)).is_none());
 
         let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
@@ -902,7 +986,14 @@ mod tests {
         let mut strokes = CanvasPointerStrokes::new();
         strokes.set_stamp_hover(Some(hover_for(PaintHand::Left, point(5, 5))));
         let bounds = canvas_bounds();
-        strokes.begin_press(&mut session.ctx(), PaintHand::Right, point(5, 5), bounds, flat_view(), 0);
+        strokes.begin_press(
+            &mut session.ctx(),
+            PaintHand::Right,
+            point(5, 5),
+            bounds,
+            flat_view(),
+            0,
+        );
         assert!(session.canvas.get(&point(5, 5)).is_none());
     }
 
@@ -926,7 +1017,11 @@ mod tests {
 
         let mut strokes = CanvasPointerStrokes::new();
         strokes.set_stamp_hover(Some(hover_for(PaintHand::Left, point(5, 5))));
-        let groups = strokes.overlay_cell_groups(&mut session.ctx(), flat_view(), CellColor::Flat([0.5, 1.0, 0.75, 1.0]));
+        let groups = strokes.overlay_cell_groups(
+            &mut session.ctx(),
+            flat_view(),
+            CellColor::Flat([0.5, 1.0, 0.75, 1.0]),
+        );
         // Two flash phases over the two copied cells.
         let overlay_cells: Vec<_> = groups.iter().flat_map(|group| group.iter_cells()).collect();
         assert_eq!(overlay_cells.len(), 4);

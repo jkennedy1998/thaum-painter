@@ -7,8 +7,8 @@ use std::rc::Rc;
 
 use thaum_renderer_domain::{
     active_depth_axis_for_swing, camera_view_orientation_for_camera,
-    remap_camera_units_to_active_plane_world, unproject_view_relative_to_world, Camera,
-    ModuleRect, ViewRelativePoint, WorldAxis, WorldPoint,
+    remap_camera_units_to_active_plane_world, unproject_view_relative_to_world, Camera, ModuleRect,
+    ViewRelativePoint, WorldAxis, WorldPoint,
 };
 
 use crate::fill::CanvasBounds;
@@ -75,10 +75,7 @@ pub fn viewport_content_rect_in_camera_units(viewport: ModuleRect, camera: &Came
     )
 }
 
-pub fn viewport_content_center_in_camera_units(
-    viewport: ModuleRect,
-    camera: &Camera,
-) -> [f32; 2] {
+pub fn viewport_content_center_in_camera_units(viewport: ModuleRect, camera: &Camera) -> [f32; 2] {
     let content = viewport_content_rect_in_camera_units(viewport, camera);
     [
         (content.x0 + content.x1) as f32 * 0.5,
@@ -133,14 +130,10 @@ pub fn canvas_bounds_for_viewport(viewport: ModuleRect, camera: &Camera) -> Canv
         z: active_plane_coordinate_for_camera(camera),
         plane_axis: canvas_plane_axis_for_camera(camera),
     };
-    let lower_left = remap_camera_units_to_active_plane_world(
-        *camera,
-        [content.x0 as f32, content.y0 as f32],
-    );
-    let upper_right = remap_camera_units_to_active_plane_world(
-        *camera,
-        [content.x1 as f32, content.y1 as f32],
-    );
+    let lower_left =
+        remap_camera_units_to_active_plane_world(*camera, [content.x0 as f32, content.y0 as f32]);
+    let upper_right =
+        remap_camera_units_to_active_plane_world(*camera, [content.x1 as f32, content.y1 as f32]);
     let (x0, y0) = plane_coordinates(bounds, lower_left);
     let (x1, y1) = plane_coordinates(bounds, upper_right);
     bounds.x0 = x0.min(x1);
@@ -195,11 +188,7 @@ pub fn apply_hud_scroll(camera: &mut Camera, delta_x: f32, delta_y: f32) {
     }
 }
 
-pub fn apply_drawing_space_pan_scroll(
-    camera: &mut Camera,
-    delta_x: f32,
-    delta_y: f32,
-) {
+pub fn apply_drawing_space_pan_scroll(camera: &mut Camera, delta_x: f32, delta_y: f32) {
     let x_steps = scroll_step_count(delta_x);
     let y_steps = scroll_step_count(delta_y);
     if x_steps != 0 {

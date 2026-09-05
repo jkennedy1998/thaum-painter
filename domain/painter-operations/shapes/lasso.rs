@@ -58,7 +58,11 @@ pub fn lasso_points(path: &[CellPoint], orientation: CameraViewOrientation) -> V
             let world = unproject_view_relative_to_world(
                 orientation,
                 anchor_world,
-                ViewRelativePoint { right, up, depth: 0 },
+                ViewRelativePoint {
+                    right,
+                    up,
+                    depth: 0,
+                },
             );
             CellPoint {
                 x: world.x,
@@ -183,9 +187,8 @@ mod tests {
     fn a_closed_square_encloses_its_interior_and_border() {
         let path = [point(0, 0), point(2, 0), point(2, 2), point(0, 2)];
         let points = lasso_points(&path, flat_view());
-        let expected: BTreeSet<(i32, i32)> = (0..=2)
-            .flat_map(|y| (0..=2).map(move |x| (x, y)))
-            .collect();
+        let expected: BTreeSet<(i32, i32)> =
+            (0..=2).flat_map(|y| (0..=2).map(move |x| (x, y))).collect();
         assert_eq!(set(&points), expected);
     }
 
@@ -213,7 +216,10 @@ mod tests {
     #[test]
     fn a_single_point_path_encloses_exactly_that_cell() {
         let path = [CellPoint { x: 4, y: 7, z: 3 }];
-        assert_eq!(lasso_points(&path, flat_view()), vec![CellPoint { x: 4, y: 7, z: 3 }]);
+        assert_eq!(
+            lasso_points(&path, flat_view()),
+            vec![CellPoint { x: 4, y: 7, z: 3 }]
+        );
     }
 
     #[test]
@@ -251,7 +257,10 @@ mod tests {
             CellPoint { x: 3, y: 2, z: 0 },
         ];
         let filled = lasso_points(&path, posx_view());
-        assert!(filled.iter().all(|p| p.x == 3), "fill stays on the x=3 view plane");
+        assert!(
+            filled.iter().all(|p| p.x == 3),
+            "fill stays on the x=3 view plane"
+        );
         for cell in [
             CellPoint { x: 3, y: 0, z: 1 },
             CellPoint { x: 3, y: 1, z: 1 },
@@ -309,12 +318,7 @@ mod tests {
     fn an_open_loose_end_still_closes_through_the_implicit_edge() {
         // A C-shaped drag whose endpoints are connected by the implicit
         // closing edge encloses its interior.
-        let path = [
-            point(0, 2),
-            point(0, 0),
-            point(3, 0),
-            point(3, 2),
-        ];
+        let path = [point(0, 2), point(0, 0), point(3, 0), point(3, 2)];
         let cells: BTreeSet<(i32, i32)> = lasso_points(&path, flat_view())
             .iter()
             .map(|p| (p.x, p.y))

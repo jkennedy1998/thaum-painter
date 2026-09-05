@@ -56,11 +56,7 @@ pub fn text_cells_with_options(
 }
 
 fn stepped(cursor: (i32, i32, i32), step: (i32, i32, i32)) -> (i32, i32, i32) {
-    (
-        cursor.0 + step.0,
-        cursor.1 + step.1,
-        cursor.2 + step.2,
-    )
+    (cursor.0 + step.0, cursor.1 + step.1, cursor.2 + step.2)
 }
 
 fn stepped_from_zero(step: (i32, i32, i32), line: i32) -> (i32, i32, i32) {
@@ -91,7 +87,11 @@ impl TextLayoutOptions {
     pub fn clamped(self) -> Self {
         let clamp = |v: i32| v.clamp(-9, 9);
         Self {
-            char_step: (clamp(self.char_step.0), clamp(self.char_step.1), clamp(self.char_step.2)),
+            char_step: (
+                clamp(self.char_step.0),
+                clamp(self.char_step.1),
+                clamp(self.char_step.2),
+            ),
             enter_step: (
                 clamp(self.enter_step.0),
                 clamp(self.enter_step.1),
@@ -151,7 +151,10 @@ mod tests {
             "AB",
             point(2, 5),
             flat_view(),
-            TextLayoutOptions { char_step: (2, 1, 3), ..DEFAULT_TEXT_LAYOUT_OPTIONS },
+            TextLayoutOptions {
+                char_step: (2, 1, 3),
+                ..DEFAULT_TEXT_LAYOUT_OPTIONS
+            },
         );
         assert_eq!(
             cells,
@@ -169,15 +172,14 @@ mod tests {
             "A\nB\nC",
             point(0, 0),
             flat_view(),
-            TextLayoutOptions { enter_step: (2, 1, 0), ..DEFAULT_TEXT_LAYOUT_OPTIONS },
+            TextLayoutOptions {
+                enter_step: (2, 1, 0),
+                ..DEFAULT_TEXT_LAYOUT_OPTIONS
+            },
         );
         assert_eq!(
             cells,
-            vec![
-                (point(0, 0), 'A'),
-                (point(2, -1), 'B'),
-                (point(4, -2), 'C'),
-            ]
+            vec![(point(0, 0), 'A'), (point(2, -1), 'B'), (point(4, -2), 'C'),]
         );
     }
 
@@ -221,11 +223,7 @@ mod tests {
         // At PosX the view plane is z/y and x is the depth axis: with the
         // default steps text must never move x, mirroring the brush footprint
         // contract (depth movement only happens via explicit step components).
-        let cells = text_cells(
-            "AB\nC",
-            CellPoint { x: 3, y: 5, z: 7 },
-            posx_view(),
-        );
+        let cells = text_cells("AB\nC", CellPoint { x: 3, y: 5, z: 7 }, posx_view());
         assert_eq!(cells.len(), 3);
         assert!(cells.iter().all(|(p, _)| p.x == 3));
         let zs: Vec<_> = cells.iter().map(|(p, _)| p.z).collect();

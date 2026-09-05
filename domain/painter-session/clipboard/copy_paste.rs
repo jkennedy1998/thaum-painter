@@ -24,10 +24,10 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use thaum_renderer_domain::{CellGraphic, CellPoint};
 
-use crate::storage::{material_from_name, material_name};
-use crate::paint_color::PaintColor;
 use crate::brush::{is_blank_cell, Canvas, PaintedCell};
+use crate::paint_color::PaintColor;
 use crate::selection_state::PainterSelection;
+use crate::storage::{material_from_name, material_name};
 
 /// The OS-clipboard text prefix. Copy/paste payloads that start with this are
 /// thaum 3D world copies; anything else is foreign text and not understood
@@ -163,26 +163,22 @@ pub fn copy_from_canvas(canvas: &Canvas, selection: &PainterSelection) -> Option
 }
 
 fn min_corner(points: &[CellPoint]) -> CellPoint {
-    points
-        .iter()
-        .fold(points[0], |acc, point| CellPoint {
-            x: acc.x.min(point.x),
-            y: acc.y.min(point.y),
-            z: acc.z.min(point.z),
-        })
+    points.iter().fold(points[0], |acc, point| CellPoint {
+        x: acc.x.min(point.x),
+        y: acc.y.min(point.y),
+        z: acc.z.min(point.z),
+    })
 }
 
 /// The offset from `anchor` of the copied region's bounds-center cell,
 /// empty tiles included. Per axis: `extent / 2`, so odd extents center
 /// exactly and even extents round away from the min.
 fn center_offset(points: &[CellPoint], anchor: CellPoint) -> CellPoint {
-    let max_corner = points
-        .iter()
-        .fold(points[0], |acc, point| CellPoint {
-            x: acc.x.max(point.x),
-            y: acc.y.max(point.y),
-            z: acc.z.max(point.z),
-        });
+    let max_corner = points.iter().fold(points[0], |acc, point| CellPoint {
+        x: acc.x.max(point.x),
+        y: acc.y.max(point.y),
+        z: acc.z.max(point.z),
+    });
     CellPoint {
         x: (max_corner.x - anchor.x + 1) / 2,
         y: (max_corner.y - anchor.y + 1) / 2,
@@ -267,10 +263,7 @@ impl ClipboardPayload {
                         CellGraphic::None => ClipboardGraphicPayload::None,
                         CellGraphic::Glyph(glyph) => ClipboardGraphicPayload::Glyph(*glyph),
                         CellGraphic::Sprite(sprite) => ClipboardGraphicPayload::Sprite(
-                            sprite
-                                .atlas_relative_path()
-                                .to_string_lossy()
-                                .into_owned(),
+                            sprite.atlas_relative_path().to_string_lossy().into_owned(),
                         ),
                     },
                     color: match cell.color {
@@ -379,8 +372,14 @@ mod tests {
 
         assert_eq!(data.anchor, point(0, 0, -1));
         assert_eq!(data.cells.len(), 3);
-        assert_eq!(data.cells.get(&point(0, 0, 0)).unwrap().graphic, CellGraphic::Glyph('C'));
-        assert_eq!(data.cells.get(&point(1, 0, 1)).unwrap().graphic, CellGraphic::Glyph('B'));
+        assert_eq!(
+            data.cells.get(&point(0, 0, 0)).unwrap().graphic,
+            CellGraphic::Glyph('C')
+        );
+        assert_eq!(
+            data.cells.get(&point(1, 0, 1)).unwrap().graphic,
+            CellGraphic::Glyph('B')
+        );
     }
 
     #[test]
@@ -408,10 +407,7 @@ mod tests {
     fn paste_points_places_copies_relative_to_the_paste_anchor() {
         let data = WorldCopyData {
             anchor: point(0, 0, 0),
-            cells: BTreeMap::from([
-                (point(0, 0, 0), cell('A')),
-                (point(1, 1, 1), cell('B')),
-            ]),
+            cells: BTreeMap::from([(point(0, 0, 0), cell('A')), (point(1, 1, 1), cell('B'))]),
             ..WorldCopyData::default()
         };
 
@@ -429,10 +425,7 @@ mod tests {
             // Center offset (1, 0): the (1,0) cell is the bounds-center of
             // the 2-wide copy, so the cursor lands mid-content.
             center: point(1, 0, 0),
-            cells: BTreeMap::from([
-                (point(0, 0, 0), cell('A')),
-                (point(1, 0, 0), cell('B')),
-            ]),
+            cells: BTreeMap::from([(point(0, 0, 0), cell('A')), (point(1, 0, 0), cell('B'))]),
         };
 
         let points = data.paste_points(point(10, 20, 0));
@@ -515,7 +508,10 @@ mod tests {
 
         // The stored blank is empty under the unified rule: never copied.
         assert_eq!(data.cells.len(), 1);
-        assert_eq!(data.cells.get(&point(0, 0, 0)).unwrap().graphic, CellGraphic::Glyph('A'));
+        assert_eq!(
+            data.cells.get(&point(0, 0, 0)).unwrap().graphic,
+            CellGraphic::Glyph('A')
+        );
 
         // And a hand-built payload carrying a blank places nothing there.
         let mut legacy = WorldCopyData::default();

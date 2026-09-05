@@ -247,8 +247,8 @@ pub fn cursor_overlay_group(point: CellPoint, glyph: char) -> CellGroup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use thaum_renderer_domain::CellGraphic;
     use crate::paint_color::PaintColor;
+    use thaum_renderer_domain::CellGraphic;
     use thaum_renderer_domain::{camera_view_orientation_for_camera, CameraRoll, CameraSwing};
 
     fn flat_view() -> CameraViewOrientation {
@@ -282,17 +282,26 @@ mod tests {
         let mut state = TextEntryState::begin(
             point(5, 5),
             flat_view(),
-            TextLayoutOptions { char_step: (2, 1, 0), ..crate::text::DEFAULT_TEXT_LAYOUT_OPTIONS },
+            TextLayoutOptions {
+                char_step: (2, 1, 0),
+                ..crate::text::DEFAULT_TEXT_LAYOUT_OPTIONS
+            },
             true,
             brush('X'),
         );
         assert_eq!(
             state.handle_key(TextEntryKey::Char('A')),
-            TextEntryOutcome::Applied { point: point(5, 5), cell: Some(brush('A')) }
+            TextEntryOutcome::Applied {
+                point: point(5, 5),
+                cell: Some(brush('A'))
+            }
         );
         assert_eq!(
             state.handle_key(TextEntryKey::Char('B')),
-            TextEntryOutcome::Applied { point: point(7, 4), cell: Some(brush('B')) }
+            TextEntryOutcome::Applied {
+                point: point(7, 4),
+                cell: Some(brush('B'))
+            }
         );
         assert_eq!(state.pending_changes().len(), 2);
     }
@@ -302,17 +311,26 @@ mod tests {
         let mut state = TextEntryState::begin(
             point(5, 5),
             flat_view(),
-            TextLayoutOptions { enter_step: (3, 2, 0), ..crate::text::DEFAULT_TEXT_LAYOUT_OPTIONS },
+            TextLayoutOptions {
+                enter_step: (3, 2, 0),
+                ..crate::text::DEFAULT_TEXT_LAYOUT_OPTIONS
+            },
             true,
             brush('?'),
         );
         state.handle_key(TextEntryKey::Char('A'));
-        assert_eq!(state.handle_key(TextEntryKey::Enter), TextEntryOutcome::Committed);
+        assert_eq!(
+            state.handle_key(TextEntryKey::Enter),
+            TextEntryOutcome::Committed
+        );
         assert_eq!(state.cursor_point(), point(8, 3));
         // Cursor on the new line writes there.
         assert_eq!(
             state.handle_key(TextEntryKey::Char('B')),
-            TextEntryOutcome::Applied { point: point(8, 3), cell: Some(brush('B')) }
+            TextEntryOutcome::Applied {
+                point: point(8, 3),
+                cell: Some(brush('B'))
+            }
         );
     }
 
@@ -322,7 +340,10 @@ mod tests {
         state.handle_key(TextEntryKey::Char('A'));
         assert_eq!(
             state.handle_key(TextEntryKey::Space),
-            TextEntryOutcome::Applied { point: point(6, 5), cell: None }
+            TextEntryOutcome::Applied {
+                point: point(6, 5),
+                cell: None
+            }
         );
         let mut keep = TextEntryState::begin(
             point(5, 5),
@@ -332,7 +353,10 @@ mod tests {
             brush('?'),
         );
         keep.handle_key(TextEntryKey::Char('A'));
-        assert_eq!(keep.handle_key(TextEntryKey::Space), TextEntryOutcome::Ignored);
+        assert_eq!(
+            keep.handle_key(TextEntryKey::Space),
+            TextEntryOutcome::Ignored
+        );
         assert_eq!(keep.cursor_point(), point(7, 5));
     }
 
@@ -344,14 +368,20 @@ mod tests {
         // Steps back one char cell (char_step 1) and erases it.
         assert_eq!(
             state.handle_key(TextEntryKey::Backspace),
-            TextEntryOutcome::Applied { point: point(6, 5), cell: None }
+            TextEntryOutcome::Applied {
+                point: point(6, 5),
+                cell: None
+            }
         );
         // Enter, then backspace at the new line start wraps to the previous
         // line's end and erases there.
         state.handle_key(TextEntryKey::Enter);
         assert_eq!(
             state.handle_key(TextEntryKey::Backspace),
-            TextEntryOutcome::Applied { point: point(6, 5), cell: None }
+            TextEntryOutcome::Applied {
+                point: point(6, 5),
+                cell: None
+            }
         );
         // Backspace at the very anchor is a no-op.
         state.handle_key(TextEntryKey::Backspace);
@@ -404,7 +434,10 @@ mod tests {
         let mut state = TextEntryState::begin(
             point(0, 0),
             flat_view(),
-            TextLayoutOptions { char_step: (1, 0, 2), ..crate::text::DEFAULT_TEXT_LAYOUT_OPTIONS },
+            TextLayoutOptions {
+                char_step: (1, 0, 2),
+                ..crate::text::DEFAULT_TEXT_LAYOUT_OPTIONS
+            },
             true,
             brush('?'),
         );
@@ -420,9 +453,15 @@ mod tests {
     fn escape_finishes_and_later_keys_are_idle() {
         let mut state = typing();
         state.handle_key(TextEntryKey::Char('A'));
-        assert_eq!(state.handle_key(TextEntryKey::Escape), TextEntryOutcome::Finished);
+        assert_eq!(
+            state.handle_key(TextEntryKey::Escape),
+            TextEntryOutcome::Finished
+        );
         assert!(!state.is_active());
-        assert_eq!(state.handle_key(TextEntryKey::Char('B')), TextEntryOutcome::Idle);
+        assert_eq!(
+            state.handle_key(TextEntryKey::Char('B')),
+            TextEntryOutcome::Idle
+        );
         // Pending changes survive for the caller's final commit.
         assert_eq!(state.pending_changes().len(), 1);
     }

@@ -16,8 +16,8 @@ use crate::session_document::{
     recover_snapshot_conflict, sync_canvas_from_active_layer,
 };
 use crate::storage::{
-    save_shared_document_snapshot, SharedDocumentPaths, SharedDocumentRuntime,
-    PropertyBlockMergeDirection,
+    save_shared_document_snapshot, PropertyBlockMergeDirection, SharedDocumentPaths,
+    SharedDocumentRuntime,
 };
 use crate::timeline_state::TimelineState;
 
@@ -25,7 +25,9 @@ pub fn resolved_active_layer_id(
     runtime: &SharedDocumentRuntime,
     preferred_layer_id: Option<&str>,
 ) -> String {
-    if let Some(layer_id) = preferred_layer_id.filter(|layer_id| runtime.document.has_layer(layer_id)) {
+    if let Some(layer_id) =
+        preferred_layer_id.filter(|layer_id| runtime.document.has_layer(layer_id))
+    {
         return layer_id.to_string();
     }
     runtime
@@ -193,7 +195,12 @@ pub fn apply_layers_panel_action(
                     *active_layer_id = resolved_active_layer_id(shared_document, None);
                     *selected_property_id = None;
                 }
-                sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
+                sync_canvas_from_active_layer(
+                    shared_document,
+                    active_layer_id,
+                    current_breath,
+                    canvas,
+                );
             }
         }
         LayersPanelAction::ToggleAutoKey => {
@@ -278,9 +285,12 @@ pub fn apply_layers_panel_action(
             );
         }
         LayersPanelAction::SplitPropertyBlock(layer_id, property_id, block_id, split_breath) => {
-            let Some(new_block_id) = shared_document
-                .split_property_block(&layer_id, &property_id, &block_id, split_breath)
-            else {
+            let Some(new_block_id) = shared_document.split_property_block(
+                &layer_id,
+                &property_id,
+                &block_id,
+                split_breath,
+            ) else {
                 return;
             };
             *selected_property_id = Some(property_id.clone());
@@ -307,10 +317,25 @@ pub fn apply_layers_panel_action(
                 MergeDirection::Left => PropertyBlockMergeDirection::Left,
                 MergeDirection::Right => PropertyBlockMergeDirection::Right,
             };
-            shared_document.merge_blank_property_block(&layer_id, &property_id, &block_id, direction);
+            shared_document.merge_blank_property_block(
+                &layer_id,
+                &property_id,
+                &block_id,
+                direction,
+            );
         }
-        LayersPanelAction::SwapPropertyBlocks(layer_id, property_id, source_block_id, target_block_id) => {
-            shared_document.swap_property_blocks(&layer_id, &property_id, &source_block_id, &target_block_id);
+        LayersPanelAction::SwapPropertyBlocks(
+            layer_id,
+            property_id,
+            source_block_id,
+            target_block_id,
+        ) => {
+            shared_document.swap_property_blocks(
+                &layer_id,
+                &property_id,
+                &source_block_id,
+                &target_block_id,
+            );
         }
     }
     if document_mutated {
@@ -333,7 +358,10 @@ pub fn apply_layers_panel_action(
 mod tests {
     use super::*;
     use crate::storage::SharedDocumentSelection;
-    use crate::storage::{DocumentWindow, SharedDocumentFile, SharedDocumentLayer, SHARED_DOCUMENT_KIND, SHARED_DOCUMENT_SCHEMA_VERSION};
+    use crate::storage::{
+        DocumentWindow, SharedDocumentFile, SharedDocumentLayer, SHARED_DOCUMENT_KIND,
+        SHARED_DOCUMENT_SCHEMA_VERSION,
+    };
 
     fn document_with_layers(layer_ids: &[&str]) -> SharedDocumentFile {
         SharedDocumentFile {
@@ -363,7 +391,10 @@ mod tests {
     fn resolved_active_layer_id_falls_back_to_first_document_layer() {
         let runtime = SharedDocumentRuntime::new(document_with_layers(&["layer-a", "layer-b"]));
 
-        assert_eq!(resolved_active_layer_id(&runtime, Some("missing")), "layer-a");
+        assert_eq!(
+            resolved_active_layer_id(&runtime, Some("missing")),
+            "layer-a"
+        );
     }
 
     #[test]
