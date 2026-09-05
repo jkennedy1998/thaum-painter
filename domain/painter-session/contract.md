@@ -27,12 +27,14 @@ Own the bounded editing/session semantics that mutate a painter document over ti
   - default
 - `timeline-state/`
   - default
+- `sync/`
+  - default
 
 ## contents
 - `contract.md`
   - painter-session contract
 - `session_document.rs`
-  - session→document bridge: staged strokes, stroke commits, undo/redo records, selection channel commits, snapshot-conflict recovery (`recover_snapshot_conflict`), shared action ids
+  - session→document bridge: staged strokes, stroke commits, undo/redo records, selection channel commits, snapshot-conflict recovery (`recover_snapshot_conflict`), shared action ids; `stage_painted_cells_chunk` stages resolved cell changes (text-entry keystrokes, stamp placements) without creating an action record
   - the former `app_runtime.rs` headless-runtime draft (never wired into `lib.rs`, never compiled) was deleted — the entrypoint frame loop is the live implementation, and its pointer-stroke logic was superseded by the session_document bridge + tool_state
 
 ## dependencies

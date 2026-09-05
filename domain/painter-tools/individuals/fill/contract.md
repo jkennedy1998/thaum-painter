@@ -4,7 +4,7 @@
 Own the fill tool's registration truth as one tool encapsulation.
 
 ## owns
-- the `FillTool` registration type resolving fill's `ToolDescriptor` (id "fill", label, icon, fill_diagonal property row, bucket hotkey action)
+- the `FillTool` registration type resolving fill's `ToolDescriptor` (id "fill", label, icon, `fill_diagonal` + `fill_match_channels` property rows, bucket hotkey action)
 - fill's future session behavior home (behavior still lives in `painter-session/tool-state/` match arms)
 
 ## does not own

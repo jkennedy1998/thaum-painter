@@ -137,6 +137,7 @@ impl HandSettingsModule {
         }
 
         let mut fill_diag_columns = Vec::new();
+        let mut fill_match_columns = Vec::new();
         for (id, label, value) in [("off", "orth", false), ("on", "diag", true)] {
             let mut column = PropertyMatrixColumn::new(id, label);
             column.left_value = left.fill_diagonal == value;
@@ -145,21 +146,29 @@ impl HandSettingsModule {
             column.right_enabled = state.right_tool == PaintTool::Fill;
             fill_diag_columns.push(column);
         }
+        // Fill's flood-select channel matching is a fill-specific opt-in:
+        // off matches on every channel, on follows the hand's Select row.
+        for (id, label, value) in [("off", "all", false), ("on", "row", true)] {
+            let mut column = PropertyMatrixColumn::new(id, label);
+            column.left_value = left.fill_match_channels == value;
+            column.right_value = right.fill_match_channels == value;
+            column.left_enabled = state.left_tool == PaintTool::Fill;
+            column.right_enabled = state.right_tool == PaintTool::Fill;
+            fill_match_columns.push(column);
+        }
+
+        let mut picker_opp_columns = Vec::new();
+        for (id, label, value) in [("self", "self", false), ("opp", "opp", true)] {
+            let mut column = PropertyMatrixColumn::new(id, label);
+            column.left_value = left.pick_opposite_hand == value;
+            column.right_value = right.pick_opposite_hand == value;
+            column.left_enabled = state.left_tool == PaintTool::Picker;
+            column.right_enabled = state.right_tool == PaintTool::Picker;
+            picker_opp_columns.push(column);
+        }
 
         let char_step = state.text_options.char_step;
         let enter_step = state.text_options.enter_step;
-
-        let mut lock_columns = Vec::new();
-        for (id, label, channel) in [
-            ("graphic", "GFX", PaintChannel::Graphic),
-            ("color", "COL", PaintChannel::Color),
-            ("weight", "WGT", PaintChannel::Weight),
-        ] {
-            let mut column = PropertyMatrixColumn::new(id, label);
-            column.left_value = left.locks.is_locked(channel);
-            column.right_value = right.locks.is_locked(channel);
-            lock_columns.push(column);
-        }
 
         // Standard hand rows never change with the equipped tools.
         let mut rows = vec![
@@ -203,12 +212,6 @@ impl HandSettingsModule {
                 token_width: 4,
             },
             PropertyRow::Matrix {
-                id: "lock".into(),
-                label: "Lock".into(),
-                columns: lock_columns,
-                token_width: 4,
-            },
-            PropertyRow::Matrix {
                 id: "target".into(),
                 label: "target".into(),
                 columns: target_columns,
@@ -237,6 +240,24 @@ impl HandSettingsModule {
                 id: "fill_diagonal".into(),
                 label: "fill".into(),
                 columns: fill_diag_columns,
+                token_width: 4,
+            });
+        }
+        if Self::tool_row_used(&state, "fill_match_channels") {
+            rows.push(PropertyRow::Matrix {
+                id: "fill_match".into(),
+                label: "match".into(),
+                columns: fill_match_columns,
+                token_width: 4,
+            });
+        }
+        // Picker target hand: each hand's picker toggles independently
+        // whether its samples land on itself or the opposite hand.
+        if Self::tool_row_used(&state, "picker_opposite_hand") {
+            rows.push(PropertyRow::Matrix {
+                id: "picker_opposite_hand".into(),
+                label: "pick".into(),
+                columns: picker_opp_columns,
                 token_width: 4,
             });
         }
@@ -369,10 +390,21 @@ impl HandSettingsModule {
                 };
                 state.set_fill_diagonal_for_hand(hand, fill_diagonal);
             }
-            "lock" => {
-                if let Some(channel) = Self::channel_from_id(&column_id) {
-                    state.toggle_lock_for_hand(hand, channel);
-                }
+            "picker_opposite_hand" => {
+                let pick_opposite_hand = match column_id.as_str() {
+                    "self" => false,
+                    "opp" => true,
+                    _ => return,
+                };
+                state.set_pick_opposite_hand_for_hand(hand, pick_opposite_hand);
+            }
+            "fill_match" => {
+                let fill_match_channels = match column_id.as_str() {
+                    "off" => false,
+                    "on" => true,
+                    _ => return,
+                };
+                state.set_fill_match_channels_for_hand(hand, fill_match_channels);
             }
             _ => {}
         }
@@ -750,26 +782,6 @@ mod tests {
     }
 
     #[test]
-    fn clicking_lock_tokens_toggles_that_channel_lock_for_the_clicked_side() {
-        let state = tool_state();
-        let mut module = HandSettingsModule::new(
-            "hands",
-            rect(),
-            state.clone(),
-            selection(),
-            number_edit(),
-        );
-
-        module.apply_property_hit(PropertyHit::Matrix {
-            row_id: "lock".into(),
-            side: PropertyMatrixSide::Right,
-            column_id: "weight".into(),
-        });
-
-        assert!(state.borrow().right_hand.locks.weight);
-    }
-
-    #[test]
     fn rows_only_include_tool_properties_the_equipped_tools_use() {
         let state = tool_state();
         let mut module = HandSettingsModule::new(
@@ -802,10 +814,10 @@ mod tests {
         let mixed_ids = row_ids(&module);
         assert!(mixed_ids.contains(&"brush_size".to_string()));
         assert!(mixed_ids.contains(&"fill_diagonal".to_string()));
+        assert!(mixed_ids.contains(&"fill_match".to_string()));
 
         // Standard rows stay put regardless of the equipped tools.
         assert!(mixed_ids.contains(&"weight".to_string()));
-        assert!(mixed_ids.contains(&"lock".to_string()));
     }
 
     #[test]

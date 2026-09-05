@@ -5,7 +5,7 @@ use thaum_renderer_domain::{
 };
 
 use crate::{
-    tool_state::{ChannelLocks, ChannelMask},
+    tool_state::ChannelMask,
     DrawingSpaceWheelMode, HandState, PaintColor, PaintHand, PaintTarget, PaintTool, SelectionMode,
     ToolState,
 };
@@ -57,10 +57,13 @@ pub struct PersistedHandState {
     pub weight_index: i64,
     pub brush_size: i32,
     pub fill_diagonal: bool,
+    #[serde(default)]
+    pub fill_match_channels: bool,
+    #[serde(default)]
+    pub pick_opposite_hand: bool,
     pub edit_channels: PersistedChannelMask,
     pub select_channels: PersistedChannelMask,
     pub target: String,
-    pub locks: PersistedChannelMask,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,10 +159,11 @@ impl PersistedHandState {
             weight_index: hand.weight_index,
             brush_size: hand.brush_size,
             fill_diagonal: hand.fill_diagonal,
+            fill_match_channels: hand.fill_match_channels,
+            pick_opposite_hand: hand.pick_opposite_hand,
             edit_channels: PersistedChannelMask::from_mask(hand.edit_channels),
             select_channels: PersistedChannelMask::from_mask(hand.select_channels),
             target: target_name(hand.target).to_string(),
-            locks: PersistedChannelMask::from_locks(hand.locks),
         }
     }
 
@@ -169,12 +173,13 @@ impl PersistedHandState {
         hand.weight_index = self.weight_index.clamp(0, 3);
         hand.brush_size = self.brush_size.clamp(1, 5);
         hand.fill_diagonal = self.fill_diagonal;
+        hand.fill_match_channels = self.fill_match_channels;
+        hand.pick_opposite_hand = self.pick_opposite_hand;
         hand.edit_channels = self.edit_channels.to_mask();
         hand.select_channels = self.select_channels.to_mask();
         if let Some(target) = target_from_name(&self.target) {
             hand.target = target;
         }
-        hand.locks = self.locks.to_locks();
     }
 }
 
@@ -187,24 +192,8 @@ impl PersistedChannelMask {
         }
     }
 
-    fn from_locks(locks: ChannelLocks) -> Self {
-        Self {
-            graphic: locks.graphic,
-            color: locks.color,
-            weight: locks.weight,
-        }
-    }
-
     fn to_mask(&self) -> ChannelMask {
         ChannelMask {
-            graphic: self.graphic,
-            color: self.color,
-            weight: self.weight,
-        }
-    }
-
-    fn to_locks(&self) -> ChannelLocks {
-        ChannelLocks {
             graphic: self.graphic,
             color: self.color,
             weight: self.weight,

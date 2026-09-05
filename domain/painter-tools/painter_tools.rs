@@ -19,7 +19,13 @@ pub mod fill;
 #[path = "individuals/lasso/lasso_tool.rs"]
 pub mod lasso;
 
+#[path = "individuals/stamp/stamp_tool.rs"]
+pub mod stamp;
+
 #[path = "individuals/text/text_tool.rs"]
 pub mod text;
+
+#[path = "individuals/picker/picker_tool.rs"]
+pub mod picker;
 
 pub use registry::{all, by_id, require_by_id, RegisteredTool, ToolDescriptor};

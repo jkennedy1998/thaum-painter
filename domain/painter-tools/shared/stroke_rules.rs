@@ -15,6 +15,9 @@ pub enum DragBehavior {
     /// Never paints through pointer dispatch; a press begins a typing
     /// session that owns the keyboard until it exits (text).
     TypingSession,
+    /// Never paints and never selects; a press samples the cell under the
+    /// cursor into a hand's state once, and drags do nothing (picker).
+    ClickOnly,
 }
 
 /// Which drag behavior the tool with this registration id uses.
@@ -22,6 +25,8 @@ pub fn drag_behavior(tool_id: &str) -> DragBehavior {
     match tool_id {
         "lasso" => DragBehavior::ReleaseBound,
         "text" => DragBehavior::TypingSession,
+        "picker" => DragBehavior::ClickOnly,
+        "stamp" => DragBehavior::ClickOnly,
         // Unknown registrations behave as ordinary per-position paint tools.
         _ => DragBehavior::PerPosition,
     }
@@ -38,6 +43,8 @@ mod tests {
         assert_eq!(drag_behavior("fill"), DragBehavior::PerPosition);
         assert_eq!(drag_behavior("lasso"), DragBehavior::ReleaseBound);
         assert_eq!(drag_behavior("text"), DragBehavior::TypingSession);
+        assert_eq!(drag_behavior("picker"), DragBehavior::ClickOnly);
+        assert_eq!(drag_behavior("stamp"), DragBehavior::ClickOnly);
     }
 
     #[test]

@@ -2,6 +2,7 @@ use thaum_renderer_domain::{CameraViewOrientation, CellGraphic, CellMaterialId, 
 
 use crate::{
     brush::{self, Canvas, PaintedCell},
+    clipboard::WorldCopyData,
     fill::{self, CanvasBounds, FillConnectivity},
     painter_tools::shared::{drag_behavior, DragBehavior},
     paint_color::PaintColor,
@@ -13,6 +14,16 @@ use crate::{
 pub enum PaintHand {
     Left,
     Right,
+}
+
+impl PaintHand {
+    /// The other hand, used by the picker's opposite-hand property.
+    pub fn opposite(self) -> PaintHand {
+        match self {
+            PaintHand::Left => PaintHand::Right,
+            PaintHand::Right => PaintHand::Left,
+        }
+    }
 }
 
 /// Which painter-operations primitive one hand is assigned to.
@@ -28,18 +39,28 @@ pub enum PaintTool {
     /// Live typing mode: edits flow through the session's
     /// `TextEntryState`, never through `apply_at_for_hand`.
     Text,
+    /// Click-only sampler: a press samples the cell under the cursor into
+    /// a hand's graphic/color/weight; nothing is ever painted or selected.
+    Picker,
+    /// Click-only placer: a press places the hand user's copied world cells
+    /// at the click cell through the hand's resolved painted cell; drags
+    /// never stamp. Application lives in the `stamp_*` seams below and the
+    /// canvas-pointer press dispatch, never through `apply_at_for_hand`.
+    Stamp,
 }
 
 impl PaintTool {
     /// Every live tool, in toolbox order. Drift-tested against the
     /// painter-tools registry.
-    pub fn all() -> [PaintTool; 5] {
+    pub fn all() -> [PaintTool; 7] {
         [
             PaintTool::Brush,
             PaintTool::Erase,
             PaintTool::Fill,
             PaintTool::Lasso,
             PaintTool::Text,
+            PaintTool::Picker,
+            PaintTool::Stamp,
         ]
     }
 
@@ -53,6 +74,8 @@ impl PaintTool {
             PaintTool::Fill => "fill",
             PaintTool::Lasso => "lasso",
             PaintTool::Text => "text",
+            PaintTool::Picker => "picker",
+            PaintTool::Stamp => "stamp",
         }
     }
 
@@ -63,6 +86,8 @@ impl PaintTool {
             "fill" => Some(PaintTool::Fill),
             "lasso" => Some(PaintTool::Lasso),
             "text" => Some(PaintTool::Text),
+            "picker" => Some(PaintTool::Picker),
+            "stamp" => Some(PaintTool::Stamp),
             _ => None,
         }
     }
@@ -130,39 +155,6 @@ impl ChannelMask {
 pub type EditChannels = ChannelMask;
 pub type SelectChannels = ChannelMask;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChannelLocks {
-    pub graphic: bool,
-    pub color: bool,
-    pub weight: bool,
-}
-
-impl ChannelLocks {
-    pub fn none() -> Self {
-        Self {
-            graphic: false,
-            color: false,
-            weight: false,
-        }
-    }
-
-    pub fn is_locked(&self, channel: PaintChannel) -> bool {
-        match channel {
-            PaintChannel::Graphic => self.graphic,
-            PaintChannel::Color => self.color,
-            PaintChannel::Weight => self.weight,
-        }
-    }
-
-    pub fn toggle(&mut self, channel: PaintChannel) {
-        match channel {
-            PaintChannel::Graphic => self.graphic = !self.graphic,
-            PaintChannel::Color => self.color = !self.color,
-            PaintChannel::Weight => self.weight = !self.weight,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HandState {
     pub graphic: CellGraphic,
@@ -170,10 +162,16 @@ pub struct HandState {
     pub weight_index: i64,
     pub brush_size: i32,
     pub fill_diagonal: bool,
+    /// Fill property: whether flood select matches cells per the hand's
+    /// Select row instead of on every channel. Fill-specific opt-in.
+    pub fill_match_channels: bool,
+    /// Picker property: whether this hand's picker click hands its sampled
+    /// channels to the opposite hand instead of itself. Per-hand toggle,
+    /// independent per J.
+    pub pick_opposite_hand: bool,
     pub edit_channels: EditChannels,
     pub select_channels: SelectChannels,
     pub target: PaintTarget,
-    pub locks: ChannelLocks,
 }
 
 impl Default for HandState {
@@ -184,10 +182,11 @@ impl Default for HandState {
             weight_index: 2,
             brush_size: 1,
             fill_diagonal: false,
+            fill_match_channels: false,
+            pick_opposite_hand: false,
             edit_channels: EditChannels::all(),
             select_channels: SelectChannels::all(),
             target: PaintTarget::Image,
-            locks: ChannelLocks::none(),
         }
     }
 }
@@ -257,9 +256,6 @@ impl ToolState {
     }
 
     pub fn set_color_for_hand(&mut self, hand: PaintHand, color: PaintColor) {
-        if self.hand_state(hand).locks.color {
-            return;
-        }
         self.hand_state_mut(hand).color = color;
         self.active_hand = hand;
     }
@@ -269,17 +265,11 @@ impl ToolState {
     }
 
     pub fn set_graphic_for_hand(&mut self, hand: PaintHand, graphic: CellGraphic) {
-        if self.hand_state(hand).locks.graphic {
-            return;
-        }
         self.hand_state_mut(hand).graphic = graphic;
         self.active_hand = hand;
     }
 
     pub fn set_weight_for_hand(&mut self, hand: PaintHand, weight_index: i64) {
-        if self.hand_state(hand).locks.weight {
-            return;
-        }
         self.hand_state_mut(hand).weight_index = weight_index.clamp(0, 3);
         self.active_hand = hand;
     }
@@ -294,8 +284,8 @@ impl ToolState {
         self.active_hand = hand;
     }
 
-    pub fn toggle_lock_for_hand(&mut self, hand: PaintHand, channel: PaintChannel) {
-        self.hand_state_mut(hand).locks.toggle(channel);
+    pub fn set_fill_match_channels_for_hand(&mut self, hand: PaintHand, fill_match_channels: bool) {
+        self.hand_state_mut(hand).fill_match_channels = fill_match_channels;
         self.active_hand = hand;
     }
 
@@ -312,6 +302,42 @@ impl ToolState {
     pub fn set_fill_diagonal_for_hand(&mut self, hand: PaintHand, fill_diagonal: bool) {
         self.hand_state_mut(hand).fill_diagonal = fill_diagonal;
         self.active_hand = hand;
+    }
+
+    pub fn set_pick_opposite_hand_for_hand(&mut self, hand: PaintHand, pick_opposite_hand: bool) {
+        self.hand_state_mut(hand).pick_opposite_hand = pick_opposite_hand;
+        self.active_hand = hand;
+    }
+
+    /// Picker behavior: samples the cell under the cursor into the
+    /// receiving hand's graphic/color/weight, one channel at a time, gated
+    /// by the *picking* hand's edit-channel toggles (source-of-truth from
+    /// J: the picker reads the toggles for what the tool is editing).
+    /// With `pick_opposite_hand` on, the
+    /// sample lands on the opposite hand's state. Never paints and never
+    /// touches the selection surface.
+    pub fn pick_at_for_hand(&mut self, canvas: &Canvas, position: CellPoint, hand: PaintHand) {
+        let picking = self.hand_state(hand);
+        let target_hand = if picking.pick_opposite_hand {
+            hand.opposite()
+        } else {
+            hand
+        };
+        if !picking.edit_channels.any_enabled() {
+            return;
+        }
+        let Some(cell) = canvas.get(&position) else {
+            return;
+        };
+        if picking.edit_channels.graphic {
+            self.set_graphic_for_hand(target_hand, cell.graphic.clone());
+        }
+        if picking.edit_channels.color {
+            self.set_color_for_hand(target_hand, cell.color);
+        }
+        if picking.edit_channels.weight {
+            self.set_weight_for_hand(target_hand, cell.weight_index);
+        }
     }
 
     /// Nudges one axis (0 = along right, 1 = down the screen, 2 = into depth)
@@ -363,6 +389,9 @@ impl ToolState {
         hand: PaintHand,
     ) -> PaintedCell {
         let hand_state = self.hand_state(hand);
+        // Unified empty-cell rule: an authored blank (space glyph) is empty —
+        // its color/weight never survive as base values.
+        let existing = brush::effective_cell(existing);
         let base_graphic = existing
             .map(|cell| cell.graphic.clone())
             .unwrap_or(CellGraphic::Glyph(' '));
@@ -463,7 +492,7 @@ impl ToolState {
                 }
                 for point in points {
                     let painted = self.resolved_painted_cell(canvas.get(&point), hand);
-                    brush::apply_brush(canvas, point, painted);
+                    brush::write_cell(canvas, point, painted);
                 }
             }
             PaintTool::Erase => {
@@ -477,7 +506,7 @@ impl ToolState {
                 }
                 for point in points {
                     let painted = self.resolved_painted_cell(canvas.get(&point), hand);
-                    brush::apply_brush(canvas, point, painted);
+                    brush::write_cell(canvas, point, painted);
                 }
             }
             _ => {}
@@ -508,10 +537,19 @@ impl ToolState {
             }
             PaintTool::Erase => self.brush_points_for_hand(position, hand, orientation),
             PaintTool::Fill => {
-                if !hand_state.select_channels.any_enabled() {
-                    return Vec::new();
-                }
-                flood_select_points(canvas, position, bounds, hand_state.select_channels)
+                // Channel matching is a fill-specific opt-in: by default
+                // flood select matches on every channel; with
+                // `fill_match_channels` on, the hand's Select row decides
+                // which channels must match.
+                let mask = if hand_state.fill_match_channels {
+                    if !hand_state.select_channels.any_enabled() {
+                        return Vec::new();
+                    }
+                    hand_state.select_channels
+                } else {
+                    ChannelMask::all()
+                };
+                flood_select_points(canvas, position, bounds, mask)
             }
             _ => Vec::new(),
         }
@@ -535,8 +573,9 @@ impl ToolState {
     /// Rasterizes the hand's lasso bound and fills every enclosed cell with
     /// that hand's state, through the same seams as brush/fill: the region
     /// is gated by the current selection, and each filled cell resolves
-    /// through the channel mask (an empty cell under a graphic-masked fill
-    /// keeps its implicit blank glyph; a color-only fill recolors in place).
+    /// through the channel mask (under the unified empty-cell rule, a
+    /// resolution that comes out an authored blank writes nothing — empty
+    /// cells stay empty; a color-only fill recolors glyphs in place only).
     pub fn apply_lasso_for_hand(
         &mut self,
         canvas: &mut Canvas,
@@ -548,7 +587,7 @@ impl ToolState {
         let points = self.lasso_edit_points(selection, path, hand, orientation);
         for point in points {
             let painted = self.resolved_painted_cell(canvas.get(&point), hand);
-            brush::apply_brush(canvas, point, painted);
+            brush::write_cell(canvas, point, painted);
         }
     }
 
@@ -573,7 +612,8 @@ impl ToolState {
     /// Per-cell preview data for the in-progress lasso: the exact points
     /// release will edit, each with the cell as currently drawn and the
     /// painted cell the commit will produce (through the same resolution
-    /// `apply_lasso_for_hand` uses).
+    /// `apply_lasso_for_hand` uses). Points that resolve to an authored
+    /// blank are skipped: release writes nothing there.
     pub fn lasso_preview_cells(
         &self,
         canvas: &Canvas,
@@ -584,14 +624,18 @@ impl ToolState {
     ) -> Vec<crate::lasso_stroke::LassoPreviewCell> {
         self.lasso_edit_points(selection, path, hand, orientation)
             .into_iter()
-            .map(|point| {
+            .filter_map(|point| {
                 let current = canvas.get(&point).cloned();
                 let upcoming = self.resolved_painted_cell(canvas.get(&point), hand);
-                crate::lasso_stroke::LassoPreviewCell {
+                if brush::is_blank_cell(&upcoming) {
+                    // Release writes nothing on an authored-blank resolution.
+                    return None;
+                }
+                Some(crate::lasso_stroke::LassoPreviewCell {
                     point,
                     current,
                     upcoming,
-                }
+                })
             })
             .collect()
     }
@@ -636,6 +680,88 @@ impl ToolState {
                     current,
                     upcoming,
                 }
+            })
+            .collect()
+    }
+
+    /// The stamp tool's edit half: the copied world cells placed at `anchor`,
+    /// filtered by the current selection. Enabled edit channels paste the
+    /// copied cell's own graphic/color/weight (the copy is the content);
+    /// locked channels keep the target cell's existing value so the stamp
+    /// obeys the locked graphic/color/weight of the acting hand like
+    /// brush/fill do — with the brush blank-glyph rule that a gfx-locked
+    /// stamp never places a glyph on an empty target cell. Returns
+    /// (point, upcoming) pairs; the canvas-pointer press dispatch stages
+    /// them so one stamp is one undo step.
+    pub fn stamp_changes_for_hand(
+        &self,
+        canvas: &Canvas,
+        selection: &PainterSelection,
+        data: &WorldCopyData,
+        anchor: CellPoint,
+        hand: PaintHand,
+    ) -> Vec<(CellPoint, PaintedCell)> {
+        let hand_state = self.hand_state(hand);
+        if !hand_state.edit_channels.any_enabled() {
+            return Vec::new();
+        }
+        data.paste_points(anchor)
+            .into_iter()
+            .filter(|(point, _)| selection.allows_plane_edit(*point))
+            .filter_map(|(point, copied)| {
+                let existing = brush::effective_cell(canvas.get(&point));
+                // A gfx-locked stamp on an empty target edits nothing: a
+                // blank glyph carries no color or weight, so there is no
+                // recolor-in-place to do — the point is skipped entirely.
+                if !hand_state.edit_channels.graphic && existing.is_none() {
+                    return None;
+                }
+                let upcoming = PaintedCell {
+                    graphic: if hand_state.edit_channels.graphic {
+                        copied.graphic.clone()
+                    } else {
+                        // Brush-like blank-glyph rule: a gfx-locked stamp
+                        // never places a glyph on an empty target cell.
+                        existing
+                            .map(|cell| cell.graphic.clone())
+                            .unwrap_or(CellGraphic::Glyph(' '))
+                    },
+                    color: if hand_state.edit_channels.color {
+                        copied.color
+                    } else {
+                        existing.map(|cell| cell.color).unwrap_or(copied.color)
+                    },
+                    weight_index: if hand_state.edit_channels.weight {
+                        copied.weight_index
+                    } else {
+                        existing
+                            .map(|cell| cell.weight_index)
+                            .unwrap_or(copied.weight_index)
+                    },
+                };
+                Some((point, upcoming))
+            })
+            .collect()
+    }
+
+    /// Per-cell preview data for the stamp at `anchor`: the exact cells the
+    /// press will place (through the same resolution `stamp_changes_for_hand`
+    /// uses), each paired with the cell as currently drawn — the two flash
+    /// halves of the paste-area preview.
+    pub fn stamp_preview_cells(
+        &self,
+        canvas: &Canvas,
+        selection: &PainterSelection,
+        data: &WorldCopyData,
+        anchor: CellPoint,
+        hand: PaintHand,
+    ) -> Vec<crate::lasso_stroke::LassoPreviewCell> {
+        self.stamp_changes_for_hand(canvas, selection, data, anchor, hand)
+            .into_iter()
+            .map(|(point, upcoming)| crate::lasso_stroke::LassoPreviewCell {
+                current: canvas.get(&point).cloned(),
+                point,
+                upcoming,
             })
             .collect()
     }
@@ -748,11 +874,12 @@ mod tests {
     fn each_tool_declares_its_own_property_rows() {
         assert_eq!(PaintTool::Brush.property_row_ids(), &["brush_size"]);
         assert_eq!(PaintTool::Erase.property_row_ids(), &["brush_size"]);
-        assert_eq!(PaintTool::Fill.property_row_ids(), &["fill_diagonal"]);
+        assert_eq!(PaintTool::Fill.property_row_ids(), &["fill_diagonal", "fill_match_channels"]);
         assert_eq!(
             PaintTool::Text.property_row_ids(),
             &["text_char_step", "text_enter_step"]
         );
+        assert_eq!(PaintTool::Picker.property_row_ids(), &["picker_opposite_hand"]);
     }
 
     #[test]
@@ -764,6 +891,80 @@ mod tests {
             assert!(PaintTool::from_id(descriptor.id) == Some(tool));
         }
         assert!(PaintTool::from_id("nonexistent").is_none());
+    }
+
+    #[test]
+    fn picker_samples_all_channels_of_the_picking_hand_when_edit_toggles_are_open() {
+        let mut tool_state = ToolState::default();
+        tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Picker);
+        let mut canvas = Canvas::new();
+        brush::apply_brush(
+            &mut canvas,
+            point(3, 3),
+            PaintedCell {
+                graphic: CellGraphic::Glyph('&'),
+                color: color(9, 8, 7),
+                weight_index: 1,
+            },
+        );
+
+        tool_state.pick_at_for_hand(&mut canvas, point(3, 3), PaintHand::Left);
+
+        let hand = tool_state.left_hand;
+        assert_eq!(hand.graphic, CellGraphic::Glyph('&'));
+        assert_eq!(hand.color, color(9, 8, 7));
+        assert_eq!(hand.weight_index, 1);
+    }
+
+    #[test]
+    fn picker_only_samples_the_channels_the_picking_hand_has_edit_toggled() {
+        let mut tool_state = ToolState::default();
+        tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Picker);
+        tool_state.toggle_edit_channel_for_hand(PaintHand::Left, PaintChannel::Graphic);
+        let mut canvas = Canvas::new();
+        brush::apply_brush(
+            &mut canvas,
+            point(3, 3),
+            PaintedCell {
+                graphic: CellGraphic::Glyph('&'),
+                color: color(9, 8, 7),
+                weight_index: 1,
+            },
+        );
+
+        tool_state.pick_at_for_hand(&mut canvas, point(3, 3), PaintHand::Left);
+
+        let hand = tool_state.left_hand;
+        assert_eq!(hand.graphic, CellGraphic::Glyph('#'));
+        assert_eq!(hand.color, color(9, 8, 7));
+        assert_eq!(hand.weight_index, 1);
+    }
+
+    #[test]
+    fn picker_with_opposite_hand_toggled_hands_the_gated_sample_to_the_other_hand() {
+        let mut tool_state = ToolState::default();
+        tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Picker);
+        tool_state.set_pick_opposite_hand_for_hand(PaintHand::Left, true);
+        tool_state.toggle_edit_channel_for_hand(PaintHand::Left, PaintChannel::Graphic);
+        let mut canvas = Canvas::new();
+        brush::apply_brush(
+            &mut canvas,
+            point(3, 3),
+            PaintedCell {
+                graphic: CellGraphic::Glyph('&'),
+                color: color(9, 8, 7),
+                weight_index: 1,
+            },
+        );
+
+        tool_state.pick_at_for_hand(&mut canvas, point(3, 3), PaintHand::Left);
+
+        let right = tool_state.right_hand;
+        assert_eq!(right.graphic, CellGraphic::Glyph('#'));
+        assert_eq!(right.color, color(9, 8, 7));
+        assert_eq!(right.weight_index, 1);
+        let left = tool_state.left_hand;
+        assert_eq!(left.color, PaintColor::default());
     }
 
     #[test]
@@ -921,7 +1122,7 @@ mod tests {
     }
 
     #[test]
-    fn masked_brush_on_an_empty_cell_preserves_the_blank_glyph() {
+    fn masked_brush_on_an_empty_cell_leaves_the_cell_empty() {
         let mut tool_state = ToolState::default();
         tool_state.left_hand.edit_channels.graphic = false;
         tool_state.left_hand.edit_channels.color = true;
@@ -940,25 +1141,9 @@ mod tests {
             flat_view(),
         );
 
-        assert_eq!(
-            canvas.get(&point(2, 2)),
-            Some(&PaintedCell {
-                graphic: CellGraphic::Glyph(' '),
-                color: color(9, 8, 7),
-                weight_index: 2,
-            })
-        );
-    }
-
-    #[test]
-    fn channel_locks_block_selector_updates() {
-        let mut tool_state = ToolState::default();
-        tool_state.left_hand.locks.color = true;
-        let original = tool_state.left_hand.color;
-
-        tool_state.set_color_for_hand(PaintHand::Left, color(9, 8, 7));
-
-        assert_eq!(tool_state.left_hand.color, original);
+        // Unified empty-cell rule: a masked resolution on an empty cell is
+        // an authored blank, and blanks carry nothing — nothing is stored.
+        assert_eq!(canvas.get(&point(2, 2)), None);
     }
 
     #[test]
@@ -1206,10 +1391,11 @@ mod tests {
     }
 
     #[test]
-    fn selection_target_fill_uses_the_select_channel_mask() {
+    fn selection_target_fill_uses_the_select_channel_mask_when_opted_in() {
         let mut tool_state = ToolState::default();
         tool_state.set_target_for_hand(PaintHand::Left, PaintTarget::Selection);
         tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Fill);
+        tool_state.set_fill_match_channels_for_hand(PaintHand::Left, true);
         tool_state.left_hand.select_channels = ChannelMask {
             graphic: true,
             color: false,
@@ -1256,6 +1442,62 @@ mod tests {
 
         assert!(selection.plane().contains(point(0, 0)));
         assert!(selection.plane().contains(point(1, 0)));
+        assert!(!selection.plane().contains(point(2, 0)));
+    }
+
+    #[test]
+    fn selection_target_fill_matches_all_channels_without_the_opt_in() {
+        let mut tool_state = ToolState::default();
+        tool_state.set_target_for_hand(PaintHand::Left, PaintTarget::Selection);
+        tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Fill);
+        // Select row narrowed to graphic-only, but channel matching is not
+        // opted in — the Select row must not gate flood matching here.
+        tool_state.left_hand.select_channels = ChannelMask {
+            graphic: true,
+            color: false,
+            weight: false,
+        };
+        let mut canvas = Canvas::new();
+        let mut selection = selection();
+        brush::apply_brush(
+            &mut canvas,
+            point(0, 0),
+            PaintedCell {
+                graphic: CellGraphic::Glyph('A'),
+                color: color(1, 1, 1),
+                weight_index: 0,
+            },
+        );
+        brush::apply_brush(
+            &mut canvas,
+            point(1, 0),
+            PaintedCell {
+                graphic: CellGraphic::Glyph('A'),
+                color: color(9, 9, 9),
+                weight_index: 3,
+            },
+        );
+        brush::apply_brush(
+            &mut canvas,
+            point(2, 0),
+            PaintedCell {
+                graphic: CellGraphic::Glyph('B'),
+                color: color(1, 1, 1),
+                weight_index: 0,
+            },
+        );
+
+        tool_state.apply_at_for_hand(
+            &mut canvas,
+            &mut selection,
+            point(0, 0),
+            PaintHand::Left,
+            bounds(),
+            flat_view(),
+        );
+
+        assert!(selection.plane().contains(point(0, 0)));
+        assert!(!selection.plane().contains(point(1, 0)));
         assert!(!selection.plane().contains(point(2, 0)));
     }
 
@@ -1349,7 +1591,7 @@ mod tests {
     }
 
     #[test]
-    fn lasso_fill_flows_through_the_channel_mask_and_blank_glyph_rule() {
+    fn lasso_fill_flows_through_the_channel_mask_and_empty_cell_rule() {
         let mut tool_state = ToolState::default();
         tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Lasso);
         tool_state.left_hand.edit_channels.graphic = false;
@@ -1384,14 +1626,9 @@ mod tests {
                 weight_index: 0,
             })
         );
-        assert_eq!(
-            canvas.get(&point(1, 1)),
-            Some(&PaintedCell {
-                graphic: CellGraphic::Glyph(' '),
-                color: color(9, 8, 7),
-                weight_index: 2,
-            })
-        );
+        // Empty cells under a gfx-locked fill stay truly empty: a space
+        // glyph carries no color or weight to recolor.
+        assert_eq!(canvas.get(&point(1, 1)), None);
     }
 
     #[test]
@@ -1431,5 +1668,154 @@ mod tests {
 
         tool_state.set_text_enter_step_axis(0, -9);
         assert_eq!(tool_state.text_options.enter_step, (-9, -3, 0));
+    }
+
+    use crate::clipboard::WorldCopyData;
+    use std::collections::BTreeMap;
+
+    fn copy_data(offsets: &[(i32, i32, char)]) -> WorldCopyData {
+        let mut cells = BTreeMap::new();
+        for &(x, y, glyph) in offsets {
+            cells.insert(
+                CellPoint { x, y, z: 0 },
+                PaintedCell {
+                    graphic: CellGraphic::Glyph(glyph),
+                    color: color(255, 255, 255),
+                    weight_index: 1,
+                },
+            );
+        }
+        WorldCopyData {
+            anchor: CellPoint { x: 0, y: 0, z: 0 },
+            center: CellPoint { x: 0, y: 0, z: 0 },
+            cells,
+        }
+    }
+
+    #[test]
+    fn stamp_changes_paste_the_copied_cells_own_appearance() {
+        let mut tool_state = ToolState::default();
+        tool_state.set_graphic_for_hand(PaintHand::Left, CellGraphic::Glyph('.'));
+        tool_state.set_color_for_hand(PaintHand::Left, color(200, 0, 0));
+        tool_state.set_weight_for_hand(PaintHand::Left, 3);
+        let canvas = Canvas::new();
+
+        let changes = tool_state.stamp_changes_for_hand(
+            &canvas,
+            &selection(),
+            &copy_data(&[(0, 0, 'a'), (1, 0, 'a')]),
+            point(5, 5),
+            PaintHand::Left,
+        );
+
+        // The copy supplies the structure AND the appearance: the hand's
+        // brush state never leaks into a stamp's pasted cells.
+        assert_eq!(changes.len(), 2);
+        for (point, upcoming) in &changes {
+            assert_eq!(upcoming.graphic, CellGraphic::Glyph('a'));
+            assert_eq!(upcoming.color, color(255, 255, 255));
+            assert_eq!(upcoming.weight_index, 1);
+            let _ = point;
+        }
+    }
+
+    #[test]
+    fn locked_stamp_channels_keep_the_target_cells() {
+        let mut tool_state = ToolState::default();
+        tool_state.set_graphic_for_hand(PaintHand::Left, CellGraphic::Glyph('.'));
+        tool_state.set_color_for_hand(PaintHand::Left, color(200, 0, 0));
+        tool_state.set_weight_for_hand(PaintHand::Left, 3);
+        // A color-locked hand restyles glyphs but keeps existing colors.
+        tool_state.hand_state_mut(PaintHand::Left).edit_channels.color = false;
+        let mut canvas = Canvas::new();
+        brush::apply_brush(
+            &mut canvas,
+            point(5, 5),
+            PaintedCell {
+                graphic: CellGraphic::Glyph('a'),
+                color: color(10, 10, 10),
+                weight_index: 2,
+            },
+        );
+
+        let changes = tool_state.stamp_changes_for_hand(
+            &canvas,
+            &selection(),
+            &copy_data(&[(0, 0, 'a')]),
+            point(5, 5),
+            PaintHand::Left,
+        );
+
+        let (_, upcoming) = &changes[0];
+        // Locked color keeps the target's existing color; the enabled
+        // graphic channel pastes the copied glyph ('a'), not the hand's.
+        assert_eq!(upcoming.graphic, CellGraphic::Glyph('a'));
+        assert_eq!(upcoming.color, color(10, 10, 10));
+    }
+
+    #[test]
+    fn gfx_locked_stamp_skips_empty_target_cells() {
+        let mut tool_state = ToolState::default();
+        tool_state.hand_state_mut(PaintHand::Left).edit_channels.graphic = false;
+        let canvas = Canvas::new();
+
+        let changes = tool_state.stamp_changes_for_hand(
+            &canvas,
+            &selection(),
+            &copy_data(&[(0, 0, 'a')]),
+            point(5, 5),
+            PaintHand::Left,
+        );
+
+        // Unified empty-cell rule: a space carries no color or weight, so a
+        // gfx-locked stamp has nothing to edit on an empty target — the
+        // point is skipped entirely instead of staging an authored blank.
+        assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn stamp_changes_stay_inside_the_plane_selection() {
+        let tool_state = ToolState::default();
+        let mut plane = selection();
+        plane.apply_plane_points_with_mode([point(5, 5)], SelectionMode::Replace);
+
+        let changes = tool_state.stamp_changes_for_hand(
+            &Canvas::new(),
+            &plane,
+            &copy_data(&[(0, 0, 'a'), (1, 0, 'b')]),
+            point(5, 5),
+            PaintHand::Left,
+        );
+
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].0, point(5, 5));
+    }
+
+    #[test]
+    fn stamp_preview_pairs_current_cells_with_the_upcoming_stamp() {
+        let tool_state = ToolState::default();
+        let mut canvas = Canvas::new();
+        brush::apply_brush(
+            &mut canvas,
+            point(5, 5),
+            PaintedCell {
+                graphic: CellGraphic::Glyph('a'),
+                color: color(10, 10, 10),
+                weight_index: 2,
+            },
+        );
+
+        let previews = tool_state.stamp_preview_cells(
+            &canvas,
+            &selection(),
+            &copy_data(&[(0, 0, 'a')]),
+            point(5, 5),
+            PaintHand::Left,
+        );
+
+        assert_eq!(previews.len(), 1);
+        assert_eq!(previews[0].point, point(5, 5));
+        assert_eq!(previews[0].current.as_ref().unwrap().graphic, CellGraphic::Glyph('a'));
+        assert_eq!(previews[0].upcoming.graphic, CellGraphic::Glyph('a'));
     }
 }

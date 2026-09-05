@@ -35,7 +35,8 @@ use anyhow::Error;
 use thaum_renderer_domain::{CameraViewOrientation, CellColor, CellGroup, CellPoint};
 
 use crate::{
-    brush::Canvas,
+    brush::{Canvas, PaintedCell},
+    clipboard::WorldCopyData,
     fill::CanvasBounds,
     lasso_stroke::{
         build_lasso_path_cell_group, build_lasso_preview_cell_groups, LassoStroke,
@@ -47,6 +48,7 @@ use crate::{
     },
     session_document::{
         commit_selection_channel, commit_staged_paint_stroke, stage_image_edit_chunk,
+        stage_painted_cells_chunk,
     },
     storage::{SharedDocumentPaths, SharedDocumentRuntime},
     text_entry::TextEntryState,
@@ -56,6 +58,17 @@ use crate::{
 /// The canvas block plus snapshot a stroke started against; release diffs
 /// from it to produce one committed patch set.
 pub type StrokeStart = (Canvas, String);
+
+/// Live stamp hover state: the hand equipping the stamp, the canvas cell it
+/// would stamp at, and that hand user's clipboard payload. The entrypoint
+/// refreshes it every frame from the cursor; the overlay consumes it for the
+/// two-phase paste preview while the press commits through the same payload.
+#[derive(Debug, Clone)]
+pub struct StampHover {
+    pub hand: PaintHand,
+    pub anchor: CellPoint,
+    pub data: WorldCopyData,
+}
 
 /// Everything the pointer lifecycle needs from the live session. The
 /// entrypoint assembles it per event; the seams here never touch screen
@@ -86,6 +99,7 @@ pub struct CanvasPointerStrokes {
     right_image_start: Option<StrokeStart>,
     left_drag_position: Option<CellPoint>,
     right_drag_position: Option<CellPoint>,
+    stamp_hover: Option<StampHover>,
 }
 
 impl CanvasPointerStrokes {
@@ -97,7 +111,14 @@ impl CanvasPointerStrokes {
             right_image_start: None,
             left_drag_position: None,
             right_drag_position: None,
+            stamp_hover: None,
         }
+    }
+
+    /// Replaces the live stamp hover (the entrypoint refreshes it every
+    /// frame; `None` clears the paste preview). Never affects commits.
+    pub fn set_stamp_hover(&mut self, hover: Option<StampHover>) {
+        self.stamp_hover = hover;
     }
 
     /// The in-progress lasso bound, for overlay previews.
@@ -183,6 +204,55 @@ impl CanvasPointerStrokes {
         // The press seeds the drag trail so the first drag interpolates a
         // single-cell step from the press cell.
         self.set_drag_position(hand, position);
+        // Click-only tools act once on press and never paint or select
+        // through strokes; no drag behavior follows. The tool id is hoisted
+        // out of the match scrutinee so the short-lived tool_state borrow is
+        // gone before the arms borrow_mut (a scrutinee temporary would live
+        // through every arm and panic the pick).
+        let pressed_tool_id = ctx.tool_state.borrow().tool_for_hand(hand).id();
+        if drag_behavior(pressed_tool_id) == DragBehavior::ClickOnly {
+            match pressed_tool_id {
+                // The picker samples the cell under the cursor into hand state.
+                "picker" => {
+                    ctx.tool_state
+                        .borrow_mut()
+                        .pick_at_for_hand(ctx.canvas, position, hand);
+                }
+                // The stamp places the hover preview's payload at the press
+                // cell: changes stage once so release commits one undo step.
+                "stamp" => {
+                    let data = self
+                        .stamp_hover
+                        .as_ref()
+                        .filter(|hover| hover.hand == hand)
+                        .map(|hover| hover.data.clone());
+                    if let Some(data) = data {
+                        let block_id = ctx
+                            .document
+                            .active_raster_block_id(ctx.active_layer_id, current_breath)?;
+                        let changes: Vec<(CellPoint, Option<PaintedCell>)> = {
+                            let tool_state = ctx.tool_state.borrow();
+                            let selection = ctx.selection.borrow();
+                            tool_state
+                                .stamp_changes_for_hand(ctx.canvas, &selection, &data, position, hand)
+                        }
+                        .into_iter()
+                        .map(|(point, cell)| (point, Some(cell)))
+                        .collect();
+                        self.set_image_start(hand, (ctx.canvas.clone(), block_id.clone()));
+                        stage_painted_cells_chunk(
+                            ctx.document,
+                            ctx.canvas,
+                            changes,
+                            ctx.active_layer_id,
+                            &block_id,
+                        );
+                    }
+                }
+                _ => {}
+            }
+            return None;
+        }
         let target = ctx.tool_state.borrow().hand_state(hand).target;
         match target {
             PaintTarget::Selection => {
@@ -270,7 +340,7 @@ impl CanvasPointerStrokes {
     /// Continues the in-progress stroke for `hand` with a canvas drag.
     /// Strokes ignore drags from the other hand; with no stroke in progress,
     /// image-target drags stage chunks and selection-target drags apply per
-    /// position.
+    /// position. Click-only tools (picker, stamp) never follow drags.
     pub fn continue_drag(
         &mut self,
         ctx: &mut CanvasPointerContext<'_>,
@@ -279,6 +349,10 @@ impl CanvasPointerStrokes {
         bounds: CanvasBounds,
         orientation: CameraViewOrientation,
     ) {
+        if drag_behavior(ctx.tool_state.borrow().tool_for_hand(hand).id()) == DragBehavior::ClickOnly
+        {
+            return;
+        }
         let stroke_positions = self
             .drag_position(hand)
             .map(|last| interpolate_cell_path(last, position))
@@ -469,6 +543,23 @@ impl CanvasPointerStrokes {
                     &stroke.path,
                     stroke.hand,
                     orientation,
+                )
+            };
+            groups.extend(build_lasso_preview_cell_groups(&previews, vivid));
+        }
+        if let Some(hover) = &self.stamp_hover {
+            // Two-phase paste preview: the cells as currently drawn flash
+            // against the cells the press will place, through the same
+            // resolution the press stages.
+            let previews = {
+                let tool_state = ctx.tool_state.borrow();
+                let selection = ctx.selection.borrow();
+                tool_state.stamp_preview_cells(
+                    ctx.canvas,
+                    &selection,
+                    &hover.data,
+                    hover.anchor,
+                    hover.hand,
                 )
             };
             groups.extend(build_lasso_preview_cell_groups(&previews, vivid));
@@ -717,5 +808,127 @@ mod tests {
         let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
         assert!(errors.is_empty());
         assert_eq!(session.action_counter, 0);
+    }
+
+    use crate::clipboard::WorldCopyData;
+    use std::collections::BTreeMap;
+
+    fn hover_for(hand: PaintHand, anchor: CellPoint) -> StampHover {
+        let mut cells = BTreeMap::new();
+        cells.insert(
+            CellPoint { x: 0, y: 0, z: 0 },
+            PaintedCell {
+                graphic: CellGraphic::Glyph('a'),
+                color: PaintColor::FlatRgb(255, 255, 255),
+                weight_index: 1,
+            },
+        );
+        cells.insert(
+            CellPoint { x: 1, y: 0, z: 0 },
+            PaintedCell {
+                graphic: CellGraphic::Glyph('b'),
+                color: PaintColor::FlatRgb(255, 255, 255),
+                weight_index: 1,
+            },
+        );
+        StampHover {
+            hand,
+            anchor,
+            data: WorldCopyData {
+                anchor: CellPoint { x: 0, y: 0, z: 0 },
+                center: CellPoint { x: 0, y: 0, z: 0 },
+                cells,
+            },
+        }
+    }
+
+    #[test]
+    fn stamp_press_places_the_copied_cells_as_one_commit_and_ignores_drags() {
+        let mut session = Session::new();
+        {
+            let tool_state = session.tool_state.get_mut();
+            tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Stamp);
+            tool_state.set_graphic_for_hand(PaintHand::Left, CellGraphic::Glyph('.'));
+        }
+
+        let mut strokes = CanvasPointerStrokes::new();
+        strokes.set_stamp_hover(Some(hover_for(PaintHand::Left, point(5, 5))));
+        let bounds = canvas_bounds();
+        strokes.begin_press(&mut session.ctx(), PaintHand::Left, point(5, 5), bounds, flat_view(), 0);
+        // The stamp lands with the copied cells' own appearance, staged
+        // not committed yet.
+        let painted = session.canvas.get(&point(5, 5)).unwrap();
+        assert_eq!(painted.graphic, CellGraphic::Glyph('a'));
+        assert!(session.canvas.get(&point(6, 5)).is_some());
+        assert_eq!(session.action_counter, 0);
+
+        // Drags never stamp: a click-only tool places exactly once.
+        strokes.continue_drag(&mut session.ctx(), PaintHand::Left, point(8, 8), bounds, flat_view());
+        assert!(session.canvas.get(&point(8, 8)).is_none());
+        assert!(session.canvas.get(&point(9, 8)).is_none());
+
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
+        assert!(errors.is_empty());
+        assert_eq!(session.action_counter, 1);
+    }
+
+    #[test]
+    fn stamp_press_without_a_hover_payload_is_a_no_op() {
+        let mut session = Session::new();
+        session
+            .tool_state
+            .get_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Stamp);
+
+        let mut strokes = CanvasPointerStrokes::new();
+        let bounds = canvas_bounds();
+        strokes.begin_press(&mut session.ctx(), PaintHand::Left, point(5, 5), bounds, flat_view(), 0);
+        assert!(session.canvas.get(&point(5, 5)).is_none());
+
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
+        assert!(errors.is_empty());
+        assert_eq!(session.action_counter, 0);
+    }
+
+    #[test]
+    fn stamp_hover_for_one_hand_does_not_stamp_from_the_other() {
+        let mut session = Session::new();
+        {
+            let tool_state = session.tool_state.get_mut();
+            tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Stamp);
+            tool_state.set_tool_for_hand(PaintHand::Right, PaintTool::Stamp);
+        }
+
+        let mut strokes = CanvasPointerStrokes::new();
+        strokes.set_stamp_hover(Some(hover_for(PaintHand::Left, point(5, 5))));
+        let bounds = canvas_bounds();
+        strokes.begin_press(&mut session.ctx(), PaintHand::Right, point(5, 5), bounds, flat_view(), 0);
+        assert!(session.canvas.get(&point(5, 5)).is_none());
+    }
+
+    #[test]
+    fn stamp_hover_builds_a_two_phase_flash_preview() {
+        let mut session = Session::new();
+        {
+            let tool_state = session.tool_state.get_mut();
+            tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Stamp);
+            tool_state.set_graphic_for_hand(PaintHand::Left, CellGraphic::Glyph('.'));
+        }
+        apply_brush(
+            &mut session.canvas,
+            point(5, 5),
+            PaintedCell {
+                graphic: CellGraphic::Glyph('a'),
+                color: PaintColor::FlatRgb(255, 255, 255),
+                weight_index: 1,
+            },
+        );
+
+        let mut strokes = CanvasPointerStrokes::new();
+        strokes.set_stamp_hover(Some(hover_for(PaintHand::Left, point(5, 5))));
+        let groups = strokes.overlay_cell_groups(&mut session.ctx(), flat_view(), CellColor::Flat([0.5, 1.0, 0.75, 1.0]));
+        // Two flash phases over the two copied cells.
+        let overlay_cells: Vec<_> = groups.iter().flat_map(|group| group.iter_cells()).collect();
+        assert_eq!(overlay_cells.len(), 4);
     }
 }

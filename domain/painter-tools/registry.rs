@@ -46,7 +46,7 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
         id: "fill",
         label: "Fill",
         icon: '▧',
-        property_row_ids: &["fill_diagonal"],
+        property_row_ids: &["fill_diagonal", "fill_match_channels"],
         select_action: Some("painter_select_bucket"),
         hotkey: Some("B"),
     },
@@ -59,10 +59,26 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
         hotkey: Some("L"),
     },
     ToolDescriptor {
+        id: "stamp",
+        label: "Stamp",
+        icon: '❖',
+        property_row_ids: &[],
+        select_action: Some("painter_select_stamp"),
+        hotkey: Some("V"),
+    },
+    ToolDescriptor {
         id: "text",
         label: "Text",
         icon: 'T',
         property_row_ids: &["text_char_step", "text_enter_step"],
+        select_action: None,
+        hotkey: None,
+    },
+    ToolDescriptor {
+        id: "picker",
+        label: "Picker",
+        icon: '◉',
+        property_row_ids: &["picker_opposite_hand"],
         select_action: None,
         hotkey: None,
     },
@@ -120,12 +136,16 @@ mod tests {
         assert_eq!(FillTool::descriptor().id, "fill");
         assert_eq!(LassoTool::descriptor().id, "lasso");
         assert_eq!(TextTool::descriptor().id, "text");
-        assert_eq!(all().len(), 5);
+        assert_eq!(PickerTool::descriptor().id, "picker");
+        assert_eq!(StampTool::descriptor().id, "stamp");
+        assert_eq!(all().len(), 7);
     }
 
     use crate::painter_tools::brush::BrushTool;
     use crate::painter_tools::erase::EraseTool;
     use crate::painter_tools::fill::FillTool;
     use crate::painter_tools::lasso::LassoTool;
+    use crate::painter_tools::picker::PickerTool;
+    use crate::painter_tools::stamp::StampTool;
     use crate::painter_tools::text::TextTool;
 }

@@ -34,6 +34,7 @@ Own flood-fill and region replacement semantics for painter authoring.
 - none
 
 ## tests
+- source-of-truth from J (unified empty-cell rule): flood matching treats authored blanks (space-glyph cells) as `None` on both sides, so a stored blank never splits a flood region from truly empty space.
 - future fill tests
 
 ## data

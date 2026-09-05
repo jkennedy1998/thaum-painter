@@ -5,7 +5,7 @@ Own cross-tool behavior rules and computations written once and consumed through
 
 ## owns
 - per-tool selection-surface behavior: which selection mode a tool forces when its hand edits the selection surface (`ToolSelectionBehavior` + `selection_behavior`)
-- per-tool drag behavior: how a tool behaves across a pointer drag (`DragBehavior` PerPosition / ReleaseBound / TypingSession + `drag_behavior`), consumed by tool-state's per-position seams and the canvas-pointer press dispatch
+- per-tool drag behavior: how a tool behaves across a pointer drag (`DragBehavior` PerPosition / ReleaseBound / TypingSession / ClickOnly + `drag_behavior`), consumed by tool-state's per-position seams and the canvas-pointer press dispatch
 - future residents: geometry, line/shape computations, and other repeated cross-tool logic as tools accumulate
 
 ## does not own
@@ -22,7 +22,7 @@ Own cross-tool behavior rules and computations written once and consumed through
 - `selection_rules.rs`
   - `ToolSelectionBehavior` (UseCurrentMode / ForceSubtract) with a generic `resolve`, plus `selection_behavior(tool_id)` lookup and tests
 - `stroke_rules.rs`
-  - `DragBehavior` (PerPosition / ReleaseBound / TypingSession) plus `drag_behavior(tool_id)` lookup and tests; re-exported through `selection_rules.rs` as `painter_tools::shared::{drag_behavior, DragBehavior}`
+  - `DragBehavior` (PerPosition / ReleaseBound / TypingSession / ClickOnly) plus `drag_behavior(tool_id)` lookup and tests; re-exported through `selection_rules.rs` as `painter_tools::shared::{drag_behavior, DragBehavior}`
 
 ## dependencies
 - the parent registry seam (`domain/painter-tools/`)
@@ -36,7 +36,7 @@ via: `selection_behavior`, `ToolSelectionBehavior::resolve(current, forced)`
 
 ## interface consumers
 - `painter-session/tool-state/` (selection application, per-position edit/select gating)
-- `painter-session/canvas-pointer/` (selection stroke start, press dispatch by drag behavior)
+- `painter-session/canvas-pointer/` (selection stroke start, press dispatch by drag behavior; ClickOnly press routes to the picker's sample seam)
 - `orchestration/entrypoint/` (selection stroke start for either hand)
 
 ## artifacts

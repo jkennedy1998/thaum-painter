@@ -38,5 +38,8 @@ Own direct brush-style cell application and erase semantics.
 - `brush.rs` inline `#[cfg(test)]` module
   - footprint size/shape in the default view, depth axis fixed at every swing (PosX: x never moves, z/y spread)
 
+## notes
+- source-of-truth from J (unified empty-cell rule): an authored blank — a space-glyph cell — is EMPTY and carries no color or weight. `is_blank_cell` is the predicate, `effective_cell` the read seam (blank reads as `None`), and `write_cell` the write seam (blank resolutions remove instead of insert). Masked brush/fill/lasso resolutions that come out blank write nothing, so the canvas never stores invisible colored spaces. Flood fill/select match blanks against `None` so blanks never split a flood region from empty space.
+
 ## data
 - none

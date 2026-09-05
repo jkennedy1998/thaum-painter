@@ -100,6 +100,33 @@ pub fn stage_image_edit_chunk(
     *canvas = candidate;
 }
 
+/// Stages resolved painted-cell changes onto the live canvases WITHOUT
+/// creating an action record — live preview, exactly like a tool painting
+/// into the grid. Pending changes commit as one record through
+/// [`commit_staged_paint_stroke`] on release (one undo per stroke).
+pub fn stage_painted_cells_chunk(
+    runtime: &mut SharedDocumentRuntime,
+    canvas: &mut Canvas,
+    changes: impl IntoIterator<Item = (CellPoint, Option<PaintedCell>)>,
+    layer_id: &str,
+    block_id: &str,
+) {
+    let before = canvas.clone();
+    let mut candidate = before.clone();
+    for (point, change) in changes {
+        match change {
+            Some(cell) => candidate.insert(point, cell),
+            None => candidate.remove(&point),
+        };
+    }
+    let patches = collect_canvas_patches(&before, &candidate);
+    if patches.is_empty() {
+        return;
+    }
+    runtime.stage_canvas_patches(layer_id, block_id, &patches);
+    *canvas = candidate;
+}
+
 /// Stages one text-entry cell change (char insert or erase) onto the live
 /// canvases WITHOUT creating an action record — per-keystroke live preview,
 /// exactly like the old tool painting into the grid as the user types. Pending
@@ -112,22 +139,7 @@ pub fn stage_text_entry_change(
     layer_id: &str,
     block_id: &str,
 ) {
-    let before = canvas.clone();
-    let mut candidate = before.clone();
-    match change.1 {
-        Some(cell) => {
-            candidate.insert(change.0, cell);
-        }
-        None => {
-            candidate.remove(&change.0);
-        }
-    }
-    let patches = collect_canvas_patches(&before, &candidate);
-    if patches.is_empty() {
-        return;
-    }
-    runtime.stage_canvas_patches(layer_id, block_id, &patches);
-    *canvas = candidate;
+    stage_painted_cells_chunk(runtime, canvas, [change], layer_id, block_id);
 }
 
 /// Commits one finished stroke as a single `CellPatchSet` record — one undo per

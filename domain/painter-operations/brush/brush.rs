@@ -57,6 +57,32 @@ pub fn erase(canvas: &mut Canvas, position: CellPoint) {
     canvas.remove(&position);
 }
 
+/// True when a painted cell is an authored blank: a space glyph renders
+/// nothing, so under the unified empty-cell rule it carries no color or
+/// weight and counts as an empty canvas cell.
+pub fn is_blank_cell(cell: &PaintedCell) -> bool {
+    matches!(cell.graphic, CellGraphic::Glyph(' '))
+}
+
+/// The unified empty-cell read seam: a canvas cell is empty when it is
+/// absent OR an authored blank (space glyph). Stored blanks are legacy
+/// artifacts; reads must treat them like `None`.
+pub fn effective_cell(existing: Option<&PaintedCell>) -> Option<&PaintedCell> {
+    existing.filter(|cell| !is_blank_cell(cell))
+}
+
+/// The unified empty-cell write seam: non-blank cells insert, blank cells
+/// remove. Masked tools that resolve to an authored blank (a space glyph
+/// carries no color or weight) leave the cell truly empty instead of
+/// storing an invisible colored space.
+pub fn write_cell(canvas: &mut Canvas, position: CellPoint, cell: PaintedCell) {
+    if is_blank_cell(&cell) {
+        canvas.remove(&position);
+    } else {
+        canvas.insert(position, cell);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -19,6 +19,9 @@
 - mouse-heavy selection systems
 - clipboard/paste chrome
 - deep multiplayer/editor shells
+- old-save migration (`domain/file/migration/`) — source-of-truth from J: not wanted, removed from the plan (2026-09-04)
+- import/export and the gradiator gradient system — source-of-truth from J: import/export is not part of the first real build; gradiator is low impact (2026-09-04)
+- autosave — source-of-truth from J: waits until saving stops crashing the program (2026-09-04)
 
 ## notes
 - use `context/module-concept-audit.md` for the full module/group history: an intermediate `document.modules[*].groups[]` wrapper shape was tried and reversed back to a flat `document.groups[]`, one saved group mapping directly to exactly one `thaum-renderer` `CellGroup`. "module" now means only the `domain/modules/` UI-panel format, never a data/authoring concept.

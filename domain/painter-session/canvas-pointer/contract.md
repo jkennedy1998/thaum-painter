@@ -7,6 +7,7 @@ session-owned, per-hand pointer stroke lifecycle on the paint canvas: press disp
 - the in-progress pointer stroke state across both hands: the lasso bound, the selection stroke, each hand's staged image-stroke start, and each hand's last drag position
 - per-tool dispatch across the three pointer phases (press begins, drag continues, release commits) for both selection-target and image-target hands
 - the text tool's press-to-typing-session handoff (`TypingSessionBegin`); typing-session keyboard ownership stays with the entrypoint
+- the stamp tool's click-only dispatch: a press stages the hover payload's resolved changes (one stamp per click, one undo step on release, drags never stamp), and the live `StampHover` drives the two-phase paste preview in `overlay_cell_groups`
 - the release commit invariants: a selection stroke mirrors into the document channel as an exact replacement, a closed lasso fills or selects its enclosed region, and each hand's staged stroke commits once per release (one undo per stroke)
 - cancel semantics for chrome hits: in-progress strokes clear regardless of owning hand; the cancelling hand's drag position clears; staged starts survive
 
@@ -22,13 +23,14 @@ session-owned, per-hand pointer stroke lifecycle on the paint canvas: press disp
 
 ## contents
 - `canvas_pointer.rs`
-  - `CanvasPointerStrokes` (state + `begin_press` / `continue_drag` / `finish_selection_stroke` / `finish_pointer_stroke` / `cancel` / accessors), `CanvasPointerContext`, `TypingSessionBegin`, `StrokeStart`
+  - `CanvasPointerStrokes` (state + `begin_press` / `continue_drag` / `finish_selection_stroke` / `finish_pointer_stroke` / `cancel` / `set_stamp_hover` / accessors), `CanvasPointerContext`, `TypingSessionBegin`, `StrokeStart`, `StampHover`
 
 ## dependencies
 - painter-session/tool-state: ToolState, PaintHand, PaintTarget, PaintTool, LassoStroke
 - painter-session/selection: PainterSelection, SelectionMode
 - painter-session/selection: SelectionStroke, interpolate_cell_path (selection_stroke)
-- painter-session/session_document: stage_image_edit_chunk, commit_staged_paint_stroke, commit_selection_channel
+- painter-session/session_document: stage_image_edit_chunk, stage_painted_cells_chunk, commit_staged_paint_stroke, commit_selection_channel
+- painter-session/clipboard: WorldCopyData (stamp hover payload)
 - painter-session/text-entry: TextEntryState
 - file/storage: SharedDocumentRuntime, SharedDocumentPaths
 - painter-tools/shared: selection_behavior

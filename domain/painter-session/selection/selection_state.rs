@@ -3,7 +3,7 @@ use std::collections::{BTreeSet, VecDeque};
 use thaum_renderer_domain::CellPoint;
 
 use crate::{
-    brush::{Canvas, PaintedCell},
+    brush::{effective_cell, Canvas, PaintedCell},
     fill::CanvasBounds,
     tool_state::ChannelMask,
 };
@@ -247,6 +247,12 @@ impl PainterSelection {
         &self.world
     }
 
+    /// Mutable world-selection access for seams that populate the world
+    /// selection directly (clipboard copy, future world-selection tools).
+    pub fn world_mut(&mut self) -> &mut WorldSelection {
+        &mut self.world
+    }
+
     pub fn mode(&self) -> SelectionMode {
         self.mode
     }
@@ -376,7 +382,9 @@ pub fn flood_select_points(
         return Vec::new();
     }
 
-    let target = canvas.get(&start).cloned();
+    // Unified empty-cell rule: authored blanks count as `None` on both
+    // sides, so a blank cell never blocks a flood through empty space.
+    let target = effective_cell(canvas.get(&start)).cloned();
     let mut queue = VecDeque::from([start]);
     let mut seen = BTreeSet::new();
     let mut points = Vec::new();
@@ -385,7 +393,11 @@ pub fn flood_select_points(
         if !seen.insert(point) || !bounds.contains(point) {
             continue;
         }
-        if !cells_match_on_mask(canvas.get(&point).cloned(), target.clone(), channels) {
+        if !cells_match_on_mask(
+            effective_cell(canvas.get(&point)).cloned(),
+            target.clone(),
+            channels,
+        ) {
             continue;
         }
 
@@ -648,5 +660,34 @@ mod tests {
 
         assert_eq!(glyph_only, vec![point(1, 0), point(2, 0)]);
         assert_eq!(glyph_and_color, vec![point(1, 0)]);
+    }
+
+    #[test]
+    fn flood_select_treats_authored_blanks_as_empty() {
+        let mut canvas = Canvas::new();
+        // A stored blank (space glyph + color) must flood together with
+        // truly empty cells.
+        apply_brush(
+            &mut canvas,
+            point(1, 0),
+            PaintedCell {
+                graphic: thaum_renderer_domain::CellGraphic::Glyph(' '),
+                color: crate::paint_color::PaintColor::flat_rgb(1, 2, 3),
+                weight_index: 2,
+            },
+        );
+
+        let points = flood_select_points(
+            &canvas,
+            point(0, 0),
+            bounds(),
+            ChannelMask {
+                graphic: true,
+                color: true,
+                weight: true,
+            },
+        );
+
+        assert!(points.contains(&point(1, 0)));
     }
 }

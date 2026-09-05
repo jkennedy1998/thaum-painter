@@ -39,6 +39,10 @@ pub fn painter_bindings() -> ActionBindingMap {
         ActionName::new("painter_select_lasso"),
         RawInput::Key("L".to_string()),
     );
+    map.bind(
+        ActionName::new("painter_select_stamp"),
+        RawInput::Key("V".to_string()),
+    );
     // Drawing-space pan (context decides 3D focus pan vs HUD pan).
     map.bind(ActionName::new("painter_pan_left"), RawInput::Key("A".to_string()));
     map.bind(ActionName::new("painter_pan_right"), RawInput::Key("D".to_string()));
@@ -127,6 +131,13 @@ pub fn painter_bindings() -> ActionBindingMap {
     // Shared-document history.
     map.bind(ActionName::new("painter_undo"), RawInput::Key("Z".to_string()));
     map.bind(ActionName::new("painter_redo"), RawInput::Key("Y".to_string()));
+    // Clipboard: copy the selection as a 3D world copy. Pasting is the
+    // stamp tool (V above); a THAUM3D OS-clipboard payload imports into the
+    // own buffer when stamp is equipped.
+    map.bind(
+        ActionName::new("painter_clipboard_copy"),
+        RawInput::Key("C".to_string()),
+    );
     map
 }
 

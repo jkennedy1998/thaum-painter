@@ -52,6 +52,10 @@ pub mod properties;
 pub mod render_space;
 #[path = "painter-session/selection/selection_state.rs"]
 pub mod selection_state;
+#[path = "painter-session/clipboard/copy_paste.rs"]
+pub mod clipboard;
+#[path = "painter-session/sync/document_sync.rs"]
+pub mod document_sync;
 #[path = "painter-session/selection/selection_actions.rs"]
 pub mod selection_actions;
 #[path = "file/storage/storage.rs"]
@@ -115,7 +119,7 @@ pub use storage::{
 };
 pub use timeline_state::TimelineState;
 pub use tool_state::{
-    ChannelLocks, EditChannels, HandState, PaintChannel, PaintHand, PaintTarget, PaintTool,
+    EditChannels, HandState, PaintChannel, PaintHand, PaintTarget, PaintTool,
     ToolState,
 };
 pub use toolbar_module::{ToolbarButton, ToolbarModule};

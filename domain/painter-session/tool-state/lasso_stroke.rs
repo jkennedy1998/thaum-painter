@@ -7,7 +7,7 @@ use thaum_renderer_domain::{
     CELL_SHADER_VIVID_FLASH, CELL_SHADER_VIVID_FLASH_ALT,
 };
 
-use crate::brush::PaintedCell;
+use crate::brush::{is_blank_cell, PaintedCell};
 use crate::tool_state::PaintHand;
 
 /// One in-progress lasso bound: the acting hand plus the freehand path
@@ -71,17 +71,21 @@ pub fn build_lasso_preview_cell_groups(
     let mut current_group = CellGroup::new(WorldPoint { x: 0, y: 0, z: 0 });
     let mut upcoming_group = CellGroup::new(WorldPoint { x: 0, y: 0, z: 0 });
     for preview in previews {
+        // Unified empty-cell rule: an authored blank counts as empty. In the
+        // as-it-is phase an empty cell shows J's void marker — a vivid '●' at
+        // weight 0 — instead of an invisible space, so lasso/stamp coverage
+        // over voids stays readable while the flash shows the canvas as-is.
+        let current = preview
+            .current
+            .as_ref()
+            .filter(|cell| !is_blank_cell(cell));
         current_group.insert(Cell {
             position: preview.point,
-            graphic: preview
-                .current
-                .as_ref()
+            graphic: current
                 .map(|cell| cell.graphic.clone())
-                .unwrap_or(CellGraphic::None),
+                .unwrap_or(CellGraphic::Glyph('●')),
             color: vivid,
-            weight: CellWeight::from_index_clamped(
-                preview.current.as_ref().map_or(3, |c| c.weight_index as i32),
-            ),
+            weight: CellWeight::from_index_clamped(current.map_or(0, |c| c.weight_index as i32)),
             shader_stack: vec![CELL_SHADER_VIVID_FLASH_ALT],
             ..Cell::default()
         });
@@ -160,7 +164,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_canvas_cell_flashes_blank_against_the_upcoming_paint() {
+    fn an_empty_canvas_cell_flashes_a_vivid_void_marker_against_the_upcoming_paint() {
         let previews = vec![LassoPreviewCell {
             point: point(0, 0),
             current: None,
@@ -168,9 +172,29 @@ mod tests {
         }];
         let groups = build_lasso_preview_cell_groups(&previews, vivid());
         let current: Vec<&Cell> = groups[0].iter_cells().collect();
-        assert_eq!(current[0].graphic, CellGraphic::None);
+        // Void marker: vivid '●' at weight 0 in the as-it-is phase.
+        assert_eq!(current[0].graphic, CellGraphic::Glyph('●'));
+        assert_eq!(current[0].color, vivid());
+        assert_eq!(current[0].weight, CellWeight::from_index_clamped(0));
         let upcoming: Vec<&Cell> = groups[1].iter_cells().collect();
         assert_eq!(upcoming[0].graphic, CellGraphic::Glyph('A'));
+    }
+
+    #[test]
+    fn a_stored_blank_flashes_as_a_void_marker_in_the_as_is_phase() {
+        let previews = vec![LassoPreviewCell {
+            point: point(0, 0),
+            current: Some(PaintedCell {
+                graphic: CellGraphic::Glyph(' '),
+                color: PaintColor::flat_rgb(1, 2, 3),
+                weight_index: 2,
+            }),
+            upcoming: painted('A', (1, 2, 3)),
+        }];
+        let groups = build_lasso_preview_cell_groups(&previews, vivid());
+        let current: Vec<&Cell> = groups[0].iter_cells().collect();
+        assert_eq!(current[0].graphic, CellGraphic::Glyph('●'));
+        assert_eq!(current[0].weight, CellWeight::from_index_clamped(0));
     }
 
     #[test]

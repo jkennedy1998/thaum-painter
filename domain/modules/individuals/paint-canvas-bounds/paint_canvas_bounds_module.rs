@@ -2,18 +2,9 @@ use std::{cell::RefCell, rc::Rc};
 
 use thaum_renderer_domain::{
     Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, CellWeight, GizmoBar,
-    GizmoKind, GizmoState, Module, ModulePointerEvent, ModuleRect, PanelChrome,
+    GizmoClickOutcome, GizmoKind, GizmoState, Module, ModulePointerEvent, ModuleRect, PanelChrome,
     PersistedModuleUiState, UiColorRole, UiPalette, WorldPoint,
 };
-
-/// Deliberately bespoke: this panel has no Close gizmo.
-fn bounds_gizmo_bar() -> GizmoBar {
-    GizmoBar::new(vec![
-        GizmoKind::Move,
-        GizmoKind::Resize,
-        GizmoKind::Seamless,
-    ])
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DrawingSpaceWheelMode {
@@ -65,7 +56,7 @@ impl PaintCanvasBoundsModule {
             viewport,
             wheel_mode,
             palette,
-            gizmos: bounds_gizmo_bar(),
+            gizmos: GizmoBar::standard(),
             gizmo_state: GizmoState::new(),
             wheel_mode_hovered: false,
             hidden: false,
@@ -77,7 +68,7 @@ impl PaintCanvasBoundsModule {
     }
 
     pub fn is_gizmo_hit(viewport: ModuleRect, x: i32, y: i32) -> bool {
-        bounds_gizmo_bar().hit_test(viewport, x, y).is_some()
+        GizmoBar::standard().hit_test(viewport, x, y).is_some()
             || Self::is_wheel_mode_hit(viewport, x, y)
     }
 
@@ -93,7 +84,7 @@ impl PaintCanvasBoundsModule {
         let local_x = x - viewport.x0;
         let local_y = y - viewport.y0;
         let height = viewport.y1 - viewport.y0;
-        local_y == height - 1 && local_x == bounds_gizmo_bar().title_start_x()
+        local_y == height - 1 && local_x == GizmoBar::standard().title_start_x()
     }
 
     fn set_viewport(&mut self, rect: ModuleRect) {
@@ -170,7 +161,12 @@ impl Module for PaintCanvasBoundsModule {
                     self.cycle_wheel_mode();
                     return;
                 }
-                self.gizmo_state.handle_click(&self.gizmos, rect, x, y);
+                if let Some(outcome) = self.gizmo_state.handle_click(&self.gizmos, rect, x, y) {
+                    if outcome == GizmoClickOutcome::Gizmo(GizmoKind::Close) {
+                        self.hidden = true;
+                    }
+                    return;
+                }
             }
             ModulePointerEvent::Move { x, y } => {
                 let rect = self.rect();
@@ -277,7 +273,7 @@ mod tests {
         );
 
         module.on_pointer_event(ModulePointerEvent::Click {
-            x: 4,
+            x: 6,
             y: 11,
             button: ModulePointerButton::Left,
         });
@@ -289,6 +285,29 @@ mod tests {
         module.on_pointer_event(ModulePointerEvent::Move { x: 6, y: 7 });
 
         assert_eq!(viewport.borrow().x1, 7);
+    }
+
+    #[test]
+    fn clicking_the_close_gizmo_hides_the_module_and_set_hidden_reopens_it() {
+        let viewport = Rc::new(RefCell::new(viewport()));
+        let wheel_mode = Rc::new(RefCell::new(DrawingSpaceWheelMode::Pan));
+        let mut module = PaintCanvasBoundsModule::new(
+            "canvas_bounds",
+            viewport,
+            wheel_mode,
+            UiPalette::default(),
+        );
+        // local_x == 3 is the standard bar's Close glyph.
+        module.on_pointer_event(ModulePointerEvent::Click {
+            x: 4,
+            y: 11,
+            button: ModulePointerButton::Left,
+        });
+
+        assert!(module.is_hidden());
+
+        module.set_hidden(false);
+        assert!(!module.is_hidden());
     }
 
     #[test]
@@ -321,7 +340,12 @@ mod tests {
         );
         let drawn = module.draw();
 
+        // The wheel-mode toggle sits right after the standard four gizmos,
+        // and the title starts after it.
         assert!(drawn.iter_cells().any(|cell| cell.position.x == 9
+            && cell.position.y == 9
+            && cell.graphic == CellGraphic::Glyph('P')));
+        assert!(drawn.iter_cells().any(|cell| cell.position.x == 11
             && cell.position.y == 9
             && cell.graphic == CellGraphic::Glyph('D')));
     }
@@ -338,21 +362,21 @@ mod tests {
         );
 
         module.on_pointer_event(ModulePointerEvent::Click {
-            x: 8,
+            x: 10,
             y: 11,
             button: ModulePointerButton::Left,
         });
         assert_eq!(*wheel_mode.borrow(), DrawingSpaceWheelMode::Depth);
 
         module.on_pointer_event(ModulePointerEvent::Click {
-            x: 8,
+            x: 10,
             y: 11,
             button: ModulePointerButton::Left,
         });
         assert_eq!(*wheel_mode.borrow(), DrawingSpaceWheelMode::Time);
 
         module.on_pointer_event(ModulePointerEvent::Click {
-            x: 8,
+            x: 10,
             y: 11,
             button: ModulePointerButton::Left,
         });

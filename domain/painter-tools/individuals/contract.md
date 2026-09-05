@@ -4,7 +4,7 @@
 Host one folder per registered painter tool, each owning that tool's registration truth via the `RegisteredTool` seam.
 
 ## owns
-- one folder per tool: `brush/`, `erase/`, `fill/`, `text/`
+- one folder per tool: `brush/`, `erase/`, `fill/`, `lasso/`, `text/`, `picker/`, `stamp/`
 - each folder's descriptor resolution and its contract
 
 ## does not own
@@ -19,13 +19,19 @@ Host one folder per registered painter tool, each owning that tool's registratio
   - default
 - `fill/`
   - default
+- `lasso/`
+  - default
 - `text/`
+  - default
+- `picker/`
+  - default
+- `stamp/`
   - default
 
 ## contents
 - `contract.md`
   - individuals contract
-- `brush/brush_tool.rs`, `erase/erase_tool.rs`, `fill/fill_tool.rs`, `text/text_tool.rs`
+- `brush/brush_tool.rs`, `erase/erase_tool.rs`, `fill/fill_tool.rs`, `lasso/lasso_tool.rs`, `text/text_tool.rs`, `picker/picker_tool.rs`, `stamp/stamp_tool.rs`
   - per-tool `RegisteredTool` impls
 
 ## dependencies

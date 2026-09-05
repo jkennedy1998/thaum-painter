@@ -1894,13 +1894,13 @@ impl PersistedSharedGraphic {
     }
 }
 
-fn material_name(material: CellMaterialId) -> &'static str {
+pub(crate) fn material_name(material: CellMaterialId) -> &'static str {
     match material {
         CellMaterialId::GrayScale => "gray-scale",
     }
 }
 
-fn material_from_name(name: &str) -> Option<CellMaterialId> {
+pub(crate) fn material_from_name(name: &str) -> Option<CellMaterialId> {
     match name {
         "gray-scale" => Some(CellMaterialId::GrayScale),
         _ => None,

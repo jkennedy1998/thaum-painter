@@ -19,7 +19,7 @@ use thaum_painter_domain::{
     }, layers_runtime::{
         apply_layers_panel_action, build_selected_layer_property_rows, resolved_active_layer_id,
     }, camera_actions::{apply_painter_camera_action, apply_painter_pan_action},
-    render_space::build_document_layer_cell_groups, save_shared_document_snapshot, canvas_pointer::{CanvasPointerContext, CanvasPointerStrokes}, session_document::{
+    render_space::build_document_layer_cell_groups, save_shared_document_snapshot, canvas_pointer::{CanvasPointerContext, CanvasPointerStrokes, StampHover}, session_document::{
         commit_staged_paint_stroke, apply_shared_history_action,
         recover_snapshot_conflict, stage_text_entry_change, sync_canvas_from_active_layer,
     }, text_entry::{cursor_overlay_group, TextEntryKey, TextEntryOutcome, TextEntryState}, Canvas, DrawingSpaceWheelMode, LayerRow, LayersPanelState,
@@ -359,6 +359,12 @@ fn painter_repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+/// Frame performance log (renderer-owned window-surface seam). One JSON line
+/// per 60-frame bucket: scene build/upload/render ms, wall fps, quad counts.
+fn painter_performance_log_path() -> PathBuf {
+    painter_repo_root().join("orchestration/artifacts/perf/perf.jsonl")
+}
+
 fn painter_file_root() -> PathBuf {
     resolve_painter_file_root(&painter_repo_root())
 }
@@ -566,6 +572,7 @@ fn module_menu_buttons(modules: &ModuleRegistry) -> Vec<CommandBarButton> {
         ("painter_color_picker", "COLOR PICKER"),
         ("painter_color_block", "COLOR BLOCK"),
         ("painter_material_picker", "MATERIALS"),
+        ("painter_layers_panel", "LAYERS"),
         ("painter_graphic_picker", "GRAPHICS"),
         ("painter_hand_settings", "PROPS"),
         ("painter_ui_customization", "UI COLORS"),
@@ -721,6 +728,49 @@ fn sync_renderer_background_from_ui_palette(state: &mut BootState, ui_palette: &
 mod tests {
     use super::*;
     use thaum_painter_domain::selection_stroke::interpolate_cell_path;
+    use thaum_painter_domain::text_entry::TextEntryState;
+
+    use thaum_renderer_domain::{camera_view_orientation_for_camera, CameraRoll, CameraSwing};
+
+    #[test]
+    fn arrow_keys_route_into_the_session_and_nudge_the_cursor() {
+        // The app's exact key path for one owned press: reserved set from the
+        // live bindings, route the raw label, translate the physical key,
+        // feed the session. All four arrows must nudge the cursor one cell
+        // in the screen direction the key names.
+        let bindings = thaum_painter_domain::tai::painter_bindings();
+        let mut typing_mode = TypingMode::default();
+        typing_mode.begin(typing_reserved_inputs(&bindings));
+        let orientation =
+            camera_view_orientation_for_camera(CameraSwing::PosZ, CameraRoll::Deg0);
+        let brush = thaum_painter_domain::brush::PaintedCell {
+            graphic: thaum_renderer_domain::CellGraphic::Glyph('?'),
+            color: thaum_painter_domain::paint_color::PaintColor::flat_rgb(255, 255, 255),
+            weight_index: 1,
+        };
+        let mut entry = TextEntryState::begin(
+            CellPoint { x: 5, y: 5, z: 0 },
+            orientation,
+            thaum_painter_domain::text::DEFAULT_TEXT_LAYOUT_OPTIONS,
+            false,
+            brush,
+        );
+        let steps: &[(KeyCode, CellPoint)] = &[
+            (KeyCode::ArrowRight, CellPoint { x: 6, y: 5, z: 0 }),
+            (KeyCode::ArrowDown, CellPoint { x: 6, y: 4, z: 0 }),
+            (KeyCode::ArrowLeft, CellPoint { x: 5, y: 4, z: 0 }),
+            (KeyCode::ArrowUp, CellPoint { x: 5, y: 5, z: 0 }),
+        ];
+        for (key, want) in steps {
+            let route = raw_key_label(*key)
+                .map(|label| typing_mode.route(&RawInput::Key(label)));
+            assert_eq!(route, Some(TypingRoute::Owned), "{key:?} must be owned");
+            let entry_key = text_entry_key_for_key(*key, false)
+                .unwrap_or_else(|| panic!("{key:?} must translate"));
+            entry.handle_key(entry_key);
+            assert_eq!(entry.cursor_point(), *want, "{key:?} must nudge the cursor");
+        }
+    }
 
     fn surface_rect() -> ModuleRect {
         ModuleRect {
@@ -1187,6 +1237,38 @@ fn painter_tool_for_action(action: &ActionName) -> Option<PaintTool> {
         .and_then(|descriptor| PaintTool::from_id(descriptor.id))
 }
 
+/// Bridges a `THAUM3D:` payload from the OS clipboard into the session
+/// user's own buffer (cross-session copies ride the OS clipboard). OS
+/// transport failures are silently ignored so the own buffer always works;
+/// foreign text is rejected by the codec.
+fn import_os_clipboard_into_own_buffer(
+    user_clipboards: &mut thaum_painter_domain::clipboard::UserClipboards,
+    user_id: &str,
+) {
+    let mut os_clipboard = match arboard::Clipboard::new() {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("[import-debug] clipboard open failed: {err}");
+            return;
+        }
+    };
+    let text = match os_clipboard.get_text() {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("[import-debug] clipboard read failed: {err}");
+            return;
+        }
+    };
+    eprintln!("[import-debug] read {} bytes: {text:.60}", text.len());
+    match thaum_painter_domain::clipboard::decode_os_clipboard(&text) {
+        Some(data) => {
+            eprintln!("[import-debug] decoded {} cells", data.cells.len());
+            user_clipboards.copy_for_user(user_id, data);
+        }
+        None => eprintln!("[import-debug] decode returned None"),
+    }
+}
+
 /// Every named action the entrypoint's live dispatch handles. The effective
 /// binding map (declared defaults + per-user profile) must declare exactly
 /// these actions; anything declared-but-unhandled or handled-but-undeclared
@@ -1218,6 +1300,8 @@ pub const LIVE_PAINTER_ACTIONS: &[&str] = &[
     "painter_selection_all",
     "painter_undo",
     "painter_redo",
+    "painter_clipboard_copy",
+    "painter_select_stamp",
     "painter_play_pause",
 ];
 
@@ -1228,6 +1312,7 @@ pub(crate) fn painter_control_rows() -> Vec<ControlActionRow> {
         ("tools", "Select Pencil", "painter_select_pencil"),
         ("tools", "Select Bucket", "painter_select_bucket"),
         ("tools", "Select Lasso", "painter_select_lasso"),
+        ("tools", "Select Stamp", "painter_select_stamp"),
         ("pan", "Pan Left", "painter_pan_left"),
         ("pan", "Pan Right", "painter_pan_right"),
         ("pan", "Pan Up", "painter_pan_up"),
@@ -1251,6 +1336,7 @@ pub(crate) fn painter_control_rows() -> Vec<ControlActionRow> {
         ("selection", "Select All Plane", "painter_selection_all"),
         ("history", "Undo", "painter_undo"),
         ("history", "Redo", "painter_redo"),
+        ("clipboard", "Copy World", "painter_clipboard_copy"),
     ];
     rows.into_iter()
         .map(|(category, label, action)| ControlActionRow {
@@ -1262,10 +1348,21 @@ pub(crate) fn painter_control_rows() -> Vec<ControlActionRow> {
 }
 
 fn main() -> Result<()> {
+    // Machine-truth workaround (jobo): the rfd GTK save dialog enumerates trash
+    // through gvfsd-trash, and that backend chokes on this machine (journal:
+    // "GFileInfo created without standard::name" bursts) — the dialog freezes
+    // and then the whole program dies. Forcing GIO's plain unix volume monitor
+    // skips the gvfs trash backend entirely; it must be set before any GTK/GIO
+    // call initializes. Policy twin lives in the operator workshop contract's
+    // machine-hygiene note (never touch the desktop trash from agent flows).
+    if std::env::var_os("GIO_USE_VOLUME_MONITOR").is_none() {
+        std::env::set_var("GIO_USE_VOLUME_MONITOR", "unix");
+    }
     thaum_painter_domain::debug_log::configure_from_env();
     let mut config = BootConfig::default();
     config.asset_root = development_asset_root();
     config.window.title = "thaum-painter".to_string();
+    config.window.performance_log_path = Some(painter_performance_log_path());
 
     let session_user_id = session_user_id();
     let session_state_path = painter_session_state_path(&session_user_id);
@@ -1346,6 +1443,9 @@ fn main() -> Result<()> {
     // segment (Enter starts a new segment), the old commit granularity.
     let mut text_entry: Option<TextEntryState> = None;
     let mut text_stroke_start: Option<(Canvas, String)> = None;
+    // Per-user clipboard buffers (own-buffer paste, source-of-truth from J);
+    // cross-session copies bridge through the OS clipboard into the own buffer.
+    let mut user_clipboards = thaum_painter_domain::clipboard::UserClipboards::new();
     // Renderer-owned input-focus gate for typing sessions; declared reserved
     // inputs (camera/depth bindings) stay live, everything else is focused
     // into the session or suppressed.
@@ -1450,6 +1550,8 @@ fn main() -> Result<()> {
             }
         }
         for key in &frame.input.just_pressed_keys {
+            // TEMP arrow-key diagnostics: which stage does each press reach?
+            eprintln!("[input-debug] just_pressed {key:?}");
             // Shift state comes from the held-key set (winit reports the
             // modifier itself as a pressed physical key), so shifted glyphs
             // reach both the text session and open number-field edits.
@@ -1464,11 +1566,19 @@ fn main() -> Result<()> {
                     .map(|label| typing_mode.route(&RawInput::Key(label)))
                     .unwrap_or(TypingRoute::Suppressed);
                 match route {
-                    TypingRoute::Suppressed => continue,
+                    TypingRoute::Suppressed => {
+                        eprintln!("[input-debug]   {key:?} -> suppressed");
+                        continue;
+                    }
+                    TypingRoute::Reserved => {
+                        eprintln!("[input-debug]   {key:?} -> reserved");
+                    }
                     TypingRoute::Owned => {
                         let Some(entry_key) = text_entry_key_for_key(*key, shift_held) else {
+                            eprintln!("[input-debug]   {key:?} -> owned but untranslated");
                             continue;
                         };
+                        eprintln!("[input-debug]   {key:?} -> owned {entry_key:?}");
                         // An open number-field edit consumes the keys first.
                         if number_edit.borrow().is_some() {
                             handle_number_field_edit_key(entry_key, &number_edit, &tool_state);
@@ -1525,7 +1635,20 @@ fn main() -> Result<()> {
                         text_entry = None;
                         typing_mode.end();
                     }
-                    TextEntryOutcome::Idle | TextEntryOutcome::Ignored => {}
+                    TextEntryOutcome::Idle | TextEntryOutcome::Ignored => {
+                        if matches!(
+                            entry_key,
+                            TextEntryKey::ArrowLeft
+                                | TextEntryKey::ArrowRight
+                                | TextEntryKey::ArrowUp
+                                | TextEntryKey::ArrowDown
+                        ) {
+                            eprintln!(
+                                "[input-debug]   cursor now {:?}",
+                                text_entry.as_ref().map(|e| e.cursor_point())
+                            );
+                        }
+                    }
                         }
                         // The owned key belongs to the session alone: it must
                         // not also reach module key capture or live dispatch,
@@ -1555,6 +1678,16 @@ fn main() -> Result<()> {
                 if let Some(tool) = painter_tool_for_action(action) {
                     let hand = tool_state.borrow().active_hand;
                     tool_state.borrow_mut().set_tool_for_hand(hand, tool);
+                    // Equipping the stamp imports a THAUM3D OS-clipboard
+                    // payload into the own buffer (cross-session copies ride
+                    // the OS clipboard); the stamp then works from the own
+                    // buffer only.
+                    if action.0.as_str() == "painter_select_stamp" {
+                        import_os_clipboard_into_own_buffer(
+                            &mut user_clipboards,
+                            &session_user_id,
+                        );
+                    }
                     continue;
                 }
                 // Camera actions (pan/swing/roll/depth/zoom) live on the
@@ -1624,6 +1757,22 @@ fn main() -> Result<()> {
                         false,
                         timeline_state.borrow().current_breath,
                     )?,
+                    "painter_clipboard_copy" => {
+                        // Copy the selection as a 3D world copy into the own
+                        // buffer, and mirror it onto the OS clipboard so a copy
+                        // can emerge in another session.
+                        if let Some(data) = thaum_painter_domain::clipboard::copy_from_canvas(
+                            &canvas,
+                            &selection.borrow(),
+                        ) {
+                            if let Ok(mut os_clipboard) = arboard::Clipboard::new() {
+                                let _ = os_clipboard.set_text(
+                                    thaum_painter_domain::clipboard::encode_os_clipboard(&data),
+                                );
+                            }
+                            user_clipboards.copy_for_user(&session_user_id, data);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1756,8 +1905,7 @@ fn main() -> Result<()> {
             let module_hit = if handled_command_bar {
                 None
             } else {
-                modules
-                    .dispatch_pointer_event_at(
+                let hit = modules.dispatch_pointer_event_at(
                         screen.x,
                         screen.y,
                         ModulePointerEvent::Click {
@@ -1765,7 +1913,12 @@ fn main() -> Result<()> {
                             y: screen.y,
                             button: ModulePointerButton::Left,
                         },
-                    )
+                    );
+                eprintln!(
+                    "[click-debug] surface=({:?}) screen=({},{}) hit={:?}",
+                    click, screen.x, screen.y, hit
+                );
+                hit
                     .map(str::to_string)
             };
             // The drawing-space module sits under the whole paint surface, so its hit
@@ -2100,6 +2253,52 @@ fn main() -> Result<()> {
                 }
             }
         }
+
+        // Stamp hover: while a hand equips the stamp and the cursor hovers
+        // the drawing surface, the paste preview follows the cursor. The
+        // own buffer feeds it (the OS clipboard imports on V); with an empty
+        // buffer there is no preview and a press is a no-op.
+        let stamp_hover = {
+            let tool_state_borrowed = tool_state.borrow();
+            let active = tool_state_borrowed.active_hand;
+            let stamp_hand = if tool_state_borrowed.tool_for_hand(active) == PaintTool::Stamp {
+                Some(active)
+            } else if tool_state_borrowed.tool_for_hand(active.opposite()) == PaintTool::Stamp {
+                Some(active.opposite())
+            } else {
+                None
+            };
+            drop(tool_state_borrowed);
+            stamp_hand.and_then(|hand| {
+                if !hovering_canvas_bounds {
+                    return None;
+                }
+                let data = user_clipboards.clipboard_for_user(&session_user_id)?.clone();
+                let cursor = frame.input.cursor_position?;
+                let anchor_world = remap_surface_units_to_active_plane_world(
+                    state.camera,
+                    cursor,
+                    cell_clip_size_for_state(state, frame.surface_size),
+                );
+                Some(StampHover {
+                    hand,
+                    anchor: CellPoint {
+                        x: anchor_world.x,
+                        y: anchor_world.y,
+                        z: anchor_world.z,
+                    },
+                    data,
+                })
+            })
+        };
+        eprintln!(
+            "[stamp-debug] tool={:?} hover_bounds={} cursor={:?} buffer={:?}",
+            tool_state.borrow().tool_for_hand(tool_state.borrow().active_hand).id(),
+            hovering_canvas_bounds,
+            frame.input.cursor_position.is_some(),
+            user_clipboards.clipboard_for_user(&session_user_id).is_some()
+        );
+        pointer_strokes.set_stamp_hover(stamp_hover);
 
         let mut groups = build_document_layer_cell_groups(&shared_document, timeline_state.borrow().current_breath);
         groups.extend(modules.iter().map(|module| module.draw()));

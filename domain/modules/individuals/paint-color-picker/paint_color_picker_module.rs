@@ -156,21 +156,4 @@ mod tests {
         );
         assert_eq!(state.active_hand, PaintHand::Right);
     }
-
-    #[test]
-    fn color_lock_blocks_assignment_for_that_hand() {
-        let tool_state = Rc::new(RefCell::new(ToolState::default()));
-        tool_state.borrow_mut().right_hand.locks.color = true;
-        let original = tool_state.borrow().right_hand.color;
-        let mut module =
-            PaintColorPickerModule::new("picker", rect(), tool_state.clone(), UiPalette::default());
-
-        module.on_pointer_event(ModulePointerEvent::Click {
-            x: click_x_for_order_index(4),
-            y: click_y_for_top_row(),
-            button: ModulePointerButton::Right,
-        });
-
-        assert_eq!(tool_state.borrow().right_hand.color, original);
-    }
 }

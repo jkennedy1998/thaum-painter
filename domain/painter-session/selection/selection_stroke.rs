@@ -8,7 +8,7 @@ use thaum_renderer_domain::{
     CELL_SHADER_VIVID_FLASH, CELL_SHADER_VIVID_FLASH_ALT,
 };
 
-use crate::brush::Canvas;
+use crate::brush::{effective_cell, Canvas};
 use crate::selection_state::{PainterSelection, SelectionMode};
 use crate::tool_state::PaintHand;
 
@@ -84,7 +84,8 @@ pub fn build_plane_selection_cell_groups(
     // 3D bitmap shared across depths, so cells light up at any depth the camera can
     // see (the composition already shows whatever falls inside the camera window).
     for position in preview.iter() {
-        let existing = canvas.get(&position);
+        // Unified empty-cell rule: an authored blank counts as empty.
+        let existing = effective_cell(canvas.get(&position));
         vivid_group.insert(Cell {
             position,
             graphic: existing
@@ -97,16 +98,19 @@ pub fn build_plane_selection_cell_groups(
             shader_stack: vec![CELL_SHADER_VIVID_FLASH_ALT],
             ..Cell::default()
         });
+        // True-appearance phase: an empty cell shows J's void marker — a
+        // vivid '●' at weight 0 — instead of a placeholder box, so selected
+        // voids read as voids while the flash shows the canvas as-is.
         true_group.insert(Cell {
             position,
             graphic: existing
                 .map(|cell| cell.graphic.clone())
-                .unwrap_or(CellGraphic::Glyph('□')),
+                .unwrap_or(CellGraphic::Glyph('●')),
             color: existing
                 .map(|cell| cell.color.to_cell_color())
-                .unwrap_or(CellColor::Flat([0.8, 0.6, 0.1, 1.0])),
+                .unwrap_or(vivid),
             weight: CellWeight::from_index_clamped(
-                existing.map_or(3, |cell| cell.weight_index as i32),
+                existing.map_or(0, |cell| cell.weight_index as i32),
             ),
             shader_stack: vec![CELL_SHADER_VIVID_FLASH],
             ..Cell::default()

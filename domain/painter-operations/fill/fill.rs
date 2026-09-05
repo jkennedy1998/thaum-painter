@@ -2,7 +2,7 @@ use std::collections::{BTreeSet, VecDeque};
 
 use thaum_renderer_domain::CellPoint;
 
-use crate::brush::{Canvas, PaintedCell};
+use crate::brush::{effective_cell, Canvas, PaintedCell};
 
 /// Finite fill bounds for painter flood fill. The live canvas is logically
 /// unbounded, so fill needs the caller to declare the region it is allowed to
@@ -147,7 +147,9 @@ pub fn flood_fill_points_with_connectivity(
         return Vec::new();
     }
 
-    let target = canvas.get(&start).cloned();
+    // Unified empty-cell rule: authored blanks (space glyphs) match `None`,
+    // so blank cells never split a flood region from truly empty space.
+    let target = effective_cell(canvas.get(&start)).cloned();
     let mut queue = VecDeque::from([start]);
     let mut seen = BTreeSet::new();
     let mut points = Vec::new();
@@ -156,7 +158,7 @@ pub fn flood_fill_points_with_connectivity(
         if !seen.insert(point) || !bounds.contains(point) {
             continue;
         }
-        if canvas.get(&point).cloned() != target {
+        if effective_cell(canvas.get(&point)).cloned() != target {
             continue;
         }
 
@@ -204,6 +206,7 @@ pub fn flood_fill_with_connectivity(
 mod tests {
     use super::*;
     use crate::{brush::apply_brush, paint_color::PaintColor};
+    use thaum_renderer_domain::CellGraphic;
 
     fn point(x: i32, y: i32) -> CellPoint {
         CellPoint { x, y, z: 0 }
@@ -253,6 +256,26 @@ mod tests {
         assert_eq!(canvas.get(&point(0, 1)), Some(&cell('@')));
         assert_eq!(canvas.get(&point(1, 1)), Some(&cell('@')));
         assert_eq!(canvas.get(&point(3, 3)), Some(&cell('#')));
+    }
+
+    #[test]
+    fn flood_matching_treats_authored_blanks_as_empty() {
+        // A stored blank (space glyph + color, e.g. from an old save) must
+        // not split a flood region from truly empty space.
+        let mut canvas = Canvas::new();
+        canvas.insert(
+            point(1, 1),
+            PaintedCell {
+                graphic: CellGraphic::Glyph(' '),
+                color: crate::paint_color::PaintColor::flat_rgb(1, 2, 3),
+                weight_index: 2,
+            },
+        );
+
+        let points = flood_fill_points(&canvas, point(0, 0), bounds());
+
+        // The blank at (1,1) floods as part of the empty region.
+        assert!(points.contains(&point(1, 1)));
     }
 
     #[test]
