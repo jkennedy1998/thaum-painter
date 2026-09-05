@@ -4,7 +4,8 @@ use thaum_renderer_domain::{
     Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, CellWeight, GizmoBar,
     GizmoClickOutcome, GizmoKind, GizmoState, Module, ModulePointerEvent, ModuleRect,
     NumberFieldEdit, PanelChrome, PersistedModuleUiState, PropertyHit, PropertyMatrixColumn,
-    PropertyMatrixSide, PropertyRow, PropertyRows, UiColorRole, UiPalette, WorldPoint,
+    PropertyMatrixSide, PropertyRow, PropertyRows, ScrollState, UiColorRole, UiPalette,
+    WorldPoint,
 };
 
 use crate::{
@@ -31,6 +32,9 @@ pub struct HandSettingsModule {
     palette: UiPalette,
     gizmos: GizmoBar,
     gizmo_state: GizmoState,
+    /// Row scroll over the property rows; the panel crops rows that do not
+    /// fit, so scrolling is how tucked-away tool rows become reachable.
+    scroll: ScrollState,
     hidden: bool,
 }
 
@@ -51,6 +55,7 @@ impl HandSettingsModule {
             palette: UiPalette::default(),
             gizmos: GizmoBar::standard(),
             gizmo_state: GizmoState::new(),
+            scroll: ScrollState::new(),
             hidden: false,
         }
     }
@@ -288,6 +293,27 @@ impl HandSettingsModule {
         rows
     }
 
+    /// Rows that fit above the reserved bottom hand-color row; every
+    /// property row is one line tall, so that is the visible row count.
+    fn visible_row_count(&self) -> usize {
+        let (_, content_height) = PanelChrome::content_size(self.rect);
+        (content_height - 1).max(0) as usize
+    }
+
+    /// The scrolled window of rows actually drawn and hit-tested: the full
+    /// row list offset by the scroll state, cropped to what fits.
+    fn visible_rows(&self) -> Vec<PropertyRow> {
+        let rows = self.build_rows();
+        let scroll = self.scroll.offset().min(ScrollState::max_offset(
+            rows.len(),
+            self.visible_row_count(),
+        ));
+        rows.into_iter()
+            .skip(scroll)
+            .take(self.visible_row_count())
+            .collect()
+    }
+
     fn tool_row_used(state: &ToolState, row_id: &str) -> bool {
         state.left_tool.property_row_ids().contains(&row_id)
             || state.right_tool.property_row_ids().contains(&row_id)
@@ -455,14 +481,16 @@ impl Module for HandSettingsModule {
         }
         cells.extend(PropertyRows::draw(
             self.rect,
-            &self.build_rows(),
+            &self.visible_rows(),
             &self.palette,
         ));
 
         let state = self.tool_state.borrow();
         let (_, content_y) = PanelChrome::content_origin();
-        let (_, content_height) = PanelChrome::content_size(self.rect);
-        let top_y = content_y + content_height.saturating_sub(1);
+        // The hand color line owns the bottom content row; property rows
+        // stay one row short of the content area so they never slide under
+        // it while scrolling.
+        let swatch_y = content_y;
         let value_x = PanelChrome::content_origin().0 + 8;
 
         for (offset, (glyph, preview_rgb, role)) in [
@@ -483,7 +511,7 @@ impl Module for HandSettingsModule {
             cells.push(Cell {
                 position: CellPoint {
                     x: value_x + 12 + offset as i32 * 2,
-                    y: top_y - 1,
+                    y: swatch_y,
                     z: 0,
                 },
                 graphic: CellGraphic::Glyph(glyph),
@@ -499,7 +527,7 @@ impl Module for HandSettingsModule {
             cells.push(Cell {
                 position: CellPoint {
                     x: value_x + 11 + offset as i32 * 2,
-                    y: top_y - 1,
+                    y: swatch_y,
                     z: 0,
                 },
                 graphic: CellGraphic::Glyph(if offset == 0 { 'L' } else { 'R' }),
@@ -522,7 +550,7 @@ impl Module for HandSettingsModule {
                     }
                     return;
                 }
-                let rows = self.build_rows();
+                let rows = self.visible_rows();
                 if let Some(hit) = PropertyRows::hit_test(self.rect, &rows, x, y, button) {
                     self.apply_property_hit(hit);
                 }
@@ -541,30 +569,39 @@ impl Module for HandSettingsModule {
     }
 
     /// Scroll on a number field nudges that value by one (up = +1, down =
-    /// −1), clamped to the row's range. Consumes the wheel only over fields.
+    /// −1), clamped to the row's range. Anywhere else, the wheel scrolls the
+    /// panel's row list so cropped tool rows stay reachable.
     fn on_wheel(&mut self, x: i32, y: i32, _delta_x: f32, delta_y: f32) -> bool {
         if self.number_edit.borrow().is_some() {
             // A typing session owns the keyboard; ignore wheel while editing.
             return true;
         }
-        let rows = self.build_rows();
-        let Some((row_id, field)) = PropertyRows::number_field_at(self.rect, &rows, x, y) else {
-            return false;
-        };
-        let delta = if delta_y > 0.0 {
-            1
-        } else if delta_y < 0.0 {
-            -1
-        } else {
-            return true;
-        };
-        let axis = field.min(2);
-        let mut state = self.tool_state.borrow_mut();
-        match row_id.as_str() {
-            "text_char_step" => state.nudge_text_char_step(axis, delta),
-            "text_enter_step" => state.nudge_text_enter_step(axis, delta),
-            _ => return false,
+        let rows = self.visible_rows();
+        if let Some((row_id, field)) = PropertyRows::number_field_at(self.rect, &rows, x, y) {
+            let delta = if delta_y > 0.0 {
+                1
+            } else if delta_y < 0.0 {
+                -1
+            } else {
+                return true;
+            };
+            let axis = field.min(2);
+            let mut state = self.tool_state.borrow_mut();
+            return match row_id.as_str() {
+                "text_char_step" => {
+                    state.nudge_text_char_step(axis, delta);
+                    true
+                }
+                "text_enter_step" => {
+                    state.nudge_text_enter_step(axis, delta);
+                    true
+                }
+                _ => false,
+            };
         }
+        // Not over a number field: the wheel scrolls the row list.
+        let max = ScrollState::max_offset(self.build_rows().len(), self.visible_row_count());
+        self.scroll.wheel(delta_y, max);
         true
     }
 
@@ -606,7 +643,9 @@ mod tests {
             x0: 10,
             y0: 10,
             x1: 40,
-            y1: 20,
+            // 13 tall: content 10 = 9 visible property rows + the reserved
+            // bottom hand-color row, matching the production boot size.
+            y1: 23,
         }
     }
 
@@ -630,6 +669,7 @@ mod tests {
             },
         )))
     }
+
 
     #[test]
     fn clicking_a_weight_token_assigns_that_weight_to_the_matching_hand() {
@@ -852,14 +892,22 @@ mod tests {
             .expect("text char row present");
         let (_, value_x, _) = PropertyRows::content_columns(rect());
         let field_x = rect().x0 + value_x;
+
+        // The text rows sit below the visible window: scroll the panel down
+        // until the char row is on screen (wheel off the fields scrolls).
+        let visible = module.visible_row_count();
+        let scroll_needed = row_index.saturating_sub(visible - 1);
+        for _ in 0..scroll_needed {
+            assert!(module.on_wheel(field_x, rect().y0, 0.0, -1.0));
+        }
         // Rows stack upward from the top row, one row_height each.
-        let row_y = rows[..row_index]
+        let row_y = rows[scroll_needed..row_index]
             .iter()
             .map(|row| PropertyRows::row_height(row))
             .sum::<i32>();
         let field_y = rect().y0 + PropertyRows::top_row_y(rect()) - row_y;
         assert_eq!(
-            PropertyRows::number_field_at(rect(), &rows, field_x, field_y),
+            PropertyRows::number_field_at(rect(), &module.visible_rows(), field_x, field_y),
             Some(("text_char_step".into(), 0))
         );
 
@@ -867,9 +915,46 @@ mod tests {
         assert_eq!(state.borrow().text_options.char_step, (2, 0, 0));
         module.on_wheel(field_x, field_y, 0.0, -2.0);
         assert_eq!(state.borrow().text_options.char_step, (1, 0, 0));
+    }
 
-        // Off the fields: the wheel is not consumed.
-        assert!(!module.on_wheel(field_x, field_y - 3, 0.0, 1.0));
+    #[test]
+    fn wheeling_off_the_fields_scrolls_cropped_tool_rows_into_view() {
+        let state = tool_state();
+        state
+            .borrow_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Text);
+        let mut module =
+            HandSettingsModule::new("hands", rect(), state.clone(), selection(), number_edit());
+
+        // Before scrolling, the cropped text rows are outside the visible
+        // slice even though the full row list declares them.
+        let total = module.build_rows().len();
+        let visible = module.visible_row_count();
+        assert!(total > visible);
+        assert!(module.visible_rows().len() == visible);
+        assert!(module
+            .visible_rows()
+            .iter()
+            .all(|row| !matches!(row, PropertyRow::NumberRow { .. })));
+
+        // Wheel down off the fields: consumed, and the char row surfaces.
+        let (_, value_x, _) = PropertyRows::content_columns(rect());
+        let x = rect().x0 + value_x;
+        for _ in 0..(total - visible) {
+            assert!(module.on_wheel(x, rect().y0, 0.0, -1.0));
+        }
+        assert!(module
+            .visible_rows()
+            .iter()
+            .any(|row| matches!(row, PropertyRow::NumberRow { id, .. } if id == "text_char_step")));
+
+        // Wheeling back up returns to the top and clamps there.
+        for _ in 0..total {
+            module.on_wheel(x, rect().y0, 0.0, 1.0);
+        }
+        assert_eq!(module.visible_rows().len(), visible);
+        let first = module.build_rows().into_iter().next().expect("row");
+        assert_eq!(module.visible_rows()[0], first);
     }
 
     #[test]
@@ -880,7 +965,7 @@ mod tests {
 
         module.on_pointer_event(ModulePointerEvent::Click {
             x: 11,
-            y: 19,
+            y: 22,
             button: ModulePointerButton::Left,
         });
 

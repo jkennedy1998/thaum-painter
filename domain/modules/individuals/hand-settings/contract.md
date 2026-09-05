@@ -9,6 +9,7 @@ Own painter's compact hand-settings panel: the left/right paint-state editor for
 - the two-zone row layout: always-shown standard hand rows (weight, select/edit masks, target, selection mode) on top, tool-specific rows below that only render when either equipped hand's tool declares them via `tool-state`'s per-tool property manifest
 - direct edits into shared live painter `tool-state`
 - direct edits into shared live painter `selection`
+- row scrolling over the property rows via the shared renderer `ScrollState`, with the bottom content row reserved for the left/right hand-color line
 
 ## does not own
 - actual paint operation semantics, owned by `domain/painter-session/tool-state/` and `domain/painter-operations/`
@@ -41,11 +42,14 @@ Own painter's compact hand-settings panel: the left/right paint-state editor for
 - inline `#[cfg(test)]` in `hand_settings_module.rs`
   - light
   - validates weight, select/edit masks, target, selection mode, brush/fill property and match toggles, plus tool-row hiding driven by the equipped tools
+  - validates wheel behavior: over a number field it nudges that value by one; anywhere else it scrolls the row list so cropped tool rows stay reachable
 
 ## data
 - none
 
 ## notes
+- The panel crops rows that do not fit; the wheel scrolls the row window (shared `thaum-renderer` `ScrollState`) so tool rows tucked below the fold stay reachable. Wheel over a number field still nudges that value, matching the panel's original field-nudge semantic.
+- The bottom content row is reserved for the left/right hand-color line; property rows stay one row short so scrolled matrix tokens never slide under it.
 - source-of-truth from J: left and right should each keep their own color/weight selection, with useful masking for deeper illustration work; channel locks were bloat and have been removed from the panel.
 - source-of-truth from J: the panel hosts the never-changing standard property block on top and tool properties that change below; rows unused by both equipped tools stay hidden so the module feels thin while tools accumulate shared properties.
 - this panel intentionally stays compact and state-bound; it is not a second toolbox.

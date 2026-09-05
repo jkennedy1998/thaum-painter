@@ -113,7 +113,9 @@ pub(crate) fn build_painter_modules(
                 x0: 13,
                 y0: 2,
                 x1: 43,
-                y1: 15,
+                // 14 tall: content 11 = 10 visible property rows + the
+                // reserved bottom hand-color row.
+                y1: 16,
             },
             tool_state.clone(),
             selection.clone(),
