@@ -3,8 +3,8 @@ use std::{cell::RefCell, rc::Rc};
 use thaum_renderer_domain::{
     Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, CellWeight, GizmoBar,
     GizmoClickOutcome, GizmoKind, GizmoState, Module, ModulePointerButton, ModulePointerEvent,
-    ModuleRect, PanelChrome, PersistedModuleUiState, SpriteGraphic, UiColorRole, UiPalette,
-    WorldPoint,
+    ModuleRect, PanelChrome, PersistedModuleUiState, ScrollState, SpriteGraphic, UiColorRole,
+    UiPalette, WorldPoint,
 };
 
 use crate::tool_state::{HandState, PaintHand, ToolState};
@@ -201,8 +201,9 @@ pub struct GraphicPickerModule {
     gizmos: GizmoBar,
     gizmo_state: GizmoState,
     hidden: bool,
-    /// Rows scrolled past from the top of the content; 0 shows the top.
-    scroll_rows: usize,
+    /// Row-scroll state: offset over the category rows, pinned RECENT block
+    /// at the screen top shrinks the scrollable middle.
+    scroll: ScrollState,
     /// Most-recent-first recall list, observed at draw time.
     recent: RefCell<Vec<CellGraphic>>,
 }
@@ -223,7 +224,7 @@ impl GraphicPickerModule {
             gizmos: GizmoBar::standard(),
             gizmo_state: GizmoState::new(),
             hidden: false,
-            scroll_rows: 0,
+            scroll: ScrollState::new(),
             recent: RefCell::new(Vec::new()),
         }
     }
@@ -252,11 +253,20 @@ impl GraphicPickerModule {
         rows
     }
 
-    /// Rows the scroll offset moves through: the whole category list.
-    fn max_scroll_rows(&self) -> usize {
+    /// Middle rows available for scrolling once the pinned RECENT block
+    /// takes its share of the viewport.
+    fn available_scroll_rows(&self) -> usize {
         let (_, content_height) = PanelChrome::content_size(self.rect);
-        let available = (content_height - self.recent_block_height()).max(0) as usize;
-        self.build_scroll_rows().len().saturating_sub(available)
+        ScrollState::available_rows(
+            content_height.max(0) as usize,
+            self.recent_block_height().max(0) as usize,
+            0,
+        )
+    }
+
+    /// Largest valid row offset over the whole category list.
+    fn max_scroll_rows(&self) -> usize {
+        ScrollState::max_offset(self.build_scroll_rows().len(), self.available_scroll_rows())
     }
 
     /// Pinned block at the screen-top end of the module: RECENT header plus
@@ -392,9 +402,9 @@ impl GraphicPickerModule {
         // Flat2d panels render larger local y higher on screen, so the
         // screen-top of the content is the largest-y row: walk row_index 0
         // (screen-topmost scroll row) downward from just under RECENT.
-        let available = (content_height - self.recent_block_height()).max(0) as usize;
+        let available = self.available_scroll_rows();
         let rows = self.build_scroll_rows();
-        let scroll = (self.scroll_rows as usize).min(self.max_scroll_rows());
+        let scroll = self.scroll.offset().min(self.max_scroll_rows());
         let first_y = content_y + content_height - self.recent_block_height() - 1;
         for (row_index, row) in rows.iter().skip(scroll).take(available).enumerate() {
             let y = first_y - row_index as i32;
@@ -523,14 +533,7 @@ impl Module for GraphicPickerModule {
     }
 
     fn on_wheel(&mut self, _x: i32, _y: i32, _delta_x: f32, delta_y: f32) -> bool {
-        let max_scroll = self.max_scroll_rows();
-        self.scroll_rows = if delta_y > 0.0 {
-            self.scroll_rows.saturating_sub(1)
-        } else if delta_y < 0.0 {
-            (self.scroll_rows + 1).min(max_scroll)
-        } else {
-            self.scroll_rows
-        };
+        self.scroll.wheel(delta_y, self.max_scroll_rows());
         true
     }
 
@@ -790,7 +793,7 @@ mod tests {
     fn default_view_shows_the_first_glyph_sections() {
         let state = tool_state();
         let module = GraphicPickerModule::new("graphics", rect(), state);
-        assert_eq!(module.scroll_rows, 0);
+        assert_eq!(module.scroll.offset(), 0);
         assert!(module.glyph_hit_option('A').is_some());
     }
 
@@ -800,7 +803,7 @@ mod tests {
         let mut module = GraphicPickerModule::new("graphics", rect(), state);
 
         scroll_to_bottom(&mut module);
-        assert_eq!(module.scroll_rows, module.max_scroll_rows());
+        assert_eq!(module.scroll.offset(), module.max_scroll_rows());
         assert!(module.max_scroll_rows() > 0);
         // the top of the content (ascii) is cropped at max scroll
         assert_eq!(module.glyph_hit_option('A'), None);
@@ -834,12 +837,12 @@ mod tests {
         let mut module = GraphicPickerModule::new("graphics", rect(), state);
 
         scroll_to_top(&mut module);
-        assert_eq!(module.scroll_rows, 0);
+        assert_eq!(module.scroll.offset(), 0);
 
         scroll_to_bottom(&mut module);
         let expected_max = module.max_scroll_rows();
         assert!(expected_max > 0, "content should exceed the panel height");
-        assert_eq!(module.scroll_rows, expected_max);
+        assert_eq!(module.scroll.offset(), expected_max);
     }
 
     #[test]
