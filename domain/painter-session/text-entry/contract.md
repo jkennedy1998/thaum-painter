@@ -10,7 +10,8 @@ keyboard, per-keystroke cell changes, and the Enter/exit commit granularity.
 - key semantics inside typing: chars insert, Space advances (clearing the cell
   only when `space_replace`), Enter commits and steps by `enterlead`/`enterspace`,
   Backspace steps back / wraps to the previous line's end, Delete erases in
-  place, arrows move the cursor freely, Escape finishes
+  place, arrows move the cursor freely, Home/End jump to the current line's
+  start / typing end, Escape finishes
 - brush capture at session start (the click's brush stays fixed for the whole
   session, matching the old `getBrushForButton(text_mode_button)` capture)
 

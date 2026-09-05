@@ -29,6 +29,8 @@ pub enum TextEntryKey {
     ArrowRight,
     ArrowUp,
     ArrowDown,
+    Home,
+    End,
 }
 
 /// What one key did. `Applied` changes must be staged onto the live canvas by
@@ -211,6 +213,14 @@ impl TextEntryState {
                 self.cursor.1 += 1;
                 TextEntryOutcome::Ignored
             }
+            TextEntryKey::Home => {
+                self.cursor = self.line_start(self.line);
+                TextEntryOutcome::Ignored
+            }
+            TextEntryKey::End => {
+                self.cursor = self.line_ends[self.line as usize];
+                TextEntryOutcome::Ignored
+            }
         }
     }
 
@@ -227,11 +237,10 @@ impl TextEntryState {
 
 /// A rendered overlay marking the cell about to receive the next character.
 /// Purely visual: the entrypoint composes this group on top of the document
-/// each frame and never stages it, so the flashing cursor is never part of the
-/// drawing.
-/// The cursor overlay is always present while typing; the blink phase swaps
-/// the glyph between a filled block and an outline so the cursor cell stays
-/// visible at every moment.
+/// each frame and never stages it, so the cursor is never part of the
+/// drawing. The entrypoint owns the blink phase and passes the glyph for the
+/// current phase (filled block / outline), so the cursor cell stays visible
+/// at every moment.
 pub fn cursor_overlay_group(point: CellPoint, glyph: char) -> CellGroup {
     let mut group = CellGroup::new(WorldPoint { x: 0, y: 0, z: 0 });
     group.insert(Cell {
@@ -402,6 +411,43 @@ mod tests {
         state.handle_key(TextEntryKey::ArrowUp);
         state.handle_key(TextEntryKey::ArrowLeft);
         assert_eq!(state.cursor_point(), point(5, 5));
+    }
+
+    #[test]
+    fn home_and_end_jump_to_the_line_boundaries() {
+        let mut entry = typing();
+        for ch in ['h', 'i'] {
+            entry.handle_key(TextEntryKey::Char(ch));
+        }
+        let after_typing = entry.cursor_point();
+        let line_end = entry.cursor_point();
+
+        entry.handle_key(TextEntryKey::ArrowRight);
+        entry.handle_key(TextEntryKey::ArrowDown);
+        assert_ne!(entry.cursor_point(), after_typing);
+
+        // Home returns to the start of the current line; End returns to the
+        // line's typing end (where the next character would land).
+        entry.handle_key(TextEntryKey::Home);
+        assert_eq!(entry.cursor_point(), entry_cursor_for_line_start(&entry));
+        entry.handle_key(TextEntryKey::End);
+        assert_eq!(entry.cursor_point(), line_end);
+
+        // Line 1 (after Enter) gets its own boundaries.
+        entry.handle_key(TextEntryKey::Enter);
+        entry.handle_key(TextEntryKey::Char('a'));
+        entry.handle_key(TextEntryKey::Home);
+        assert_eq!(entry.cursor_point(), entry_cursor_for_line_start(&entry));
+    }
+
+    fn entry_cursor_for_line_start(entry: &TextEntryState) -> CellPoint {
+        // Cursor after Home: origin plus the current line's view-relative
+        // start offset (enter_step * line), through the same view-plane
+        // mapping the cursor uses.
+        let offset = (entry.options.enter_step.0 * entry.line,
+                      entry.options.enter_step.1 * entry.line,
+                      entry.options.enter_step.2 * entry.line);
+        view_plane_point(entry.origin, entry.orientation, offset)
     }
 
     #[test]

@@ -1135,6 +1135,8 @@ fn text_entry_key_for_key(key: KeyCode, shift_held: bool) -> Option<TextEntryKey
         KeyCode::ArrowRight => Some(TextEntryKey::ArrowRight),
         KeyCode::ArrowUp => Some(TextEntryKey::ArrowUp),
         KeyCode::ArrowDown => Some(TextEntryKey::ArrowDown),
+        KeyCode::Home => Some(TextEntryKey::Home),
+        KeyCode::End => Some(TextEntryKey::End),
         _ => raw_key_label(key).and_then(|label| {
             let mut chars = label.chars();
             let ch = chars.next()?;
