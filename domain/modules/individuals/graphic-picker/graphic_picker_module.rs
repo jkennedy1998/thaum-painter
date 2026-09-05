@@ -327,7 +327,7 @@ impl GraphicPickerModule {
                 break;
             }
             let state = self.tool_state.borrow();
-            let role = assignment_role(&state, graphic);
+            let _role = assignment_role(&state, graphic);
             cells.push(Cell {
                 position: CellPoint { x, y: row_y, z: 0 },
                 graphic: match graphic {
