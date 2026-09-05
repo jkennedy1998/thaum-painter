@@ -47,29 +47,29 @@ Online-confirmed shape (2026-09-05): Figma's multiplayer tech (figma.com/blog/ho
 
 ## phases
 ### phase-1 — docs + contract + truth alignment
-- [ ] write `workers/session-host/contract.md` (owns: protocol types, connection roster, ordered log, broadcast; does not own: document semantics, file storage, entrypoint UI)
-- [ ] update `workers/contract.md` child list; keep the hosted-presence-store deferral note accurate
-- [ ] record the open-permissions truth: all users get all normal file interactions; host is variant-agnostic; structure edits become records via a follow-on domain slice
-- [ ] cross-reference the client-side persistence-gating question for the entrypoint/storage owners
+- [#] write `workers/session-host/contract.md` (owns: protocol types, connection roster, ordered log, broadcast; does not own: document semantics, file storage, entrypoint UI)
+- [#] update `workers/contract.md` child list; keep the hosted-presence-store deferral note accurate
+- [#] record the open-permissions truth: all users get all normal file interactions; host is variant-agnostic; structure edits become records via a follow-on domain slice
+- [#] cross-reference the client-side persistence-gating question for the entrypoint/storage owners
 
 ### phase-2 — protocol + host core (in-memory)
-- [ ] protocol message types with serde, versioned
-- [ ] `SessionHost` core: roster, ordered record log, broadcast fan-out, snapshot builder for `Welcome`
-- [ ] in-memory tests including convergence parity with the loopback bus shape
+- [#] protocol message types with serde, versioned
+- [#] `SessionHost` core: roster, ordered record log, broadcast fan-out, snapshot builder for `Welcome`
+- [#] in-memory tests including convergence parity with the loopback bus shape
 
 ### phase-3 — TCP transport
-- [ ] std::net TCP listener, thread-per-client, NDJSON frame encode/decode
-- [ ] disconnect handling: roster update, no record loss (host log remains truth)
-- [ ] direct-IP listen on a fixed default port; bind address configurable via env
+- [#] std::net TCP listener, thread-per-client, NDJSON frame encode/decode
+- [#] disconnect handling: roster update, no record loss (host log remains truth)
+- [#] direct-IP listen on a fixed default port; bind address configurable via env
 
 ### phase-4 — validation + repo rules + commit
-- [ ] full workspace test run green
-- [ ] smoke: one host + two in-process clients converge through real sockets
-- [ ] contract/plan checklists closed; git commit
+- [#] full workspace test run green
+- [#] smoke: one host + two in-process clients converge through real sockets
+- [#] contract/plan checklists closed; git commit
 
 ## post-implementation-notes
-- plan-finished: false
-- encapsulation-git-commit: false
+- plan-finished: true
+- encapsulation-git-commit: true (8b5e7ff)
 
 ## follow-on plans (not this encapsulation)
 - `domain/file/storage/` structure-edit record variants — open-perms prerequisite: layers/property blocks become apply-locally-then-publish records; structure undo (revert records) follows
@@ -77,3 +77,8 @@ Online-confirmed shape (2026-09-05): Figma's multiplayer tech (figma.com/blog/ho
 - entrypoint session module (host/join/status UI in the module bottom bar)
 - client persistence gating (host owns saves in session mode)
 - presence rendering (remote cursors as scene quads)
+
+
+## post-implementation-addendum (2026-09-05)
+- Landed as commit `8b5e7ff`: `workers/` is a workspace crate (`thaum-painter-workers`); `session-host/` owns protocol + host core + TCP/NDJSON transport. 11 worker tests + full workspace (358 total) green.
+- Deviations from plan: presence cursor is `[i32;3]` (matches `CellPoint`, not the planned `[i64;2]`); identity mismatch in `Hello` denies with `NotJoined`; added `ClientRejection::SnapshotUnavailable`. Duplicate-user rejoin is denied while the old connection is live — reconnect works after disconnect (fresh snapshot per plan).
