@@ -2333,7 +2333,13 @@ fn main() -> Result<()> {
             }
         }
         groups.push(command_bar.draw());
-        state.composition = Composition::ordered(groups).with_natural_pass_order();
+        // Painter HUD panels are a screen-locked 2D layer: module origins are
+        // camera-unit offsets from the focus target and hud pan moves only the
+        // HUD (with the wheel/keys compensating focus). This is the shared
+        // scene's Flat2d opt-in; default stays world-anchored.
+        state.composition = Composition::ordered(groups)
+            .with_natural_pass_order()
+            .with_flat_2d_screen_locked(true);
         Ok(())
     })
 }

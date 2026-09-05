@@ -1,9 +1,9 @@
 use std::{cell::RefCell, rc::Rc};
 
 use thaum_renderer_domain::{
-    Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, GizmoBar, GizmoClickOutcome,
-    GizmoKind, GizmoState, Module, ModulePointerButton, ModulePointerEvent, ModuleRect,
-    PanelChrome, PersistedModuleUiState, UiColorRole, UiPalette, WorldPoint,
+    Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, CellWeight, GizmoBar,
+    GizmoClickOutcome, GizmoKind, GizmoState, Module, ModulePointerButton, ModulePointerEvent,
+    ModuleRect, PanelChrome, PersistedModuleUiState, UiColorRole, UiPalette, WorldPoint,
 };
 
 use crate::tool_state::{PaintHand, PaintTool, ToolState};
@@ -24,6 +24,8 @@ pub struct ToolboxModule {
     gizmos: GizmoBar,
     gizmo_state: GizmoState,
     hidden: bool,
+    /// Row currently under the pointer, for hover coloring.
+    hovered_tool: Option<PaintTool>,
 }
 
 impl ToolboxModule {
@@ -42,6 +44,7 @@ impl ToolboxModule {
             gizmos: GizmoBar::standard(),
             gizmo_state: GizmoState::new(),
             hidden: false,
+            hovered_tool: None,
         }
     }
 
@@ -106,13 +109,18 @@ impl Module for ToolboxModule {
             );
         }
         let state = self.tool_state.borrow();
-        let current = state.current_tool();
 
         for (index, def) in self.tool_defs.iter().enumerate() {
             let y = self.row_y(index);
             let is_left = state.left_tool == def.tool;
             let is_right = state.right_tool == def.tool;
-            let is_current = current == def.tool;
+            let is_selected = is_left || is_right;
+            let is_hovered = self.hovered_tool == Some(def.tool);
+            let weight = if is_selected {
+                CellWeight::Three
+            } else {
+                CellWeight::Two
+            };
             let indicator = if is_left && is_right {
                 ('◆', self.palette.get(UiColorRole::Vivid))
             } else if is_left {
@@ -122,31 +130,33 @@ impl Module for ToolboxModule {
             } else {
                 (' ', self.palette.get(UiColorRole::Medium))
             };
-            let text_color = if is_current {
-                self.palette.get(UiColorRole::Bright)
-            } else {
-                self.palette.get(UiColorRole::Medium)
-            };
-            let icon_color = if is_left && is_right {
+            // Per-hand selection drives the row color; hover brightens
+            // unselected rows through the shared palette roles.
+            let text_color = if is_left && is_right {
                 self.palette.get(UiColorRole::Vivid)
             } else if is_left {
                 self.palette.get(UiColorRole::LeftHand)
             } else if is_right {
                 self.palette.get(UiColorRole::RightHand)
+            } else if is_hovered {
+                self.palette.get(UiColorRole::Bright)
             } else {
-                text_color
+                self.palette.get(UiColorRole::Medium)
             };
+            let icon_color = text_color;
 
             cells.push(Cell {
                 position: CellPoint { x: 1, y, z: 0 },
                 graphic: CellGraphic::Glyph(indicator.0),
                 color: indicator.1,
+                weight,
                 ..Cell::default()
             });
             cells.push(Cell {
                 position: CellPoint { x: 3, y, z: 0 },
                 graphic: CellGraphic::Glyph(def.icon),
                 color: icon_color,
+                weight,
                 ..Cell::default()
             });
             for (column, glyph) in def.label.chars().enumerate() {
@@ -158,6 +168,7 @@ impl Module for ToolboxModule {
                     position: CellPoint { x, y, z: 0 },
                     graphic: CellGraphic::Glyph(glyph),
                     color: text_color,
+                    weight,
                     ..Cell::default()
                 });
             }
@@ -188,13 +199,21 @@ impl Module for ToolboxModule {
             }
             ModulePointerEvent::Move { x, y } => {
                 self.gizmo_state.note_pointer(&self.gizmos, self.rect, x, y);
+                if self.gizmo_state.drag_rect(x, y).is_some() {
+                    self.hovered_tool = None;
+                } else {
+                    self.hovered_tool = self.tool_at(x, y);
+                }
                 if let Some(next_rect) = self.gizmo_state.drag_rect(x, y) {
                     self.rect = next_rect;
                 }
             }
             ModulePointerEvent::Up { .. } => self.gizmo_state.end_drag(),
             ModulePointerEvent::Enter => self.gizmo_state.set_hovered(true),
-            ModulePointerEvent::Leave => self.gizmo_state.set_hovered(false),
+            ModulePointerEvent::Leave => {
+                self.gizmo_state.set_hovered(false);
+                self.hovered_tool = None;
+            }
             ModulePointerEvent::Down { .. } => {}
         }
     }
@@ -350,6 +369,55 @@ mod tests {
             group.cells[&CellPoint { x: 1, y: 1, z: 0 }].graphic,
             CellGraphic::Glyph('◆')
         );
+    }
+
+    #[test]
+    fn unselected_rows_draw_weight_two_and_selected_rows_weight_three() {
+        let state = tool_state();
+        {
+            let mut state = state.borrow_mut();
+            state.set_tool_for_hand(PaintHand::Left, PaintTool::Brush);
+            state.set_tool_for_hand(PaintHand::Right, PaintTool::Fill);
+        }
+        let toolbox = ToolboxModule::new("toolbox", rect(), state, tool_defs());
+
+        let group = toolbox.draw();
+
+        // Brush (selected by left) and Fill (selected by right) are weight
+        // three; Erase is unselected and stays at the normal weight two.
+        assert_eq!(group.cells[&CellPoint { x: 5, y: 3, z: 0 }].weight, CellWeight::Three);
+        assert_eq!(group.cells[&CellPoint { x: 5, y: 2, z: 0 }].weight, CellWeight::Two);
+        assert_eq!(group.cells[&CellPoint { x: 5, y: 1, z: 0 }].weight, CellWeight::Three);
+    }
+
+    #[test]
+    fn hovering_an_unselected_row_brightens_it_through_the_shared_palette() {
+        let state = tool_state();
+        let mut toolbox = ToolboxModule::new("toolbox", rect(), state, tool_defs());
+
+        let bright = toolbox.palette.get(UiColorRole::Bright);
+        let left_hand = toolbox.palette.get(UiColorRole::LeftHand);
+        toolbox.on_pointer_event(ModulePointerEvent::Move { x: 5, y: 1 });
+
+        let group = toolbox.draw();
+
+        // Fill (y=1, unselected) brightens on hover; Brush (y=3,
+        // left-selected) keeps its hand color.
+        assert_eq!(group.cells[&CellPoint { x: 5, y: 1, z: 0 }].color, bright);
+        assert_eq!(group.cells[&CellPoint { x: 5, y: 3, z: 0 }].color, left_hand);
+    }
+
+    #[test]
+    fn leaving_the_panel_clears_the_hover_highlight() {
+        let state = tool_state();
+        let mut toolbox = ToolboxModule::new("toolbox", rect(), state, tool_defs());
+        let medium = toolbox.palette.get(UiColorRole::Medium);
+
+        toolbox.on_pointer_event(ModulePointerEvent::Move { x: 5, y: 1 });
+        toolbox.on_pointer_event(ModulePointerEvent::Leave);
+
+        let group = toolbox.draw();
+        assert_eq!(group.cells[&CellPoint { x: 5, y: 1, z: 0 }].color, medium);
     }
 
     #[test]
