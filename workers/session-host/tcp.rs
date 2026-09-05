@@ -222,6 +222,7 @@ mod tests {
     use super::*;
     use crate::session_host::{SessionHost, SessionUser, SESSION_PROTOCOL_VERSION};
     use std::io::{BufRead, BufReader};
+    use std::net::Shutdown;
     use thaum_painter_domain::storage::{SharedCellPatch, SharedDocumentFile};
     use thaum_renderer_domain::CellPoint;
 
@@ -254,6 +255,13 @@ mod tests {
         let mut line = String::new();
         reader.read_line(&mut line).expect("read line");
         serde_json::from_str(line.trim()).expect("parse host message")
+    }
+
+    /// In-process peer close: dropping the handle is not enough (the server
+    /// side's writer clone keeps the socket alive), so force it the way a real
+    /// peer's FIN would.
+    fn close(stream: &TcpStream) {
+        let _ = stream.shutdown(Shutdown::Both);
     }
 
     fn hello_for(id: &str) -> ClientMessage {
@@ -321,7 +329,7 @@ mod tests {
             }
             other => panic!("expected presence, got {other:?}"),
         }
-        assert!(host.lock().unwrap().records().is_empty());
+        assert_eq!(host.lock().unwrap().records().len(), 1); // presence added none
 
         // Duplicate user id: denied, connection closes (read gets EOF after
         // the Denied line).
@@ -332,8 +340,8 @@ mod tests {
             other => panic!("expected denied, got {other:?}"),
         }
         drop(dupe_stream);
-        drop(alice_stream);
-        drop(bob_stream);
+        close(&alice_stream);
+        close(&bob_stream);
         server.shutdown();
     }
 
@@ -350,13 +358,13 @@ mod tests {
         read_message(&mut bob_reader); // welcome
         read_message(&mut alice_reader); // roster (bob joined)
 
-        drop(bob_stream);
+        close(&bob_stream);
         match read_message(&mut alice_reader) {
             HostMessage::Roster { users } => assert_eq!(users.len(), 1),
             other => panic!("expected roster, got {other:?}"),
         }
         assert!(!host.lock().unwrap().is_connected("bob"));
-        drop(alice_stream);
+        close(&alice_stream);
         server.shutdown();
     }
 }

@@ -280,6 +280,7 @@ mod tests {
     fn join_gets_welcome_snapshot_and_others_get_roster() {
         let mut host = host();
         hello(&mut host, "alice");
+        host.take_outgoing("alice");
         hello(&mut host, "bob");
 
         let bob_out = host.take_outgoing("bob");
@@ -407,6 +408,7 @@ mod tests {
         host.take_outgoing("bob");
         host.handle_client_message("bob", ClientMessage::Action { record: stroke("b-1", "bob", 1) })
             .unwrap();
+        assert_eq!(host.take_outgoing("alice").len(), 1); // the Record
 
         host.disconnect("bob");
         assert!(!host.is_connected("bob"));

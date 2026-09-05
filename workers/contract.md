@@ -9,19 +9,21 @@ Own bounded background/async seams for thaum-painter, such as future autosave sc
 ## does not own
 - live editing session truth (owned by `domain/painter-session/`)
 - persistence policy itself (owned by `domain/file/storage/`; a worker may trigger it, not own it)
-- hosted/shared multiplayer presence stores — explicitly deferred; see `context/ascii-painter-feature-audit.md`'s "defer until core contracts are stable" list
+- document semantics — the session host treats records as opaque and never applies them; the `Welcome` snapshot is supplied by the owning app via a source seam
 
 ## children-encapsulations
-- none
+- `session-host/`
+  - default
 
 ## contents
-- none
+- `session-host/`
+  - default
 
 ## dependencies
-- none
+- `/home/j/Repos/thaum-painter/domain/file/storage/` (via `session-host/`: record + document serde types)
 
 ## exposed interfaces
-- none
+- via `session-host/`: `SessionHost`, protocol types, `spawn_session_host_server`
 
 ## interface consumers
 - future `orchestration/` boot flow
@@ -30,10 +32,11 @@ Own bounded background/async seams for thaum-painter, such as future autosave sc
 - none
 
 ## tests
-- none
+- via `session-host/`: 11 inline + socket tests
 
 ## data
 - none
 
 ## notes
-- kept empty; the old painter's hosted/shared session store is intentionally deferred, not assigned here yet.
+- The old painter's hosted/shared session store deferral is now superseded: `session-host/` is the first real multiplayer transport (host-authoritative, LAN direct-IP, TCP + NDJSON, Figma-shaped order/snapshot/rejoin model). Hosted *presence stores* (durable server-side presence beyond live connections) remain deferred.
+- Open permissions is a settled truth: all users get all normal file interactions; the host is variant-agnostic, so enabling structure edits is purely a `domain/file/storage/` slice (structure-edit record variants).
