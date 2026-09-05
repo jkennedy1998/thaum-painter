@@ -575,6 +575,7 @@ fn module_menu_buttons(modules: &ModuleRegistry) -> Vec<CommandBarButton> {
         ("painter_layers_panel", "LAYERS"),
         ("painter_graphic_picker", "GRAPHICS"),
         ("painter_hand_settings", "PROPS"),
+        ("painter_controls_panel", "CONTROLS"),
         ("painter_ui_customization", "UI COLORS"),
     ]
     .into_iter()
