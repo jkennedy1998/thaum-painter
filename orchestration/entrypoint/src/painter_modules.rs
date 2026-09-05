@@ -11,9 +11,9 @@ use thaum_painter_domain::{
     PaintTool, PainterSelection, ToolDef, ToolState, ToolboxModule,
 };
 use thaum_renderer_domain::{
-    conflicting_actions, effective_bindings, format_raw_input, ActionBindingMap, ControlsProfile,
-    ControlsPanelModule, ModuleRect, ModuleRegistry, NumberFieldEdit, UiCustomizationModule,
-    UiPalette,
+    conflicting_actions, effective_bindings, format_raw_input, ActionBindingMap,
+    CameraPerspectiveModule, ControlsProfile, ControlsPanelModule, ModuleRect, ModuleRegistry,
+    NumberFieldEdit, PerspectiveProfile, UiCustomizationModule, UiPalette,
 };
 
 /// Registers every painter module and returns the registry. Shared handles
@@ -33,6 +33,7 @@ pub(crate) fn build_painter_modules(
     effective_painter_bindings: &Rc<RefCell<ActionBindingMap>>,
     painter_bindings: &ActionBindingMap,
     ui_palette: &UiPalette,
+    camera_perspective_profile: &Rc<RefCell<PerspectiveProfile>>,
 ) -> ModuleRegistry {
     let mut modules = ModuleRegistry::new();
     modules.register(Box::new(
@@ -142,6 +143,18 @@ pub(crate) fn build_painter_modules(
         )
         .with_palette(ui_palette.clone()),
     ));
+    modules.register(Box::new(CameraPerspectiveModule::new(
+        "painter_camera_perspective",
+        // Right column, below the UI-colors panel; tucks under the graphic
+        // picker's toggle region when that one is shown.
+        ModuleRect {
+            x0: 46,
+            y0: 14,
+            x1: 70,
+            y1: 23,
+        },
+        camera_perspective_profile.clone(),
+    )));
     modules.register(Box::new(UiCustomizationModule::new(
         "painter_ui_customization",
         ModuleRect {

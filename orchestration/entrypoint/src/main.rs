@@ -587,6 +587,7 @@ fn module_menu_buttons(modules: &ModuleRegistry) -> Vec<CommandBarButton> {
         ("painter_layers_panel", "LAYERS"),
         ("painter_graphic_picker", "GRAPHICS"),
         ("painter_hand_settings", "PROPS"),
+        ("painter_camera_perspective", "PERSPECTIVE"),
         ("painter_controls_panel", "CONTROLS"),
         ("painter_ui_customization", "UI COLORS"),
     ]
@@ -1394,6 +1395,9 @@ fn main() -> Result<()> {
     if let Some(session) = &persisted_session {
         session.renderer.camera.apply_to_runtime(&mut state.camera);
     }
+    // The camera-perspective panel edits this shared cell; the frame sync
+    // copies it into the live camera so projection picks it up every frame.
+    let camera_perspective_profile = Rc::new(RefCell::new(state.camera.perspective));
 
     let ui_palette = UiPalette::default();
     // Per-user controls profile (overrides only), restored from the saved
@@ -1440,6 +1444,7 @@ fn main() -> Result<()> {
         &effective_painter_bindings,
         &painter_bindings,
         &ui_palette,
+        &camera_perspective_profile,
     );
 
     if let Some(session) = &persisted_session {
@@ -1836,6 +1841,9 @@ fn main() -> Result<()> {
             &state.camera,
         );
 
+        // Camera-perspective panel edits land here: the shared profile cell
+        // is the live source, so projection always sees the panel's values.
+        state.camera.perspective = *camera_perspective_profile.borrow();
         let camera = state.camera;
         let view_orientation = camera_view_orientation_for_camera(camera.swing, camera.roll);
         let cell_clip_size = cell_clip_size_for_state(state, frame.surface_size);
