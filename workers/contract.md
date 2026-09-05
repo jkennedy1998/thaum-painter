@@ -14,9 +14,13 @@ Own bounded background/async seams for thaum-painter, such as future autosave sc
 ## children-encapsulations
 - `session-host/`
   - default
+- `session-client/`
+  - default
 
 ## contents
 - `session-host/`
+  - default
+- `session-client/`
   - default
 
 ## dependencies
@@ -24,6 +28,7 @@ Own bounded background/async seams for thaum-painter, such as future autosave sc
 
 ## exposed interfaces
 - via `session-host/`: `SessionHost`, protocol types, `spawn_session_host_server`
+- via `session-client/`: `SessionClient`, `SessionClientError`
 
 ## interface consumers
 - future `orchestration/` boot flow
@@ -33,6 +38,7 @@ Own bounded background/async seams for thaum-painter, such as future autosave sc
 
 ## tests
 - via `session-host/`: 11 inline + socket tests
+- via `session-client/`: 5 socket tests (join, convergence, presence, denial, disconnect)
 
 ## data
 - none
@@ -40,3 +46,4 @@ Own bounded background/async seams for thaum-painter, such as future autosave sc
 ## notes
 - The old painter's hosted/shared session store deferral is now superseded: `session-host/` is the first real multiplayer transport (host-authoritative, LAN direct-IP, TCP + NDJSON, Figma-shaped order/snapshot/rejoin model). Hosted *presence stores* (durable server-side presence beyond live connections) remain deferred.
 - Open permissions is a settled truth: all users get all normal file interactions; the host is variant-agnostic, so enabling structure edits is purely a `domain/file/storage/` slice (structure-edit record variants).
+- `session-client/` is the connecting mirror of `session-host/`: owns the local runtime built from the `Welcome` snapshot, apply-foreign/skip-own sync, and presence/roster caches. Clients hold documents in memory only.
