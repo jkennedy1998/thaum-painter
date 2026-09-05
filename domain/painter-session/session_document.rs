@@ -26,9 +26,12 @@ pub fn action_timestamp_string() -> String {
         .to_string()
 }
 
-pub fn next_action_id(counter: &mut u64) -> String {
+/// Mints one globally-unique action id. The `user_id` is baked in (Figma's
+/// client-id-in-object-id rule): two sessions minting offline can never
+/// collide, and revert records referencing an action id stay unambiguous.
+pub fn next_action_id(counter: &mut u64, user_id: &str) -> String {
     *counter += 1;
-    format!("action-{}-{counter}", action_timestamp_string())
+    format!("action-{user_id}-{}-{counter}", action_timestamp_string())
 }
 
 pub fn collect_canvas_patches(before: &Canvas, after: &Canvas) -> Vec<SharedCellPatch> {
@@ -170,7 +173,7 @@ pub fn commit_staged_paint_stroke(
         return Ok(());
     }
     let record = SharedDocumentActionRecord::cell_patch_set(
-        next_action_id(action_counter),
+        next_action_id(action_counter, user_id),
         runtime.document.document_id.clone(),
         active_layer_id,
         user_id,
@@ -291,7 +294,7 @@ pub fn apply_shared_history_action(
     };
     if let Some(revert) = revert {
         let record = SharedDocumentActionRecord::revert_patch_set(
-            next_action_id(action_counter),
+            next_action_id(action_counter, user_id),
             runtime.document.document_id.clone(),
             active_layer_id,
             user_id,

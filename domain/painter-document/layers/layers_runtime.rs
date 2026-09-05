@@ -300,7 +300,7 @@ pub fn apply_layers_panel_action(
                 &layer_id,
                 &block_id,
                 &new_block_id,
-                next_action_id(shared_action_counter),
+                next_action_id(shared_action_counter, session_user_id),
                 session_user_id,
                 action_timestamp_string(),
             ) {

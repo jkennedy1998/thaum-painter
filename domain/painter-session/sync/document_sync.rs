@@ -141,7 +141,7 @@ mod tests {
         color: (u8, u8, u8),
     ) -> SharedDocumentActionRecord {
         SharedDocumentActionRecord::cell_patch_set(
-            next_action_id(&mut session.action_counter),
+            next_action_id(&mut session.action_counter, &session.user_id),
             session.runtime.document.document_id.clone(),
             "layer-1".to_string(),
             session.user_id.clone(),
@@ -247,7 +247,7 @@ mod tests {
             .undo_top_action("layer-1")
             .expect("undo finds the stroke");
         let record = SharedDocumentActionRecord::revert_patch_set(
-            next_action_id(&mut alice.action_counter),
+            next_action_id(&mut alice.action_counter, &alice.user_id),
             alice.runtime.document.document_id.clone(),
             "layer-1".to_string(),
             alice.user_id.clone(),

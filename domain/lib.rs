@@ -8,6 +8,8 @@ pub mod camera_viewport;
 pub mod canvas_pointer;
 #[path = "painter-session/clipboard/copy_paste.rs"]
 pub mod clipboard;
+#[path = "painter-session/identity/identity.rs"]
+pub mod identity;
 #[path = "debug-log/debug_log.rs"]
 pub mod debug_log;
 #[path = "file/document_locations.rs"]
@@ -83,6 +85,7 @@ pub use fill::{
     flood_fill, flood_fill_with_connectivity, CanvasBounds, CanvasPlaneAxis, FillConnectivity,
 };
 pub use graphic_picker_module::GraphicPickerModule;
+pub use identity::{SessionIdentity, PRESENCE_CANDIDATE_COLORS};
 pub use hand_settings_module::HandSettingsModule;
 pub use interpolation::{resolve_gap_fill, surrounding_items, BreathRanged, GapFill};
 pub use layers_panel_module::{

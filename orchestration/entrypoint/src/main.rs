@@ -25,7 +25,7 @@ use thaum_painter_domain::{
     }, text_entry::{cursor_overlay_group, TextEntryKey, TextEntryOutcome, TextEntryState}, Canvas, DrawingSpaceWheelMode, LayerRow, LayersPanelState,
     PaintCanvasBoundsModule, PaintHand, PaintTool,
     PainterSelection, PainterUserSessionState, PersistedPainterUiState, SelectionMode, SharedDocumentPaths,
-    SharedDocumentRuntime, TimelineState, apply_painter_selection_action,
+    SessionIdentity, SharedDocumentRuntime, TimelineState, apply_painter_selection_action,
     ToolState, CanvasBounds, DEFAULT_SELECTION_CHANNEL_ID,
 };
 use thaum_renderer_boot::{
@@ -335,10 +335,22 @@ fn route_drag(
     }
 }
 
-fn session_user_id() -> String {
-    env::var("THAUM_SESSION_USER_ID")
-        .or_else(|_| env::var("USER"))
-        .unwrap_or_else(|_| "local-user".to_string())
+/// Loads the stable session identity (random user id, generated once and
+/// persisted under artifacts; see `domain/painter-session/identity/`).
+/// `THAUM_SESSION_USER_ID` stays as the test escape hatch: when set it
+/// overrides the user_id without persisting anything.
+fn session_identity() -> SessionIdentity {
+    if let Ok(user_id) = env::var("THAUM_SESSION_USER_ID") {
+        return SessionIdentity::generate(None).with_user_id_for_tests(user_id);
+    }
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../artifacts/session-identity.json");
+    let os_name = env::var("USER").ok();
+    SessionIdentity::load_or_create(&path, os_name.as_deref())
+        .unwrap_or_else(|error| {
+            eprintln!("failed to load session identity ({error}); using an ephemeral one");
+            SessionIdentity::generate(None)
+        })
 }
 
 fn painter_session_state_path(user_id: &str) -> PathBuf {
@@ -1365,7 +1377,8 @@ fn main() -> Result<()> {
     config.window.title = "thaum-painter".to_string();
     config.window.performance_log_path = Some(painter_performance_log_path());
 
-    let session_user_id = session_user_id();
+    let session_identity = session_identity();
+    let session_user_id = session_identity.user_id.clone();
     let session_state_path = painter_session_state_path(&session_user_id);
     let persisted_session = load_painter_user_session_state(&session_state_path)?;
     // Boot to a blank unsaved document: the user opens or saves explicitly. Restoring
