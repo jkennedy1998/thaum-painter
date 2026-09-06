@@ -35,7 +35,8 @@ use thaum_renderer_boot::{
 use thaum_renderer_domain::{
     camera_view_orientation_for_camera, remap_surface_units_to_active_plane_world,
     remap_surface_units_to_flat_2d_local, ActionBindingMap, ActionName, CameraDepthLink,
-    CameraLayersLink, CellPoint, MAX_VISIBLE_PLANE_RADIUS,
+    CameraLayersLink, CellPoint, Hotspot, MAX_VISIBLE_PLANE_RADIUS, TooltipState,
+    tooltip_card_group,
     CommandBar, CommandBarButton, CommandBarClickOutcome, Composition, ControlActionRow,
     ControlsProfile, effective_bindings,
     ModulePointerButton, ModulePointerEvent, ModuleRect, ModuleRegistry,
@@ -533,6 +534,34 @@ fn save_as_root_from_dialog_path(path: &Path) -> PathBuf {
         .join(stem)
 }
 
+/// Quick-save target for a document with no file path yet: the slugified
+/// document title under the default painter-files root, bumped with `-NN`
+/// when that folder already holds a document (never silently overwrites).
+/// Regular save must not depend on the native dialog stack at all: portal
+/// backends can fail instantly on some Linux sessions (observed on jobo),
+/// and a first save should never need more than one keystroke.
+fn quick_save_document_root(file_root: &Path, title: &str) -> PathBuf {
+    let mut stem = slugify_file_stem(title);
+    if stem.is_empty() {
+        stem = "untitled-document".to_string();
+    }
+    let mut candidate = file_root.join(&stem);
+    let mut suffix = 2;
+    while candidate.join("document.json").exists() {
+        candidate = file_root.join(format!("{stem}-{suffix}"));
+        suffix += 1;
+        if suffix > 99 {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            candidate = file_root.join(format!("{stem}-{stamp}"));
+            break;
+        }
+    }
+    candidate
+}
+
 fn prompt_save_document_root(file_root: &Path, title: &str) -> Option<PathBuf> {
     let suggested = slugify_file_stem(title);
     let suggested = if suggested.is_empty() {
@@ -676,12 +705,18 @@ fn handle_command_bar_button(
         }
         "file:save" => {
             if current_document_root.is_none() {
-                if let Some(next_root) = prompt_save_document_root(&file_root, &shared_document.document.title) {
-                    *shared_document_paths = SharedDocumentPaths::new(next_root.clone());
-                    *current_document_root = Some(next_root);
-                } else {
-                    return Ok(());
-                }
+                // Quick save: default-name folder under painter-files, no
+                // dialog. Native save dialogs stay on SAVE AS (and OPEN), so
+                // the common first save never touches the portal/GTK dialog
+                // stack that fails on some Linux sessions.
+                let next_root =
+                    quick_save_document_root(&file_root, &shared_document.document.title);
+                thaum_painter_domain::debug_log::info(
+                    "file",
+                    &format!("quick save target: {}", next_root.display()),
+                );
+                *shared_document_paths = SharedDocumentPaths::new(next_root.clone());
+                *current_document_root = Some(next_root);
             }
             if let Err(error) = save_shared_document_snapshot(shared_document_paths, shared_document) {
                 recover_snapshot_conflict(
@@ -910,6 +945,41 @@ mod tests {
     fn save_as_root_from_dialog_path_uses_slugged_file_stem_for_other_names() {
         let root = save_as_root_from_dialog_path(Path::new("/tmp/example/My Sketch.json"));
         assert_eq!(root, PathBuf::from("/tmp/example/my-sketch"));
+    }
+
+    #[test]
+    fn quick_save_uses_slugified_title_under_the_file_root() {
+        let file_root = std::env::temp_dir().join(format!(
+            "painter-quick-save-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&file_root).unwrap();
+
+        let root = quick_save_document_root(&file_root, "My Cool Sketch");
+        assert_eq!(root, file_root.join("my-cool-sketch"));
+
+        // No document inside yet: the same title reuses the same folder.
+        assert_eq!(quick_save_document_root(&file_root, "My Cool Sketch"), root);
+
+        // A document already in that folder: the next quick save bumps -02.
+        std::fs::create_dir_all(root.join("document.json").parent().unwrap()).unwrap();
+        std::fs::write(root.join("document.json"), "{}").unwrap();
+        assert_eq!(
+            quick_save_document_root(&file_root, "My Cool Sketch"),
+            file_root.join("my-cool-sketch-2")
+        );
+
+        // Empty/blank titles fall back to the untitled default.
+        assert_eq!(
+            quick_save_document_root(&file_root, "   "),
+            file_root.join("untitled-document")
+        );
+
+        let _ = std::fs::remove_dir_all(&file_root);
     }
 
     #[test]
@@ -1623,6 +1693,13 @@ fn main() -> Result<()> {
     const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(400);
     let mut cursor_blink_on = true;
     let mut cursor_blink_at = Instant::now();
+    // Tooltip dwell state (shared tooltip seam): hotspot cards for gizmos
+    // and other interactive pieces. The clock measures irregular frame gaps
+    // for the 400ms dwell; needs_frame keeps a demand-driven loop ticking
+    // while a dwell is running or a card just appeared/disappeared.
+    let mut tooltip_state = TooltipState::new();
+    let mut tooltip_clock = Instant::now();
+    let mut tooltip_needs_frame = false;
     // Demand-driven frame state: what the previous frame already consumed.
     // When nothing changed, the closure leaves `state.composition` untouched
     // and boot's scene cache reuses the built scene without any group
@@ -1675,7 +1752,13 @@ fn main() -> Result<()> {
                 }
             }
         }
-        if !input_dirty && !playback_due && !blink_due && !session_dirty && network_applied == 0 {
+        if !input_dirty
+            && !playback_due
+            && !blink_due
+            && !session_dirty
+            && !tooltip_needs_frame
+            && network_applied == 0
+        {
             return Ok(());
         }
         if network_applied > 0 {
@@ -2444,7 +2527,39 @@ fn main() -> Result<()> {
             .cursor_position
             .map(to_screen)
             .map(|screen| (screen.x, screen.y));
-        modules.update_hover_at(hover_point);
+        let hovered_id = modules
+            .update_hover_at(hover_point)
+            .map(|id| id.to_string());
+        // Cloned out so the closure below can borrow `modules` immutably
+        // while `hovered_id` no longer ties to it.
+        let hovered_id = hovered_id.clone();
+
+        // Tooltip dwell (shared tooltip seam): a card only fires while
+        // hovering a declared hotspot with no button held and no drag
+        // capture — a press never fires one and dismisses any live one.
+        let tooltip_dt = tooltip_clock.elapsed();
+        tooltip_clock = Instant::now();
+        let pointer_held = frame.input.pointer_down
+            || frame.input.right_pointer_down
+            || modules.is_pointer_captured();
+        let hover_hotspot = if pointer_held {
+            None
+        } else {
+            hover_point.and_then(|(x, y)| {
+                let id = hovered_id.as_deref()?;
+                modules
+                    .iter()
+                    .find(|module| module.id() == id)
+                    .and_then(|module| {
+                        module
+                            .hotspots()
+                            .into_iter()
+                            .find(|hotspot| hotspot.rect.contains(x, y))
+                    })
+            })
+        };
+        let tooltip_frame = tooltip_state.tick(hover_hotspot.as_ref(), tooltip_dt);
+        tooltip_needs_frame = tooltip_frame.dirty;
 
         modules.remove_closed_modules();
 
@@ -2550,6 +2665,25 @@ fn main() -> Result<()> {
             }
         }
         groups.push(command_bar.draw());
+        // Tooltip card: topmost overlay, display-only (never hit-tested),
+        // anchored to the hovered hotspot and clamped to the visible screen.
+        if let Some(card) = tooltip_frame.card.as_ref() {
+            let surface_width = frame.surface_size.width as f32;
+            let surface_height = frame.surface_size.height as f32;
+            let corners = [
+                to_screen([0.0, 0.0]),
+                to_screen([surface_width, 0.0]),
+                to_screen([0.0, surface_height]),
+                to_screen([surface_width, surface_height]),
+            ];
+            let screen_rect = ModuleRect {
+                x0: corners.iter().map(|point| point.x).min().unwrap_or(0),
+                y0: corners.iter().map(|point| point.y).min().unwrap_or(0),
+                x1: corners.iter().map(|point| point.x).max().unwrap_or(0),
+                y1: corners.iter().map(|point| point.y).max().unwrap_or(0),
+            };
+            groups.push(tooltip_card_group(card, screen_rect, &ui_palette));
+        }
         // Painter HUD panels are a screen-locked 2D layer: module origins are
         // camera-unit offsets from the focus target and hud pan moves only the
         // HUD (with the wheel/keys compensating focus). This is the shared

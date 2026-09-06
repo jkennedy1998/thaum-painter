@@ -2,8 +2,8 @@ use std::{cell::RefCell, rc::Rc};
 
 use thaum_renderer_domain::{
     Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, CellWeight, GizmoBar,
-    GizmoClickOutcome, GizmoKind, GizmoState, Module, ModulePointerEvent, ModuleRect, PanelChrome,
-    PersistedModuleUiState, UiColorRole, UiPalette, WorldPoint,
+    GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module, ModulePointerEvent, ModuleRect,
+    PanelChrome, PersistedModuleUiState, UiColorRole, UiPalette, WorldPoint,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +123,12 @@ impl Module for PaintCanvasBoundsModule {
 
     fn rect(&self) -> ModuleRect {
         *self.viewport.borrow()
+    }
+
+    /// Tooltip hotspots: the module's gizmo bar, so every gizmo-enabled
+    /// panel grows tooltips from one shared implementation.
+    fn hotspots(&self) -> Vec<Hotspot> {
+        self.gizmos.hotspots(self.rect())
     }
 
     fn draw(&self) -> CellGroup {

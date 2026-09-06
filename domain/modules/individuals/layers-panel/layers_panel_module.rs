@@ -5,6 +5,7 @@ use std::{
 };
 
 use thaum_renderer_domain::{
+    Hotspot,
     Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, GizmoBar, GizmoClickOutcome,
     GizmoKind, GizmoState, Module, ModulePointerButton, ModulePointerEvent, ModuleRect,
     PanelChrome, PersistedModuleUiState, UiColorRole, UiPalette, WorldPoint,
@@ -911,6 +912,12 @@ impl Module for LayersPanelModule {
 
     fn rect(&self) -> ModuleRect {
         self.rect
+    }
+
+    /// Tooltip hotspots: the module's gizmo bar, so every gizmo-enabled
+    /// panel grows tooltips from one shared implementation.
+    fn hotspots(&self) -> Vec<Hotspot> {
+        self.gizmos.hotspots(self.rect)
     }
 
     fn draw(&self) -> CellGroup {
