@@ -13,8 +13,8 @@ use thaum_painter_domain::{
 use thaum_renderer_domain::{
     conflicting_actions, effective_bindings, format_raw_input, ActionBindingMap,
     CameraDepthLink, CameraLayersLink, CameraPerspectiveModule, ControlsProfile, ControlsPanelModule, ModuleRect,
-    ModuleRegistry, NumberFieldEdit, ParallaxProfile, PerspectiveProfile, UiCustomizationModule,
-    UiPalette,
+    ModuleRegistry, NumberFieldEdit, PersistedModuleUiState, ParallaxProfile,
+    PerspectiveProfile, UiCustomizationModule, UiPalette,
 };
 
 /// Registers every painter module and returns the registry. Shared handles
@@ -234,5 +234,33 @@ pub(crate) fn build_painter_modules(
             }
         },
     )));
+    // Fresh-boot layout: when no user session state exists, every module
+    // starts at the tuned default layout. The same list is the reset target
+    // for the command bar's RESET LAYOUT button, so this stays the one
+    // default-layout source of truth.
+    modules.apply_persisted_ui_state(&default_module_layout());
     modules
+}
+
+/// The painter's default module layout: the tuned Linux-boot positions
+/// captured as the shared default. Rects are HUD-space and tuned against
+/// `painter_default_camera()`, silence (seamless chrome) defaults to off,
+/// and every module starts open.
+pub(crate) fn default_module_layout() -> Vec<PersistedModuleUiState> {
+    fn at(module_id: &str, x0: i32, y0: i32, x1: i32, y1: i32) -> PersistedModuleUiState {
+        PersistedModuleUiState::new(module_id, ModuleRect { x0, y0, x1, y1 }, false, false)
+    }
+    vec![
+        at("painter_toolbox", -41, 14, -26, 34),
+        at("painter_color_picker", 8, -1, 16, 13),
+        at("painter_color_block", 8, -18, 36, -2),
+        at("painter_material_picker", 17, -1, 36, 13),
+        at("painter_graphic_picker", -81, -1, -42, 34),
+        at("painter_hand_settings", -25, 14, 7, 34),
+        at("paint_canvas_bounds", -41, -18, 7, 13),
+        at("painter_layers_panel", -81, -18, -42, -2),
+        at("painter_camera_perspective", 37, 20, 62, 34),
+        at("painter_ui_customization", 37, 6, 62, 19),
+        at("painter_controls_panel", 8, 14, 36, 34),
+    ]
 }

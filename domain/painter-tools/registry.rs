@@ -67,6 +67,14 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
         hotkey: Some("V"),
     },
     ToolDescriptor {
+        id: "move",
+        label: "Move",
+        icon: '✥',
+        property_row_ids: &[],
+        select_action: Some("painter_select_move"),
+        hotkey: Some("M"),
+    },
+    ToolDescriptor {
         id: "text",
         label: "Text",
         icon: 'T',
@@ -138,13 +146,15 @@ mod tests {
         assert_eq!(TextTool::descriptor().id, "text");
         assert_eq!(PickerTool::descriptor().id, "picker");
         assert_eq!(StampTool::descriptor().id, "stamp");
-        assert_eq!(all().len(), 7);
+        assert_eq!(MoveTool::descriptor().id, "move");
+        assert_eq!(all().len(), 8);
     }
 
     use crate::painter_tools::brush::BrushTool;
     use crate::painter_tools::erase::EraseTool;
     use crate::painter_tools::fill::FillTool;
     use crate::painter_tools::lasso::LassoTool;
+    use crate::painter_tools::move_tool::MoveTool;
     use crate::painter_tools::picker::PickerTool;
     use crate::painter_tools::stamp::StampTool;
     use crate::painter_tools::text::TextTool;

@@ -127,4 +127,6 @@ pub use tool_state::{
 };
 pub use toolbar_module::{ToolbarButton, ToolbarModule};
 pub use toolbox_module::{ToolDef, ToolboxModule};
-pub use user_session_state::{PainterUserSessionState, PersistedPainterUiState};
+pub use user_session_state::{
+    PainterUserSessionState, PersistedPainterUiState, painter_default_camera,
+};

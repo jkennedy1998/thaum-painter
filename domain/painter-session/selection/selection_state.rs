@@ -291,6 +291,17 @@ impl PainterSelection {
         self.plane.apply_points(points, mode);
     }
 
+    /// Exact 3D replacement of the plane cell set without plane filtering.
+    /// Used by the move commit, which re-anchors a known-full 3D point set
+    /// that may legitimately span depths after a mid-drag view rotation.
+    pub fn replace_plane_points_exact<I>(&mut self, points: I)
+    where
+        I: IntoIterator<Item = CellPoint>,
+    {
+        self.plane.clear();
+        self.plane.restore_points(points);
+    }
+
     pub fn preview_plane_with_mode<I>(&self, points: I, mode: SelectionMode) -> PlaneSelection
     where
         I: IntoIterator<Item = CellPoint>,

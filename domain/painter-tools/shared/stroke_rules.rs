@@ -18,6 +18,12 @@ pub enum DragBehavior {
     /// Never paints and never selects; a press samples the cell under the
     /// cursor into a hand's state once, and drags do nothing (picker).
     ClickOnly,
+    /// Holds a selection-move stroke: a press captures the active plane
+    /// selection's content, drags track the offset, release commits one
+    /// bounded move (clear old area, paste at the new place, re-anchor the
+    /// selection there). The pointer lifecycle owns the in-progress move
+    /// stroke (move).
+    MoveSelection,
 }
 
 /// Which drag behavior the tool with this registration id uses.
@@ -27,6 +33,7 @@ pub fn drag_behavior(tool_id: &str) -> DragBehavior {
         "text" => DragBehavior::TypingSession,
         "picker" => DragBehavior::ClickOnly,
         "stamp" => DragBehavior::ClickOnly,
+        "move" => DragBehavior::MoveSelection,
         // Unknown registrations behave as ordinary per-position paint tools.
         _ => DragBehavior::PerPosition,
     }

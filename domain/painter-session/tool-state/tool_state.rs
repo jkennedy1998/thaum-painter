@@ -47,12 +47,20 @@ pub enum PaintTool {
     /// never stamp. Application lives in the `stamp_*` seams below and the
     /// canvas-pointer press dispatch, never through `apply_at_for_hand`.
     Stamp,
+    /// Selection mover: with an active plane selection, press-drag-release
+    /// moves the selected raster content — release clears the old selection
+    /// area, pastes the content at the new place, and re-anchors the
+    /// selection there, one bounded undoable op. Without a selection it is
+    /// a stub for the future layer-offset behavior. Application lives in
+    /// the canvas-pointer move-stroke dispatch, never through
+    /// `apply_at_for_hand`.
+    Move,
 }
 
 impl PaintTool {
     /// Every live tool, in toolbox order. Drift-tested against the
     /// painter-tools registry.
-    pub fn all() -> [PaintTool; 7] {
+    pub fn all() -> [PaintTool; 8] {
         [
             PaintTool::Brush,
             PaintTool::Erase,
@@ -61,6 +69,7 @@ impl PaintTool {
             PaintTool::Text,
             PaintTool::Picker,
             PaintTool::Stamp,
+            PaintTool::Move,
         ]
     }
 
@@ -76,6 +85,7 @@ impl PaintTool {
             PaintTool::Text => "text",
             PaintTool::Picker => "picker",
             PaintTool::Stamp => "stamp",
+            PaintTool::Move => "move",
         }
     }
 
@@ -88,6 +98,7 @@ impl PaintTool {
             "text" => Some(PaintTool::Text),
             "picker" => Some(PaintTool::Picker),
             "stamp" => Some(PaintTool::Stamp),
+            "move" => Some(PaintTool::Move),
             _ => None,
         }
     }

@@ -43,6 +43,10 @@ pub fn painter_bindings() -> ActionBindingMap {
         ActionName::new("painter_select_stamp"),
         RawInput::Key("V".to_string()),
     );
+    map.bind(
+        ActionName::new("painter_select_move"),
+        RawInput::Key("M".to_string()),
+    );
     // Drawing-space pan (context decides 3D focus pan vs HUD pan).
     map.bind(
         ActionName::new("painter_pan_left"),

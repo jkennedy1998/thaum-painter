@@ -32,13 +32,19 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use anyhow::Error;
-use thaum_renderer_domain::{CameraViewOrientation, CellColor, CellGroup, CellPoint};
+use thaum_renderer_domain::{
+    project_world_relative_to_view, unproject_view_relative_to_world, CameraViewOrientation,
+    CellColor, CellGraphic, CellGroup, CellPoint, ViewRelativePoint, WorldPoint,
+};
 
 use crate::{
-    brush::{Canvas, PaintedCell},
+    brush::{self, Canvas, PaintedCell},
     clipboard::WorldCopyData,
     fill::CanvasBounds,
-    lasso_stroke::{build_lasso_path_cell_group, build_lasso_preview_cell_groups, LassoStroke},
+    lasso_stroke::{
+        build_lasso_path_cell_group, build_lasso_preview_cell_groups, LassoPreviewCell, LassoStroke,
+    },
+    paint_color::PaintColor,
     painter_tools::shared::{drag_behavior, selection_behavior, DragBehavior},
     selection_state::{PainterSelection, SelectionMode},
     selection_stroke::{build_plane_selection_cell_groups, interpolate_cell_path, SelectionStroke},
@@ -64,6 +70,156 @@ pub struct StampHover {
     pub hand: PaintHand,
     pub anchor: CellPoint,
     pub data: WorldCopyData,
+}
+
+/// One in-progress selection move: the acting hand, the press cell, the
+/// plane-selection points captured at press, and the non-blank content
+/// under them. The drag offset accumulates in view space and rebases
+/// whenever a drag frame reports a changed camera orientation, so a
+/// mid-drag swing/roll re-aims the displacement with the view and a
+/// mid-drag focus-depth scroll lands the content at the new depth.
+/// Release commits the whole move — clear the origin area, paste the
+/// content at its translated position, re-anchor the selection there — as
+/// one bounded undoable op.
+#[derive(Debug, Clone)]
+pub struct MoveStroke {
+    pub hand: PaintHand,
+    pub origin: CellPoint,
+    pub origin_points: Vec<CellPoint>,
+    pub content: Vec<(CellPoint, PaintedCell)>,
+    /// World point of the last drag frame; each frame's delta reads
+    /// against it.
+    anchor: CellPoint,
+    /// Camera orientation the anchor and accumulated offset are expressed
+    /// in — kept in lockstep so the commit always unprojects through the
+    /// basis the offset was accumulated in.
+    orientation: CameraViewOrientation,
+    /// Accumulated drag displacement in the current view basis.
+    offset: ViewRelativePoint,
+}
+
+impl MoveStroke {
+    pub fn new(
+        hand: PaintHand,
+        origin: CellPoint,
+        origin_points: Vec<CellPoint>,
+        content: Vec<(CellPoint, PaintedCell)>,
+        orientation: CameraViewOrientation,
+    ) -> Self {
+        Self {
+            hand,
+            origin,
+            origin_points,
+            content,
+            anchor: origin,
+            orientation,
+            offset: ViewRelativePoint {
+                right: 0,
+                up: 0,
+                depth: 0,
+            },
+        }
+    }
+
+    /// Folds one drag frame into the accumulated view-space offset. With an
+    /// unchanged orientation the world delta is exact cursor motion — depth
+    /// included, so a focus-depth scroll mid-drag carries the landing plane
+    /// with it. When the orientation changed, the offset rebases into the
+    /// new view basis (the displacement the user saw survives, rotated) and
+    /// the anchor resets, because the world point under a still cursor
+    /// jumps on re-basing — that jump is noise, not motion.
+    pub fn drag_to(&mut self, position: CellPoint, orientation: CameraViewOrientation) {
+        if orientation != self.orientation {
+            let world = unproject_view_relative_to_world(
+                self.orientation,
+                WorldPoint::origin(),
+                self.offset,
+            );
+            self.offset = project_world_relative_to_view(orientation, WorldPoint::origin(), world);
+            self.anchor = position;
+        } else if position != self.anchor {
+            let delta = project_world_relative_to_view(
+                orientation,
+                WorldPoint::origin(),
+                WorldPoint {
+                    x: position.x - self.anchor.x,
+                    y: position.y - self.anchor.y,
+                    z: position.z - self.anchor.z,
+                },
+            );
+            self.offset.right += delta.right;
+            self.offset.up += delta.up;
+            self.offset.depth += delta.depth;
+            self.anchor = position;
+        }
+        self.orientation = orientation;
+    }
+
+    /// The commit's 3D world displacement: the accumulated view-space
+    /// offset unprojected through the orientation it accumulated in.
+    pub fn world_offset(&self) -> (i32, i32, i32) {
+        let world =
+            unproject_view_relative_to_world(self.orientation, WorldPoint::origin(), self.offset);
+        (world.x, world.y, world.z)
+    }
+
+    /// The release commit's cell changes: clear every captured origin point,
+    /// then paste the captured content at its translated position. Clearing
+    /// runs first so a move that overlaps its own origin lands correctly.
+    pub fn commit_changes(&self) -> Vec<(CellPoint, Option<PaintedCell>)> {
+        let (dx, dy, dz) = self.world_offset();
+        let mut changes: Vec<_> = self
+            .origin_points
+            .iter()
+            .map(|point| (*point, None))
+            .collect();
+        changes.extend(self.content.iter().map(|(point, cell)| {
+            (
+                CellPoint {
+                    x: point.x + dx,
+                    y: point.y + dy,
+                    z: point.z + dz,
+                },
+                Some(cell.clone()),
+            )
+        }));
+        changes
+    }
+
+    /// Per-cell preview data for the in-flight move: the origin area
+    /// flashes its current content against the cleared state while the
+    /// destination flashes what is under it against the incoming content —
+    /// the same two-phase pair the stamp paste preview shows.
+    pub fn preview_cells(&self, canvas: &Canvas) -> Vec<LassoPreviewCell> {
+        let (dx, dy, dz) = self.world_offset();
+        let cleared = PaintedCell {
+            graphic: CellGraphic::Glyph(' '),
+            color: PaintColor::flat_rgb(0, 0, 0),
+            weight_index: 3,
+        };
+        let mut previews: Vec<_> = self
+            .origin_points
+            .iter()
+            .map(|point| LassoPreviewCell {
+                point: *point,
+                current: canvas.get(point).cloned(),
+                upcoming: cleared.clone(),
+            })
+            .collect();
+        previews.extend(self.content.iter().map(|(point, cell)| {
+            let destination = CellPoint {
+                x: point.x + dx,
+                y: point.y + dy,
+                z: point.z + dz,
+            };
+            LassoPreviewCell {
+                point: destination,
+                current: canvas.get(&destination).cloned(),
+                upcoming: cell.clone(),
+            }
+        }));
+        previews
+    }
 }
 
 /// Everything the pointer lifecycle needs from the live session. The
@@ -96,6 +252,7 @@ pub struct CanvasPointerStrokes {
     left_drag_position: Option<CellPoint>,
     right_drag_position: Option<CellPoint>,
     stamp_hover: Option<StampHover>,
+    move_stroke: Option<MoveStroke>,
 }
 
 impl CanvasPointerStrokes {
@@ -108,6 +265,7 @@ impl CanvasPointerStrokes {
             left_drag_position: None,
             right_drag_position: None,
             stamp_hover: None,
+            move_stroke: None,
         }
     }
 
@@ -138,6 +296,7 @@ impl CanvasPointerStrokes {
     pub fn cancel(&mut self, hand: PaintHand) {
         self.lasso = None;
         self.selection = None;
+        self.move_stroke = None;
         *self.drag_position_mut(hand) = None;
     }
 
@@ -206,6 +365,41 @@ impl CanvasPointerStrokes {
         // gone before the arms borrow_mut (a scrutinee temporary would live
         // through every arm and panic the pick).
         let pressed_tool_id = ctx.tool_state.borrow().tool_for_hand(hand).id();
+        if drag_behavior(pressed_tool_id) == DragBehavior::MoveSelection {
+            // The move tool never begins a typing session or a selection
+            // stroke. Without an active plane selection it is a deliberate
+            // no-op stub for the future layer-offset behavior.
+            if ctx.tool_state.borrow().hand_state(hand).target == PaintTarget::Image {
+                let origin_points: Vec<CellPoint> = {
+                    let selection = ctx.selection.borrow();
+                    if selection.plane().has_selection() {
+                        selection.plane().iter().collect()
+                    } else {
+                        Vec::new()
+                    }
+                };
+                if !origin_points.is_empty() {
+                    let content: Vec<(CellPoint, PaintedCell)> = origin_points
+                        .iter()
+                        .filter_map(|point| {
+                            let cell = ctx.canvas.get(point).cloned()?;
+                            if brush::is_blank_cell(&cell) {
+                                return None;
+                            }
+                            Some((*point, cell))
+                        })
+                        .collect();
+                    self.move_stroke = Some(MoveStroke::new(
+                        hand,
+                        position,
+                        origin_points,
+                        content,
+                        orientation,
+                    ));
+                }
+            }
+            return None;
+        }
         if drag_behavior(pressed_tool_id) == DragBehavior::ClickOnly {
             match pressed_tool_id {
                 // The picker samples the cell under the cursor into hand state.
@@ -332,6 +526,23 @@ impl CanvasPointerStrokes {
         }
     }
 
+    /// Folds the release frame into an in-progress move stroke: a focus-depth
+    /// scroll or view rotation after the last drag frame must still land. The
+    /// entrypoint gates the position with its usual canvas eligibility and
+    /// passes only on-canvas release points.
+    pub fn fold_move_release(
+        &mut self,
+        hand: PaintHand,
+        position: CellPoint,
+        orientation: CameraViewOrientation,
+    ) {
+        if let Some(stroke) = self.move_stroke.as_mut() {
+            if stroke.hand == hand {
+                stroke.drag_to(position, orientation);
+            }
+        }
+    }
+
     /// Continues the in-progress stroke for `hand` with a canvas drag.
     /// Strokes ignore drags from the other hand; with no stroke in progress,
     /// image-target drags stage chunks and selection-target drags apply per
@@ -344,6 +555,19 @@ impl CanvasPointerStrokes {
         bounds: CanvasBounds,
         orientation: CameraViewOrientation,
     ) {
+        if drag_behavior(ctx.tool_state.borrow().tool_for_hand(hand).id())
+            == DragBehavior::MoveSelection
+        {
+            // The move stroke folds each frame into its view-space offset;
+            // the overlay previews the placement and release commits the
+            // whole move.
+            if let Some(stroke) = self.move_stroke.as_mut() {
+                if stroke.hand == hand {
+                    stroke.drag_to(position, orientation);
+                }
+            }
+            return;
+        }
         if drag_behavior(ctx.tool_state.borrow().tool_for_hand(hand).id())
             == DragBehavior::ClickOnly
         {
@@ -448,6 +672,51 @@ impl CanvasPointerStrokes {
         current_breath: u32,
     ) -> Vec<Error> {
         let mut errors = Vec::new();
+        if let Some(stroke) = self.move_stroke.take() {
+            if let Some(block_id) = ctx
+                .document
+                .active_raster_block_id(ctx.active_layer_id, current_breath)
+            {
+                let start = (ctx.canvas.clone(), block_id.clone());
+                stage_painted_cells_chunk(
+                    ctx.document,
+                    ctx.canvas,
+                    stroke.commit_changes(),
+                    ctx.active_layer_id,
+                    &block_id,
+                );
+                // One move is one undo step: the staged commit loop below
+                // diffs the press snapshot against the moved canvas.
+                self.set_image_start(stroke.hand, start);
+                // Re-anchor the selection at the moved location as an exact
+                // 3D replacement: a mid-drag view rotation can legitimately
+                // leave the moved set spanning depths, so this path never
+                // plane-filters. The channel mirror is the shared truth, the
+                // plane set the interaction surface — the same split a
+                // selection stroke commits through.
+                let (dx, dy, dz) = stroke.world_offset();
+                let translated = stroke.origin_points.iter().map(|point| CellPoint {
+                    x: point.x + dx,
+                    y: point.y + dy,
+                    z: point.z + dz,
+                });
+                ctx.selection
+                    .borrow_mut()
+                    .replace_plane_points_exact(translated);
+                let points: Vec<CellPoint> = ctx.selection.borrow().plane().iter().collect();
+                commit_selection_channel(
+                    ctx.document,
+                    ctx.document_paths,
+                    points,
+                    SelectionMode::Replace,
+                    ctx.active_layer_id,
+                    current_breath,
+                    ctx.canvas,
+                    ctx.selection,
+                    ctx.action_counter,
+                );
+            }
+        }
         if let Some(stroke) = self.lasso.take() {
             let target = ctx.tool_state.borrow().hand_state(stroke.hand).target;
             if target == PaintTarget::Image {
@@ -559,6 +828,13 @@ impl CanvasPointerStrokes {
             };
             groups.extend(build_lasso_preview_cell_groups(&previews, vivid));
         }
+        if let Some(stroke) = &self.move_stroke {
+            // Two-phase move preview: the origin area flashes its content
+            // against the cleared state while the destination flashes what
+            // release will place there.
+            let previews = stroke.preview_cells(ctx.canvas);
+            groups.extend(build_lasso_preview_cell_groups(&previews, vivid));
+        }
         groups
     }
 }
@@ -597,6 +873,10 @@ mod tests {
         CellPoint { x, y, z: 0 }
     }
 
+    fn point_at(x: i32, y: i32, z: i32) -> CellPoint {
+        CellPoint { x, y, z }
+    }
+
     /// A minimal live session: one layer's canvas, tool state, selection, and
     /// a document runtime rooted in a temp dir, mirroring what the entrypoint
     /// wires into the seam.
@@ -615,9 +895,15 @@ mod tests {
         fn new() -> Self {
             let document = new_unsaved_document();
             let layer_id = resolved_active_layer_id(&document, None);
-            let document_paths = SharedDocumentPaths::new(
-                std::env::temp_dir().join(format!("canvas-pointer-test-{}", std::process::id())),
-            );
+            let document_paths = SharedDocumentPaths::new(std::env::temp_dir().join(format!(
+                "canvas-pointer-test-{}-{}",
+                std::process::id(),
+                {
+                    use std::sync::atomic::{AtomicUsize, Ordering};
+                    static SESSION_SEQ: AtomicUsize = AtomicUsize::new(0);
+                    SESSION_SEQ.fetch_add(1, Ordering::Relaxed)
+                }
+            )));
             let mut canvas = Canvas::new();
             sync_canvas_from_active_layer(&document, &layer_id, 0, &mut canvas);
             Self {
@@ -1025,5 +1311,354 @@ mod tests {
         // Two flash phases over the two copied cells.
         let overlay_cells: Vec<_> = groups.iter().flat_map(|group| group.iter_cells()).collect();
         assert_eq!(overlay_cells.len(), 4);
+    }
+
+    fn brush_cell(graphic: char) -> PaintedCell {
+        PaintedCell {
+            graphic: CellGraphic::Glyph(graphic),
+            color: PaintColor::FlatRgb(255, 255, 255),
+            weight_index: 1,
+        }
+    }
+
+    #[test]
+    fn move_release_folds_a_depth_scroll_that_followed_the_last_drag_frame() {
+        let mut session = Session::new();
+        session
+            .tool_state
+            .get_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Move);
+        apply_brush(&mut session.canvas, point(1, 1), brush_cell('#'));
+        session
+            .selection
+            .borrow_mut()
+            .apply_plane_points_with_mode([point(1, 1)], SelectionMode::Replace);
+
+        let mut strokes = CanvasPointerStrokes::new();
+        let bounds = canvas_bounds();
+        strokes.begin_press(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(0, 0),
+            bounds,
+            flat_view(),
+            0,
+        );
+        strokes.continue_drag(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(2, 0),
+            bounds,
+            flat_view(),
+        );
+        // The user scrolls the focus depth to z=2 and releases without any
+        // further pointer motion: the release frame folds the depth delta.
+        strokes.fold_move_release(PaintHand::Left, point_at(2, 0, 2), flat_view());
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
+        assert!(errors.is_empty());
+
+        assert!(session.canvas.get(&point(1, 1)).is_none());
+        assert_eq!(
+            session.canvas.get(&point_at(3, 1, 2)).unwrap().graphic,
+            CellGraphic::Glyph('#')
+        );
+    }
+
+    #[test]
+    fn move_release_fold_ignores_the_other_hand() {
+        let mut session = Session::new();
+        session
+            .tool_state
+            .get_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Move);
+        apply_brush(&mut session.canvas, point(1, 1), brush_cell('#'));
+        session
+            .selection
+            .borrow_mut()
+            .apply_plane_points_with_mode([point(1, 1)], SelectionMode::Replace);
+
+        let mut strokes = CanvasPointerStrokes::new();
+        let bounds = canvas_bounds();
+        strokes.begin_press(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(0, 0),
+            bounds,
+            flat_view(),
+            0,
+        );
+        strokes.continue_drag(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(2, 0),
+            bounds,
+            flat_view(),
+        );
+        // A right-hand release folds nothing into the left hand's move.
+        strokes.fold_move_release(PaintHand::Right, point_at(2, 0, 2), flat_view());
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
+        assert!(errors.is_empty());
+
+        assert_eq!(
+            session.canvas.get(&point(3, 1)).unwrap().graphic,
+            CellGraphic::Glyph('#')
+        );
+    }
+
+    #[test]
+    fn move_press_drag_release_moves_the_selected_content_as_one_commit() {
+        let mut session = Session::new();
+        session
+            .tool_state
+            .get_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Move);
+        apply_brush(&mut session.canvas, point(1, 1), brush_cell('#'));
+        apply_brush(&mut session.canvas, point(1, 2), brush_cell('a'));
+        session
+            .selection
+            .borrow_mut()
+            .apply_plane_points_with_mode([point(1, 1), point(1, 2)], SelectionMode::Replace);
+
+        let mut strokes = CanvasPointerStrokes::new();
+        let bounds = canvas_bounds();
+        strokes.begin_press(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(0, 0),
+            bounds,
+            flat_view(),
+            0,
+        );
+        strokes.continue_drag(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(3, 1),
+            bounds,
+            flat_view(),
+        );
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
+        assert!(errors.is_empty());
+
+        // The origin area is cleared, the content sits at the new place:
+        // the drag from (0,0) to (3,1) offsets everything by (+3,+1).
+        assert!(session.canvas.get(&point(1, 1)).is_none());
+        assert!(session.canvas.get(&point(1, 2)).is_none());
+        assert_eq!(
+            session.canvas.get(&point(4, 2)).unwrap().graphic,
+            CellGraphic::Glyph('#')
+        );
+        assert_eq!(
+            session.canvas.get(&point(4, 3)).unwrap().graphic,
+            CellGraphic::Glyph('a')
+        );
+        // One bounded move, one undo step.
+        assert_eq!(session.action_counter, 1);
+        // The selection stays active, re-anchored at the new location.
+        let plane: Vec<CellPoint> = session.selection.borrow().plane().iter().collect();
+        assert!(plane.contains(&point(4, 2)));
+        assert!(plane.contains(&point(4, 3)));
+        assert!(!plane.contains(&point(1, 1)));
+    }
+
+    #[test]
+    fn move_without_a_selection_is_a_no_op_stub() {
+        let mut session = Session::new();
+        session
+            .tool_state
+            .get_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Move);
+        apply_brush(&mut session.canvas, point(1, 1), brush_cell('#'));
+
+        let mut strokes = CanvasPointerStrokes::new();
+        let bounds = canvas_bounds();
+        strokes.begin_press(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(1, 1),
+            bounds,
+            flat_view(),
+            0,
+        );
+        strokes.continue_drag(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(4, 1),
+            bounds,
+            flat_view(),
+        );
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
+        assert!(errors.is_empty());
+        // The layer-offset behavior is future work: nothing moves, nothing commits.
+        assert_eq!(
+            session.canvas.get(&point(1, 1)).unwrap().graphic,
+            CellGraphic::Glyph('#')
+        );
+        assert_eq!(session.action_counter, 0);
+    }
+
+    #[test]
+    fn move_drag_builds_a_two_phase_flash_preview() {
+        let vivid = CellColor::Flat([1.0, 0.0, 0.0, 1.0]);
+        let mut session = Session::new();
+        session
+            .tool_state
+            .get_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Move);
+        apply_brush(&mut session.canvas, point(1, 1), brush_cell('#'));
+        session
+            .selection
+            .borrow_mut()
+            .apply_plane_points_with_mode([point(1, 1)], SelectionMode::Replace);
+
+        let mut strokes = CanvasPointerStrokes::new();
+        let bounds = canvas_bounds();
+        strokes.begin_press(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(0, 0),
+            bounds,
+            flat_view(),
+            0,
+        );
+        strokes.continue_drag(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(2, 1),
+            bounds,
+            flat_view(),
+        );
+
+        // Two flash phases over the origin cell plus the destination cell.
+        let groups = strokes.overlay_cell_groups(&mut session.ctx(), flat_view(), vivid);
+        let overlay_cells: Vec<_> = groups.iter().flat_map(|group| group.iter_cells()).collect();
+        assert!(overlay_cells.len() >= 4);
+
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn move_drag_follows_a_mid_drag_focus_depth_scroll_to_the_new_depth() {
+        let mut session = Session::new();
+        session
+            .tool_state
+            .get_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Move);
+        apply_brush(&mut session.canvas, point(1, 1), brush_cell('#'));
+        session
+            .selection
+            .borrow_mut()
+            .apply_plane_points_with_mode([point(1, 1)], SelectionMode::Replace);
+
+        let mut strokes = CanvasPointerStrokes::new();
+        let bounds = canvas_bounds();
+        strokes.begin_press(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(0, 0),
+            bounds,
+            flat_view(),
+            0,
+        );
+        // Drag right two cells on the z=0 plane…
+        strokes.continue_drag(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(2, 0),
+            bounds,
+            flat_view(),
+        );
+        // …then the user scrolls the focus depth to z=2: the same cursor
+        // view position now maps to a world point two units deeper, and
+        // that depth delta joins the accumulated offset.
+        strokes.continue_drag(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point_at(2, 0, 2),
+            bounds,
+            flat_view(),
+        );
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
+        assert!(errors.is_empty());
+
+        // The move lands on the new depth, not the origin's.
+        assert!(session.canvas.get(&point(1, 1)).is_none());
+        assert!(session.canvas.get(&point_at(3, 1, 0)).is_none());
+        assert_eq!(
+            session.canvas.get(&point_at(3, 1, 2)).unwrap().graphic,
+            CellGraphic::Glyph('#')
+        );
+        let plane: Vec<CellPoint> = session.selection.borrow().plane().iter().collect();
+        assert!(plane.contains(&point_at(3, 1, 2)));
+    }
+
+    #[test]
+    fn move_drag_rebases_its_offset_when_the_view_rotates_mid_drag() {
+        let mut session = Session::new();
+        session
+            .tool_state
+            .get_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Move);
+        apply_brush(&mut session.canvas, point(0, 0), brush_cell('#'));
+        session
+            .selection
+            .borrow_mut()
+            .apply_plane_points_with_mode([point(0, 0)], SelectionMode::Replace);
+
+        // PosZ view: right is East (+x), up is Top (+y).
+        let posz = flat_view();
+        // PosX view: right is North (-y), up is Top (+y), depth is East (+x).
+        let posx = thaum_renderer_domain::camera_view_orientation_for_camera(
+            CameraSwing::PosX,
+            CameraRoll::Deg0,
+        );
+
+        let mut strokes = CanvasPointerStrokes::new();
+        let bounds = canvas_bounds();
+        strokes.begin_press(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(0, 0),
+            bounds,
+            posz,
+            0,
+        );
+        // Drag three cells right in the PosZ view.
+        strokes.continue_drag(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(3, 0),
+            bounds,
+            posz,
+        );
+        // The user swings to the PosX view: the still cursor's world point
+        // re-bases onto the new plane; that jump is noise, not motion.
+        strokes.continue_drag(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(0, -3),
+            bounds,
+            posx,
+        );
+        // Then the user drags two more cells right — now along North.
+        strokes.continue_drag(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(0, -5),
+            bounds,
+            posx,
+        );
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), posx, 0);
+        assert!(errors.is_empty());
+
+        // The displacement followed the cursor in view space: three east
+        // before the swing, two north after it.
+        assert!(session.canvas.get(&point(0, 0)).is_none());
+        assert_eq!(
+            session.canvas.get(&point(3, -2)).unwrap().graphic,
+            CellGraphic::Glyph('#')
+        );
+        let plane: Vec<CellPoint> = session.selection.borrow().plane().iter().collect();
+        assert!(plane.contains(&point(3, -2)));
     }
 }

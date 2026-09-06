@@ -1,7 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use thaum_renderer_domain::{
-    CellColor, CellGraphic, CellWeight, ColorBlockModule, Module, ModulePointerButton,
+    CellColor, CellGraphic, CellWeight, ColorBlockModule, Hotspot, Module, ModulePointerButton,
     ModulePointerEvent, ModuleRect, PersistedModuleUiState, UiPalette,
 };
 
@@ -183,6 +183,10 @@ impl Module for PaintColorBlockModule {
 
     fn set_hidden(&mut self, hidden: bool) {
         self.inner.set_hidden(hidden);
+    }
+
+    fn hotspots(&self) -> Vec<Hotspot> {
+        self.inner.hotspots()
     }
 
     fn persisted_ui_state(&self) -> Option<PersistedModuleUiState> {

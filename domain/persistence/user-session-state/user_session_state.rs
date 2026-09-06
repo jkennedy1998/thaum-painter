@@ -336,7 +336,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use thaum_renderer_domain::{Camera, ModuleRegistry, UiPalette};
+use thaum_renderer_domain::{
+    Camera, CameraRoll, CameraSwing, CellPoint, ModuleRegistry, ParallaxProfile, PerspectiveProfile,
+    UiPalette, WorldPoint,
+};
 
 pub fn painter_session_state_path(artifacts_root: &Path, user_id: &str) -> PathBuf {
     artifacts_root
@@ -415,4 +418,29 @@ pub fn build_user_session_state(
         ),
         controls_profile: ControlsProfile::new(),
     }
+}
+
+/// The painter's default camera: the tuned Linux-boot view captured as the
+/// shared default. Module default rects are HUD-space and tuned against this
+/// camera, so a fresh boot (no user session state) reproduces the intended
+/// layout. Reset layout intentionally does not touch the camera.
+pub fn painter_default_camera() -> Camera {
+    let mut camera = Camera::default();
+    camera.focus_target = WorldPoint { x: 26, y: -1, z: 4 };
+    camera.swing = CameraSwing::PosZ;
+    camera.roll = CameraRoll::Deg180;
+    camera.visible_plane_radius = 24;
+    camera.zoom = 0.152_587_89;
+    camera.hud_pan_offset = CellPoint { x: 7, y: -7, z: 0 };
+    camera.perspective = PerspectiveProfile {
+        scale_strength: 0.1,
+        position_strength: 0.5,
+        near_floor_fraction: 0.0,
+    };
+    camera.parallax = ParallaxProfile {
+        enabled: true,
+        strength: 0.44,
+        offset: [0.0, 0.0],
+    };
+    camera
 }

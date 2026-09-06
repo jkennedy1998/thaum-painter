@@ -24,7 +24,8 @@ use thaum_painter_domain::{
         recover_snapshot_conflict, stage_text_entry_change, sync_canvas_from_active_layer,
     }, text_entry::{cursor_overlay_group, TextEntryKey, TextEntryOutcome, TextEntryState}, Canvas, DrawingSpaceWheelMode, LayerRow, LayersPanelState,
     PaintCanvasBoundsModule, PaintHand, PaintTool,
-    PainterSelection, PainterUserSessionState, PersistedPainterUiState, SelectionMode, SharedDocumentPaths,
+    PainterSelection, PainterUserSessionState, painter_default_camera, PersistedPainterUiState,
+    SelectionMode, SharedDocumentPaths,
     SessionIdentity, SharedDocumentRuntime, TimelineState, apply_painter_selection_action,
     ToolState, CanvasBounds, DEFAULT_SELECTION_CHANNEL_ID,
 };
@@ -649,7 +650,7 @@ fn file_menu_buttons() -> Vec<CommandBarButton> {
 }
 
 fn module_menu_buttons(modules: &ModuleRegistry) -> Vec<CommandBarButton> {
-    [
+    let mut buttons: Vec<CommandBarButton> = [
         ("paint_canvas_bounds", "DRAWING SPACE"),
         ("painter_toolbox", "TOOLS"),
         ("painter_color_picker", "COLOR PICKER"),
@@ -671,7 +672,9 @@ fn module_menu_buttons(modules: &ModuleRegistry) -> Vec<CommandBarButton> {
         };
         CommandBarButton::new(format!("module:{module_id}"), format!("{prefix} {label}"))
     })
-    .collect()
+    .collect();
+    buttons.push(CommandBarButton::new("layout:reset", "RESET LAYOUT"));
+    buttons
 }
 
 fn handle_command_bar_button(
@@ -691,6 +694,13 @@ fn handle_command_bar_button(
         if let Some(hidden) = modules.is_hidden(module_id) {
             modules.set_hidden(module_id, !hidden);
         }
+        return Ok(());
+    }
+    if button_id == "layout:reset" {
+        // Reset layout: every live module returns to the shared default
+        // layout — default rect, silence (seamless) off, open. Camera is
+        // intentionally untouched.
+        modules.apply_persisted_ui_state(&painter_modules::default_module_layout());
         return Ok(());
     }
     let file_root = painter_file_root();
@@ -1430,6 +1440,7 @@ pub const LIVE_PAINTER_ACTIONS: &[&str] = &[
     "painter_redo",
     "painter_clipboard_copy",
     "painter_select_stamp",
+    "painter_select_move",
     "painter_play_pause",
 ];
 
@@ -1441,6 +1452,7 @@ pub(crate) fn painter_control_rows() -> Vec<ControlActionRow> {
         ("tools", "Select Bucket", "painter_select_bucket"),
         ("tools", "Select Lasso", "painter_select_lasso"),
         ("tools", "Select Stamp", "painter_select_stamp"),
+        ("tools", "Select Move", "painter_select_move"),
         ("pan", "Pan Left", "painter_pan_left"),
         ("pan", "Pan Right", "painter_pan_right"),
         ("pan", "Pan Up", "painter_pan_up"),
@@ -1558,6 +1570,10 @@ fn main() -> Result<()> {
     let mut state = boot_renderer(config)?;
     if let Some(session) = &persisted_session {
         session.renderer.camera.apply_to_runtime(&mut state.camera);
+    } else {
+        // Fresh boot, nothing assigned: start at the painter's tuned default
+        // camera. Module default rects are HUD-space and tuned against it.
+        state.camera = painter_default_camera();
     }
     // The camera-perspective panel edits these shared cells; the frame sync
     // copies them into the live camera so projection picks them up every
@@ -2513,6 +2529,30 @@ fn main() -> Result<()> {
                 .cursor_position
                 .map(to_screen)
                 .unwrap_or_else(|| to_screen([0.0, 0.0]));
+            // The release folds one final move frame first: a focus-depth
+            // scroll or view rotation after the last drag frame must still
+            // land. Same eligibility as drag frames — only on-canvas release
+            // points fold, so an off-canvas release adds no motion.
+            let release_world = frame.input.cursor_position.map(to_world).filter(|world| {
+                paint_canvas_bounds.borrow().contains(CellPoint {
+                    x: world.x,
+                    y: world.y,
+                    z: world.z,
+                })
+            });
+            if let Some(world) = release_world {
+                let position = CellPoint {
+                    x: world.x,
+                    y: world.y,
+                    z: world.z,
+                };
+                if left_released {
+                    pointer_strokes.fold_move_release(PaintHand::Left, position, view_orientation);
+                }
+                if right_released {
+                    pointer_strokes.fold_move_release(PaintHand::Right, position, view_orientation);
+                }
+            }
             finish_canvas_release(
                 &mut modules,
                 &mut pointer_strokes,
@@ -2683,13 +2723,15 @@ fn main() -> Result<()> {
         // Tooltip card: topmost overlay, display-only (never hit-tested),
         // anchored to the hovered hotspot and clamped to the visible screen.
         if let Some(card) = tooltip_frame.card.as_ref() {
-            let surface_width = frame.surface_size.width as f32;
-            let surface_height = frame.surface_size.height as f32;
+            // The visible screen rect in Flat2d local space: cursor/clip space
+            // is -1..1 (x right, y up, origin center), the same space
+            // `to_screen` consumes, so the screen corners are its ±1 corners —
+            // never pixel surface size, which would misplace the clamp.
             let corners = [
-                to_screen([0.0, 0.0]),
-                to_screen([surface_width, 0.0]),
-                to_screen([0.0, surface_height]),
-                to_screen([surface_width, surface_height]),
+                to_screen([-1.0, -1.0]),
+                to_screen([1.0, -1.0]),
+                to_screen([-1.0, 1.0]),
+                to_screen([1.0, 1.0]),
             ];
             let screen_rect = ModuleRect {
                 x0: corners.iter().map(|point| point.x).min().unwrap_or(0),

@@ -22,6 +22,9 @@ pub mod lasso;
 #[path = "individuals/stamp/stamp_tool.rs"]
 pub mod stamp;
 
+#[path = "individuals/move_tool/move_tool.rs"]
+pub mod move_tool;
+
 #[path = "individuals/text/text_tool.rs"]
 pub mod text;
 
