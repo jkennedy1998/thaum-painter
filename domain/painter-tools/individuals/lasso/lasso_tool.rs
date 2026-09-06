@@ -21,7 +21,7 @@ mod tests {
         let descriptor = LassoTool::descriptor();
         assert_eq!(descriptor.id, "lasso");
         assert_eq!(descriptor.label, "Lasso");
-        assert_eq!(descriptor.icon, '◌');
+        assert_eq!(descriptor.icon, 'Q');
         assert!(descriptor.property_row_ids.is_empty());
         assert_eq!(descriptor.select_action, Some("painter_select_lasso"));
         assert_eq!(descriptor.hotkey, Some("L"));

@@ -21,7 +21,7 @@ mod tests {
         let descriptor = FillTool::descriptor();
         assert_eq!(descriptor.id, "fill");
         assert_eq!(descriptor.label, "Fill");
-        assert_eq!(descriptor.icon, '▧');
+        assert_eq!(descriptor.icon, '█');
         assert_eq!(
             descriptor.property_row_ids,
             &["fill_diagonal", "fill_match_channels"]

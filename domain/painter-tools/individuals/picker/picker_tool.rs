@@ -26,7 +26,7 @@ mod tests {
         let descriptor = PickerTool::descriptor();
         assert_eq!(descriptor.id, "picker");
         assert_eq!(descriptor.label, "Picker");
-        assert_eq!(descriptor.icon, '◉');
+        assert_eq!(descriptor.icon, 'V');
         assert_eq!(descriptor.property_row_ids, &["picker_opposite_hand"]);
         assert_eq!(descriptor.select_action, None);
         assert_eq!(descriptor.hotkey, None);

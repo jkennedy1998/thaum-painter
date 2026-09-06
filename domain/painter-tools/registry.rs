@@ -49,7 +49,7 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
     ToolDescriptor {
         id: "fill",
         label: "Fill",
-        icon: '▧',
+        icon: '█',
         description: "flood-fill matching cells near the cursor",
         property_row_ids: &["fill_diagonal", "fill_match_channels"],
         select_action: Some("painter_select_bucket"),
@@ -58,7 +58,7 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
     ToolDescriptor {
         id: "lasso",
         label: "Lasso",
-        icon: '◌',
+        icon: 'Q',
         description: "select cells by drawing around them",
         property_row_ids: &[],
         select_action: Some("painter_select_lasso"),
@@ -94,7 +94,7 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
     ToolDescriptor {
         id: "picker",
         label: "Picker",
-        icon: '◉',
+        icon: 'V',
         description: "pick the content and color under the cursor",
         property_row_ids: &["picker_opposite_hand"],
         select_action: None,
