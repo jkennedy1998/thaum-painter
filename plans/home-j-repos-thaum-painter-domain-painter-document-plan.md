@@ -4,7 +4,7 @@
 Painter-document has only a contract. With the stronger encapsulation split, painter-document should no longer be the owner of the saved file manifest or the renderer handoff. It should become the editing-facing document view over `domain/file/` state.
 
 ## target-encapsulation
-- `/home/j/Repos/thaum-painter/domain/painter-document/`: edit
+- `thaum-painter/domain/painter-document/`: edit
 
 ## artifacts
 - example document-view notes or fixtures may be added later

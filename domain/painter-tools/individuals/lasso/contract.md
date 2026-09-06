@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-tools/individuals/lasso
+# thaum-painter/domain/painter-tools/individuals/lasso
 
 ## purpose
 Own the lasso tool's registration truth as one tool encapsulation.

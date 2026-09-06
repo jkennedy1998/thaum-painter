@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/rendering
+# thaum-painter/domain/rendering
 
 ## purpose
 Own painter app rendering semantics that prepare and route app state into `thaum-renderer` without making app file/session concerns renderer-owned.
@@ -24,8 +24,8 @@ Own painter app rendering semantics that prepare and route app state into `thaum
   - rendering domain contract
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/file/`
-- `/home/j/Repos/thaum-renderer/`
+- `thaum-painter/domain/file/`
+- `thaum-renderer/`
 
 ## exposed interfaces
 - none
@@ -34,7 +34,7 @@ Own painter app rendering semantics that prepare and route app state into `thaum
 - future app boot and editor surfaces
 
 ## artifacts
-- `/home/j/Repos/thaum-painter/domain/rendering/render-space/example-render-space-v1.json`
+- `thaum-painter/domain/rendering/render-space/example-render-space-v1.json`
   - first concrete renderer handoff example
 
 ## tests

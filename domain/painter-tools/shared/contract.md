@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-tools/shared
+# thaum-painter/domain/painter-tools/shared
 
 ## purpose
 Own cross-tool behavior rules and computations written once and consumed through a standard seam — so logic is never rewritten per tool.

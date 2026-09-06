@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/workers
+# thaum-painter/workers
 
 ## purpose
 Own bounded background/async seams for thaum-painter, such as future autosave scheduling.
@@ -28,7 +28,7 @@ Own bounded background/async seams for thaum-painter, such as future autosave sc
   - default
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/file/storage/` (via `session-host/`: record + document serde types)
+- `thaum-painter/domain/file/storage/` (via `session-host/`: record + document serde types)
 
 ## exposed interfaces
 - via `session-host/`: `SessionHost`, protocol types, `spawn_session_host_server`

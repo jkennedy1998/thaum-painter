@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/tools
+# thaum-painter/tools
 
 ## purpose
 Own reusable, low-level thaum-painter helpers that do not carry domain truth themselves.

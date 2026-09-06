@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/modules/shared
+# thaum-painter/domain/modules/shared
 
 ## purpose
 Own painter-only shared module helpers that don't belong in `thaum-renderer/domain/modules/shared/` because they're specific to painter's own module needs.
@@ -21,14 +21,14 @@ Own painter-only shared module helpers that don't belong in `thaum-renderer/doma
   - painter's old 37-color indexed palette, reused by the indexed swatch picker and RGB block
 
 ## dependencies
-- `/home/j/Repos/thaum-renderer/domain/modules/shared/`
-- `/home/j/Repos/thaum-painter/domain/modules/`
+- `thaum-renderer/domain/modules/shared/`
+- `thaum-painter/domain/modules/`
 
 ## exposed interfaces
 - `legacy_indexed_palette()`
 
 ## interface consumers
-- `/home/j/Repos/thaum-painter/domain/modules/individuals/`
+- `thaum-painter/domain/modules/individuals/`
 
 ## artifacts
 - none

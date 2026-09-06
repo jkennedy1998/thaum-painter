@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-session/sync
+# thaum-painter/domain/painter-session/sync
 
 ## purpose
 Own the multiplayer convergence proof seam: independent document sessions syncing through one totally-ordered action-record log.
@@ -24,9 +24,9 @@ Own the multiplayer convergence proof seam: independent document sessions syncin
   - the loopback bus, synced session, and convergence tests
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/file/storage/`
-- `/home/j/Repos/thaum-painter/domain/painter-session/session_document.rs`
-- `/home/j/Repos/thaum-renderer/domain/`
+- `thaum-painter/domain/file/storage/`
+- `thaum-painter/domain/painter-session/session_document.rs`
+- `thaum-renderer/domain/`
 
 ## exposed interfaces
 - `LoopbackActionBus::publish` — append one record to the shared log

@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-session/text-entry
+# thaum-painter/domain/painter-session/text-entry
 
 ## purpose
 Own the stateful live typing mode for the text tool: cursor ownership of the
@@ -36,9 +36,9 @@ keyboard, per-keystroke cell changes, and the Enter/exit commit granularity.
   - `TextEntryState`, `TextEntryKey`, `TextEntryOutcome`, `PendingChange`
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/painter-operations/text/`
-- `/home/j/Repos/thaum-renderer/domain/camera/`
-- `/home/j/Repos/thaum-renderer/domain/controls/typing-mode/` (the entrypoint
+- `thaum-painter/domain/painter-operations/text/`
+- `thaum-renderer/domain/camera/`
+- `thaum-renderer/domain/controls/typing-mode/` (the entrypoint
   gates dispatch through it while this session is active)
 
 ## exposed interfaces

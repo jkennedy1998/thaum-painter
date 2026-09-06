@@ -8,10 +8,10 @@ authors.workspace = true
 [dependencies]
 anyhow.workspace = true
 serde_json.workspace = true
-thaum-painter-domain = { path = "/home/j/Repos/thaum-painter/domain" }
-thaum-painter-workers = { path = "/home/j/Repos/thaum-painter/workers" }
-thaum-renderer-boot = { path = "/home/j/Repos/thaum-renderer/orchestration/boot" }
-thaum-renderer-domain = { path = "/home/j/Repos/thaum-renderer/domain" }
+thaum-painter-domain = { path = "../../domain" }
+thaum-painter-workers = { path = "../../workers" }
+thaum-renderer-boot = { path = "../../../thaum-renderer/orchestration/boot" }
+thaum-renderer-domain = { path = "../../../thaum-renderer/domain" }
 rfd = "0.15"
 arboard = "3"
 winit = "0.30"

@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-tools/individuals/erase
+# thaum-painter/domain/painter-tools/individuals/erase
 
 ## purpose
 Own the erase tool's registration truth as one tool encapsulation.

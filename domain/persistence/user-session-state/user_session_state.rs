@@ -332,20 +332,11 @@ fn material_from_name(name: &str) -> Option<CellMaterialId> {
 
 // --- session-state file IO and projection -----------------------------------
 
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use thaum_renderer_domain::{Camera, ModuleRegistry, UiPalette};
-
-/// The acting user for this session: the `THAUM_SESSION_USER_ID` override, else
-/// the OS user name, else a fixed local fallback.
-pub fn session_user_id() -> String {
-    env::var("THAUM_SESSION_USER_ID")
-        .or_else(|_| env::var("USER"))
-        .unwrap_or_else(|_| "local-user".to_string())
-}
 
 pub fn painter_session_state_path(artifacts_root: &Path, user_id: &str) -> PathBuf {
     artifacts_root

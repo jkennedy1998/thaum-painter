@@ -5,7 +5,7 @@ This is the first implementation-ready renderer handoff example for `domain/rend
 
 ## mapping direction
 ### file-owned input
-- one `cell_groups[]` entry is emitted per `document.groups[*]`, direct 1:1 — no module wrapper, no intra-unit compositing step; see `/home/j/Repos/thaum-painter/context/module-concept-audit.md`'s "superseded" section.
+- one `cell_groups[]` entry is emitted per `document.groups[*]`, direct 1:1 — no module wrapper, no intra-unit compositing step; see `thaum-painter/context/module-concept-audit.md`'s "superseded" section.
 - each group's active raster segment comes straight from `document.groups[*].raster_segments`
 - stored timing and property blocks decide which segment/move-block is active at the chosen breath
 - a voxel's cell position is its own local `x/y/z` plus any active move-block offset; the group's directly authored `placement` becomes the emitted cell-group's origin, not part of the cell position itself

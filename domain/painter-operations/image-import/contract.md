@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-operations/image-import
+# thaum-painter/domain/painter-operations/image-import
 
 ## purpose
 Own image-to-ASCII conversion and related import-time raster transforms for painter authoring.
@@ -22,8 +22,8 @@ Own image-to-ASCII conversion and related import-time raster transforms for pain
   - image-import contract
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/painter-operations/brush/`
-- `/home/j/Repos/thaum-painter/domain/painter-session/clipboard/`
+- `thaum-painter/domain/painter-operations/brush/`
+- `thaum-painter/domain/painter-session/clipboard/`
 
 ## exposed interfaces
 - none

@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/modules/individuals/toolbar
+# thaum-painter/domain/modules/individuals/toolbar
 
 ## purpose
 Own painter's toolbar panel: a row of selectable tool buttons (brush, eraser, fill, ...), implementing `thaum-renderer`'s `Module` trait so it can be registered and drawn like any other renderer module.
@@ -21,14 +21,14 @@ Own painter's toolbar panel: a row of selectable tool buttons (brush, eraser, fi
   - `ToolbarModule`, `ToolbarButton`, and their `Module` trait implementation
 
 ## dependencies
-- `/home/j/Repos/thaum-renderer/domain/modules/`
+- `thaum-renderer/domain/modules/`
 
 ## exposed interfaces
 - `ToolbarModule::new(id, rect, buttons)` — construct a toolbar with a fixed button set
 - `ToolbarModule::active_tool()` — currently selected tool name, if any
 
 ## interface consumers
-- `/home/j/Repos/thaum-painter/orchestration/entrypoint/`
+- `thaum-painter/orchestration/entrypoint/`
 
 ## artifacts
 - none

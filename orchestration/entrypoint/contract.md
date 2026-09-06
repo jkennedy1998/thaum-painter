@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/orchestration/entrypoint
+# thaum-painter/orchestration/entrypoint
 
 ## purpose
 Own the real, runnable consumer entrypoint that boots `thaum-renderer` for thaum-painter — the local rebuild-and-run loop a human presses to see thaum-painter on screen, mirroring `thaum-renderer-test-user`'s proof-app shape but living inside this repo instead of an ungoverned sibling.
@@ -29,25 +29,29 @@ Own the real, runnable consumer entrypoint that boots `thaum-renderer` for thaum
   - `thaum-painter-entrypoint` binary crate manifest
 - `src/main.rs`
   - boot + proof-scene entrypoint
+- `src/run_log.rs`
+  - host-owned run-log boot wiring: one `context/debug-logging/<UTC-stamp>[-NN]/` folder per boot holding the always-on `run.log` and per-run `perf.jsonl`, culling to the newest five folders, `THAUM_DEBUG` level override, and the panic hook that writes message + backtrace into `run.log`
 - `src/painter_modules.rs`
   - the one place that assembles the module registry; the event loop consumes shared handles and never touches registration order
 - `run.sh`
   - rebuilds (with `CARGO_TARGET_DIR` redirected into this encapsulation's `artifacts/`) and launches the binary
 - `run.desktop`
   - double-click launcher invoking `run.sh` with a visible terminal
+- `package.sh`
+  - builds the release binary and assembles a self-contained distribution (`thaum-painter-<version>-<platform>/` with the binary, the renderer's `renderer-assets/`, and both LICENSE files) plus a `.tar.gz` under `artifacts/release/` — distribution output stays out of the repo; `artifacts/release/` is git-ignored like the rest of `artifacts/`
 - `.gitignore`
   - excludes regenerated `artifacts/*` build output from version control
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/`
-- `/home/j/Repos/thaum-painter/domain/modules/individuals/toolbar/`
-- `/home/j/Repos/thaum-renderer/orchestration/boot/`
-- `/home/j/Repos/thaum-renderer/domain/`
-- `/home/j/Repos/thaum-renderer/domain/modules/`
-- `/home/j/Repos/thaum-renderer/domain/modules/individuals/color-picker/`
-- `/home/j/Repos/thaum-renderer/domain/modules/shared/ui-palette/`
-- `/home/j/Repos/thaum-renderer/domain/modules/shared/panel-chrome/`
-- `/home/j/Repos/thaum-renderer/domain/modules/shared/module-gizmos/`
+- `thaum-painter/domain/`
+- `thaum-painter/domain/modules/individuals/toolbar/`
+- `thaum-renderer/orchestration/boot/`
+- `thaum-renderer/domain/`
+- `thaum-renderer/domain/modules/`
+- `thaum-renderer/domain/modules/individuals/color-picker/`
+- `thaum-renderer/domain/modules/shared/ui-palette/`
+- `thaum-renderer/domain/modules/shared/panel-chrome/`
+- `thaum-renderer/domain/modules/shared/module-gizmos/`
 
 ## exposed interfaces
 - none
@@ -61,19 +65,23 @@ Own the real, runnable consumer entrypoint that boots `thaum-renderer` for thaum
 
 ## tests
 - `src/main.rs` inline `#[cfg(test)]` module (light): cell-path interpolation, file-root resolution, dialog-path normalization, and the registry/live hotkey agreement tests — every registry key binding resolves to live dispatch, every action the dispatch fires exists in `painter_bindings()`, and wheel-bound actions never resolve through the key path
+- `src/run_log.rs` inline tests (light): UTC boot-stamp formatting, stamp-name recognition (including `-NN` suffixed forms), and folder creation with same-second dedupe plus culling-to-cap behavior over a seeded temp tree
 
 ## data
 - none
 
 ## notes
 - this is the first real "press button, see it run" surface for thaum-painter; before this pass `orchestration/` was intentionally empty.
+- runtime paths are portable, not compiled-in: `painter_root()` in `main.rs` resolves everything painter writes (session identity, user-session-state, shared-documents, per-run logs, painter-files document root) as `THAUM_PAINTER_ROOT` env override, else the compiled repo root when it exists on disk (in-repo dev runs keep today's repo layout byte-identical), else the exe's own folder. Asset resolution mirrors the `thaum-renderer-test-user` pattern: `THAUM_RENDERER_ASSET_ROOT` env override, else `renderer-assets/` next to the exe, else the compiled repo path. A deployed copy is therefore self-contained: exe + `renderer-assets/` in one folder runs on any machine (Windows included) with no absolute `~/...` paths left in the binary and no writes outside its own folder.
 - draws painter's own `ToolboxModule` (`domain/modules/individuals/toolbox/`), `PaintColorPickerModule` (`domain/modules/individuals/paint-color-picker/`), `PaintColorBlockModule` (`domain/modules/individuals/paint-color-block/`), `MaterialPickerModule` (`domain/modules/individuals/material-picker/`), `GraphicPickerModule` (`domain/modules/individuals/graphic-picker/`), and `HandSettingsModule` (`domain/modules/individuals/hand-settings/`) alongside the generic renderer proof modules, demonstrating the intended relationship: `thaum-renderer` owns the `Module` trait and `ModuleRegistry`, painter owns concrete module implementations, and this entrypoint composes both into one window.
 - click handling is real end-to-end, not simulated: `tools/window-surface` captures OS mouse events, `orchestration/boot` exposes them per-frame plus a zoom-aware clip-size helper, `domain/camera/screen-world-remap/` converts clip-space to a world/cell point, and this entrypoint's frame-provider closure dispatches that point into the registry every frame before rebuilding the composition — all of that is renderer-owned machinery this entrypoint only calls, per the same ownership split as the rest of the boot seam.
 - source-of-truth from J: the old painter's toolbox UX mattered, specifically assigning left-hand and right-hand tools with left and right mouse buttons. This entrypoint and `domain/modules/individuals/toolbox/` are the first rebuild of that habit.
 - source-of-truth from J: left/right color and weight state, plus masking and lock behavior, should come back cleanly. This entrypoint now wires indexed sprite colors, arbitrary RGB picking, and material picking through shared `tool-state` plus painter-owned modules.
 - source-of-truth from J: the ASCII painter canvas should render in the 3D layer even when the focus lane visually lines up with the 2D UI layer. The current proof app now does that for the live canvas cells and plane-selection border instead of drawing them as flat panel chrome.
+- source-of-truth from J: painter files and data should save relative to wherever the painter actually lives on the computer, not to a compiled-in absolute location; the deployed layout should be the same painter-shaped structure, just relocated under the exe's folder.
 - gizmo drag sessions (move/resize) are real too, not simulated: the frame loop reads `WindowSurfaceInput.pointer_down` (persists across frames while the button is held, unlike `just_clicked`) alongside `cursor_position` and, once a gizmo click made a module request capture, calls `ModuleRegistry::dispatch_captured_pointer_move` every held frame and `dispatch_captured_pointer_up` on release — so a color-picker (or any future gizmo-enabled module) actually moves/resizes on screen in real time as the mouse drags, and `remove_closed_modules` is called every frame so a clicked close gizmo actually removes its module.
 - the render-space boot proof (`RENDER_SPACE_PROOF_MANIFEST_JSON`, `render_space_proof_manifest`/`render_space_proof_composition` in `main.rs`) mirrors `ProofLabelModule`'s existing "boot proof only" pattern: it is not one of painter's real modules and is not wired to any editing UI, it exists to prove `build_composition` renders a saved document end-to-end in a real window. Its `CellGroup`s are appended directly onto the per-frame `groups` vec alongside the drawn `Module`s, not registered with `ModuleRegistry`, since this content isn't interactive yet. A real, editable document is the natural next step once `domain/painter-document/`/`domain/painter-session/` land.
-- cross-repo path dependencies use absolute `/home/j/Repos/thaum-renderer/...` paths, matching the existing convention already used by `domain/Cargo.toml`.
-- `thaum-renderer-test-user` remains the canonical proof app for the renderer itself (`/home/j/Repos/thaum-renderer/tests/contract.md`); this encapsulation is painter's own equivalent and should not be confused with it or replace it.
+- cross-repo path dependencies use relative sibling paths (`../../thaum-renderer/...` from `domain/`/`workers/`, `../../../thaum-renderer/...` from here) so the repos build on any machine where both are checked out side-by-side; the compiled-in absolute-path convention is retired.
+- run logging is one stream per boot shared by renderer and painter: `run_log::boot()` configures the renderer-domain `debug_log` sink (moved out of painter `domain/debug-log/`, env var generalized to `THAUM_DEBUG`) into `context/debug-logging/<UTC-stamp>[-NN]/run.log` and points the renderer's perf log at `perf.jsonl` in the same folder, so a whole run's diagnostics travel together and auto-cull; the old `orchestration/artifacts/perf/` location is retired.
+- `thaum-renderer-test-user` remains the canonical proof app for the renderer itself (`thaum-renderer/tests/contract.md`); this encapsulation is painter's own equivalent and should not be confused with it or replace it.
 - run via `./run.sh` from a terminal, or double-click `run.desktop` in a file manager (may need "allow launching" / mark-as-trusted the first time, depending on desktop environment).

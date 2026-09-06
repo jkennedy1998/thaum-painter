@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/modules/individuals/paint-canvas-bounds
+# thaum-painter/domain/modules/individuals/paint-canvas-bounds
 
 ## purpose
 Own painter's live drawing-space bounds gizmo so the active paint area is visible, movable, and resizable without hardcoding a fixed entrypoint-only rectangle.
@@ -10,7 +10,7 @@ Own painter's live drawing-space bounds gizmo so the active paint area is visibl
 - exposing the canvas-bounds gizmo hot spots painter uses to avoid accidental paint clicks on the gizmos themselves
 
 ## does not own
-- generic gizmo math or pointer-capture behavior, owned by `/home/j/Repos/thaum-renderer/domain/modules/shared/`
+- generic gizmo math or pointer-capture behavior, owned by `thaum-renderer/domain/modules/shared/`
 - painter's actual cell editing rules, owned by `domain/painter-session/tool-state/`
 - scene-space rendering of the paint cells themselves, owned by `orchestration/entrypoint/` today
 
@@ -24,16 +24,16 @@ Own painter's live drawing-space bounds gizmo so the active paint area is visibl
   - painter-only bounds gizmo module
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/painter-session/selection/`
-- `/home/j/Repos/thaum-painter/domain/painter-operations/fill/`
-- `/home/j/Repos/thaum-renderer/domain/modules/`
+- `thaum-painter/domain/painter-session/selection/`
+- `thaum-painter/domain/painter-operations/fill/`
+- `thaum-renderer/domain/modules/`
 
 ## exposed interfaces
 - `PaintCanvasBoundsModule`
   - painter module that edits shared drawing-space bounds through move/resize gizmos
 
 ## interface consumers
-- `/home/j/Repos/thaum-painter/orchestration/entrypoint/`
+- `thaum-painter/orchestration/entrypoint/`
 
 ## artifacts
 - none

@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-document/timing
+# thaum-painter/domain/painter-document/timing
 
 ## purpose
 Own editing-facing timing and breath playback views over saved painter file state.
@@ -21,8 +21,8 @@ Own editing-facing timing and breath playback views over saved painter file stat
   - timing contract
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/file/`
-- `/home/j/Repos/thaum-renderer/domain/data-lanes/`
+- `thaum-painter/domain/file/`
+- `thaum-renderer/domain/data-lanes/`
 
 ## exposed interfaces
 - none

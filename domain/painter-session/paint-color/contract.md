@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-session/paint-color
+# thaum-painter/domain/painter-session/paint-color
 
 ## purpose
 Own painter's live color choice shape so hand state and painted cells can carry either a direct RGB color or a material selection without leaking renderer cell-color details everywhere.
@@ -9,9 +9,9 @@ Own painter's live color choice shape so hand state and painted cells can carry 
 - painter-side preview rgb for UI swatches and labels
 
 ## does not own
-- live tool-state ownership, owned by `/home/j/Repos/thaum-painter/domain/painter-session/tool-state/`
-- renderer material definitions, owned by `/home/j/Repos/thaum-renderer/domain/cell-materials/`
-- renderer cell color resolution, owned by `/home/j/Repos/thaum-renderer/domain/cell-color/`
+- live tool-state ownership, owned by `thaum-painter/domain/painter-session/tool-state/`
+- renderer material definitions, owned by `thaum-renderer/domain/cell-materials/`
+- renderer cell color resolution, owned by `thaum-renderer/domain/cell-color/`
 
 ## children-encapsulations
 - none
@@ -21,8 +21,8 @@ Own painter's live color choice shape so hand state and painted cells can carry 
   - `PaintColor` and conversion helpers
 
 ## dependencies
-- `/home/j/Repos/thaum-renderer/domain/cell-color/`
-- `/home/j/Repos/thaum-renderer/domain/cell-materials/`
+- `thaum-renderer/domain/cell-color/`
+- `thaum-renderer/domain/cell-materials/`
 
 ## exposed interfaces
 - `PaintColor::flat_rgb(red, green, blue)`
@@ -32,8 +32,8 @@ Own painter's live color choice shape so hand state and painted cells can carry 
 - `PaintColor::label()`
 
 ## interface consumers
-- `/home/j/Repos/thaum-painter/domain/painter-session/tool-state/`
-- `/home/j/Repos/thaum-painter/domain/painter-operations/`
+- `thaum-painter/domain/painter-session/tool-state/`
+- `thaum-painter/domain/painter-operations/`
 - painter UI modules needing a live color preview
 
 ## artifacts

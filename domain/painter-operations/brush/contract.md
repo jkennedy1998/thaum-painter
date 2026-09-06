@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-operations/brush
+# thaum-painter/domain/painter-operations/brush
 
 ## purpose
 Own direct brush-style cell application and erase semantics.
@@ -22,7 +22,7 @@ Own direct brush-style cell application and erase semantics.
   - brush contract
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/painter-document/`
+- `thaum-painter/domain/painter-document/`
 
 ## exposed interfaces
 - none

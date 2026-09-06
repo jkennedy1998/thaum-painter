@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-document/properties/interpolation
+# thaum-painter/domain/painter-document/properties/interpolation
 
 ## purpose
 Own the resolution of what renders for a breath that no property block or raster segment covers, so gap-fill behavior (currently "nothing") and future real interpolation both live in one seam instead of being reimplemented per call site.
@@ -23,7 +23,7 @@ Own the resolution of what renders for a breath that no property block or raster
   - `GapFill`, `BreathRanged`, `surrounding_items`, `resolve_gap_fill`
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/file/`
+- `thaum-painter/domain/file/`
 
 ## exposed interfaces
 ### gap-fill resolution

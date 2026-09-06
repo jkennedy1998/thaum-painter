@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/workers/session-host
+# thaum-painter/workers/session-host
 
 ## purpose
 Own the host-authoritative core and LAN transport for multiplayer painting sessions: one ordered record log, one connection roster, one presence side-channel. Figma's model at LAN scale — the host defines sync order, records are opaque, joins get a fresh snapshot.
@@ -27,7 +27,7 @@ Own the host-authoritative core and LAN transport for multiplayer painting sessi
 - `tcp.rs` — TCP + NDJSON listener wrapper (`spawn_session_host_server`), default port 4747 (`THAUM_SESSION_HOST_PORT` overrides), socket tests
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/file/storage/` (record + document types, serde only)
+- `thaum-painter/domain/file/storage/` (record + document types, serde only)
 
 ## exposed interfaces
 - `SessionHost` — `handle_client_message`, `disconnect`, `take_outgoing`, `set_snapshot_source`, `records`, `roster`

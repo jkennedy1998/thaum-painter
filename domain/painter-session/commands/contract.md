@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-session/commands
+# thaum-painter/domain/painter-session/commands
 
 ## purpose
 Own the command vocabulary for mutating painter session and document state.
@@ -21,8 +21,8 @@ Own the command vocabulary for mutating painter session and document state.
   - commands contract
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/painter-document/`
-- `/home/j/Repos/thaum-painter/domain/painter-operations/`
+- `thaum-painter/domain/painter-document/`
+- `thaum-painter/domain/painter-operations/`
 
 ## exposed interfaces
 - none

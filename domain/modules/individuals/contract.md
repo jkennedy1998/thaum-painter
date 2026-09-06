@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/modules/individuals
+# thaum-painter/domain/modules/individuals
 
 ## purpose
 Own painter's own concrete modules — panels the ASCII painter needs that the game (or other thaum-renderer consumers) never will.
@@ -33,14 +33,14 @@ Own painter's own concrete modules — panels the ASCII painter needs that the g
   - individuals contract
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/modules/`
-- `/home/j/Repos/thaum-renderer/domain/modules/shared/`
+- `thaum-painter/domain/modules/`
+- `thaum-renderer/domain/modules/shared/`
 
 ## exposed interfaces
 - none
 
 ## interface consumers
-- `/home/j/Repos/thaum-painter/orchestration/entrypoint/`
+- `thaum-painter/orchestration/entrypoint/`
 
 ## artifacts
 - none

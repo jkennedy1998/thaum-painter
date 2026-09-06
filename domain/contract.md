@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain
+# thaum-painter/domain
 
 ## purpose
 Own the painter-specific semantic boundaries for authoring ASCII scenes without taking ownership of renderer internals.
@@ -25,8 +25,6 @@ Own the painter-specific semantic boundaries for authoring ASCII scenes without 
   - default
 - `painter-operations/`
   - default
-- `debug-log/`
-  - process-global leveled debug logging seam (THAUM_PAINTER_DEBUG)
 - `modules/`
   - default
 - `tai/`
@@ -37,8 +35,8 @@ Own the painter-specific semantic boundaries for authoring ASCII scenes without 
   - domain contract
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/`
-- `/home/j/Repos/thaum-renderer/`
+- `thaum-painter/`
+- `thaum-renderer/`
 
 ## exposed interfaces
 - none

@@ -4,7 +4,7 @@
 Capture why `module` is a missing structural concept in the current `domain/file/` and `domain/rendering/render-space/` shapes, sourced from `thaum-renderer`'s own design truths and the old painter's `module_position_storage.ts`, and record the correction made to the saved-file and render-space examples.
 
 ## source evidence
-- `/home/j/Repos/thaum-renderer/context/statement-truths.md` (question-2/truth-2, and the two later truths about module panning and cell-group-local coordinates)
+- `thaum-renderer/context/statement-truths.md` (question-2/truth-2, and the two later truths about module panning and cell-group-local coordinates)
 - old file: `src/ascii_painter/module_position_storage.ts` (tracked module placement as its own concern, separate from `painter_document.ts`)
 
 ## what the renderer truths actually say

@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/workers/session-client
+# thaum-painter/workers/session-client
 
 ## purpose
 The connecting side of a hosted multiplayer session: mirror `domain/painter-session/sync/`'s `SyncedDocumentSession` semantics over the host's wire. Owns the local document runtime built from the host's `Welcome` snapshot, the read cursor, presence/roster caches, and the publish flows.
@@ -24,7 +24,7 @@ The connecting side of a hosted multiplayer session: mirror `domain/painter-sess
 - `session_client.rs` — `SessionClient` (`connect` returning the snapshot, `sync(&mut runtime)`, `send_action` for already-applied records, `send_presence`, caches, `shutdown`), `SessionClientError`, synchronous `Hello` handshake + reader/writer threads
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/file/storage/` (runtime, record, document types)
+- `thaum-painter/domain/file/storage/` (runtime, record, document types)
 - `../session-host/` (protocol types: `ClientMessage`, `HostMessage`, `SessionUser`, `SESSION_PROTOCOL_VERSION`)
 
 ## exposed interfaces

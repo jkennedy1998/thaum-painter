@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-operations
+# thaum-painter/domain/painter-operations
 
 ## purpose
 Own pure painter editing operations that can run headlessly over painter data.
@@ -30,7 +30,7 @@ Own pure painter editing operations that can run headlessly over painter data.
   - painter-operations contract
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/painter-document/`
+- `thaum-painter/domain/painter-document/`
 
 ## exposed interfaces
 - none

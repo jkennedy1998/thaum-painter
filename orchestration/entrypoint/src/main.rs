@@ -34,8 +34,9 @@ use thaum_renderer_boot::{
 };
 use thaum_renderer_domain::{
     camera_view_orientation_for_camera, remap_surface_units_to_active_plane_world,
-    remap_surface_units_to_flat_2d_local, ActionBindingMap, ActionName, CellPoint, CommandBar,
-    CommandBarButton, CommandBarClickOutcome, Composition, ControlActionRow,
+    remap_surface_units_to_flat_2d_local, ActionBindingMap, ActionName, CameraDepthLink,
+    CameraLayersLink, CellPoint, MAX_VISIBLE_PLANE_RADIUS,
+    CommandBar, CommandBarButton, CommandBarClickOutcome, Composition, ControlActionRow,
     ControlsProfile, effective_bindings,
     ModulePointerButton, ModulePointerEvent, ModuleRect, ModuleRegistry,
     PersistedRendererUiSessionState, RawInput, TypingMode, TypingRoute, UiColorRole,
@@ -44,10 +45,23 @@ use thaum_renderer_domain::{
 use winit::keyboard::KeyCode;
 
 mod painter_modules;
+mod run_log;
 
-fn development_asset_root() -> PathBuf {
+/// Asset root: `THAUM_RENDERER_ASSET_ROOT` env override, else a
+/// `renderer-assets/` folder next to the running exe (deployed portable
+/// layout), else the compiled repo path for in-repo dev runs.
+fn resolve_asset_root() -> PathBuf {
     if let Ok(path) = env::var("THAUM_RENDERER_ASSET_ROOT") {
         return PathBuf::from(path);
+    }
+
+    if let Ok(exe_path) = env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let packaged_asset_root = exe_dir.join("renderer-assets");
+            if packaged_asset_root.exists() {
+                return packaged_asset_root;
+            }
+        }
     }
 
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -343,9 +357,11 @@ fn session_identity() -> SessionIdentity {
     if let Ok(user_id) = env::var("THAUM_SESSION_USER_ID") {
         return SessionIdentity::generate(None).with_user_id_for_tests(user_id);
     }
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../artifacts/session-identity.json");
-    let os_name = env::var("USER").ok();
+    let path = painter_root().join("orchestration/artifacts/session-identity.json");
+    // Cosmetic display_name seed only; ownership never derives from it.
+    let os_name = env::var("USER")
+        .or_else(|_| env::var("USERNAME")) // Windows
+        .ok();
     SessionIdentity::load_or_create(&path, os_name.as_deref())
         .unwrap_or_else(|error| {
             eprintln!("failed to load session identity ({error}); using an ephemeral one");
@@ -354,31 +370,42 @@ fn session_identity() -> SessionIdentity {
 }
 
 fn painter_session_state_path(user_id: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../artifacts/user-session-state")
+    painter_root()
+        .join("orchestration/artifacts/user-session-state")
         .join(format!("{user_id}.json"))
 }
 
 fn painter_shared_document_paths(document_id: &str) -> SharedDocumentPaths {
     SharedDocumentPaths::new(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../artifacts/shared-documents")
+        painter_root()
+            .join("orchestration/artifacts/shared-documents")
             .join(document_id),
     )
 }
 
-fn painter_repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
+/// Runtime root every painter-owned folder hangs off. `THAUM_PAINTER_ROOT`
+/// wins, then the compiled repo root when it exists on disk (in-repo dev runs
+/// keep today's repo layout byte-identical), else the exe's own folder so a
+/// deployed copy is self-contained and portable across machines (Windows
+/// included) with no compiled-in absolute paths left behind.
+fn painter_root() -> PathBuf {
+    if let Ok(path) = env::var("THAUM_PAINTER_ROOT") {
+        return PathBuf::from(path);
+    }
 
-/// Frame performance log (renderer-owned window-surface seam). One JSON line
-/// per 60-frame bucket: scene build/upload/render ms, wall fps, quad counts.
-fn painter_performance_log_path() -> PathBuf {
-    painter_repo_root().join("orchestration/artifacts/perf/perf.jsonl")
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    if repo_root.join("Cargo.toml").exists() {
+        return repo_root;
+    }
+
+    env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn painter_file_root() -> PathBuf {
-    resolve_painter_file_root(&painter_repo_root())
+    resolve_painter_file_root(&painter_root())
 }
 
 fn slugify_file_stem(text: &str) -> String {
@@ -1374,11 +1401,15 @@ fn main() -> Result<()> {
     if std::env::var_os("GIO_USE_VOLUME_MONITOR").is_none() {
         std::env::set_var("GIO_USE_VOLUME_MONITOR", "unix");
     }
-    thaum_painter_domain::debug_log::configure_from_env();
+    // Per-run log folder: configures the shared debug-log sink into
+    // context/debug-logging/<UTC-stamp>/run.log, culls older folders to the
+    // newest five, and installs the panic hook. `THAUM_DEBUG` raises the floor.
+    let run_log_dir = run_log::boot(&painter_root());
     let mut config = BootConfig::default();
-    config.asset_root = development_asset_root();
+    config.asset_root = resolve_asset_root();
     config.window.title = "thaum-painter".to_string();
-    config.window.performance_log_path = Some(painter_performance_log_path());
+    config.window.performance_log_path =
+        run_log_dir.as_ref().map(|dir| dir.join("perf.jsonl"));
 
     let session_identity = session_identity();
     let session_user_id = session_identity.user_id.clone();
@@ -1443,9 +1474,20 @@ fn main() -> Result<()> {
     if let Some(session) = &persisted_session {
         session.renderer.camera.apply_to_runtime(&mut state.camera);
     }
-    // The camera-perspective panel edits this shared cell; the frame sync
-    // copies it into the live camera so projection picks it up every frame.
+    // The camera-perspective panel edits these shared cells; the frame sync
+    // copies them into the live camera so projection picks them up every
+    // frame. Parallax's pointer offset is host-fed from the frame input.
     let camera_perspective_profile = Rc::new(RefCell::new(state.camera.perspective));
+    let camera_parallax_profile = Rc::new(RefCell::new(state.camera.parallax));
+    // The perspective panel's depth row scrolls the render depth through this
+    // link: the frame loop drains its pending wheel steps into the camera and
+    // publishes the live focus depth back for the row's display.
+    let camera_depth_link = CameraDepthLink::new();
+    // The perspective panel's layers row steps the rendered-layer count
+    // through this link: the frame loop drains its pending wheel steps into
+    // the camera's visible_plane_radius (clamped) and publishes the live
+    // count back for the row's display.
+    let camera_layers_link = CameraLayersLink::new();
 
     let ui_palette = UiPalette::default();
     // Per-user controls profile (overrides only), restored from the saved
@@ -1493,6 +1535,9 @@ fn main() -> Result<()> {
         &painter_bindings,
         &ui_palette,
         &camera_perspective_profile,
+        &camera_parallax_profile,
+        &camera_depth_link,
+        &camera_layers_link,
     );
 
     if let Some(session) = &persisted_session {
@@ -1928,9 +1973,36 @@ fn main() -> Result<()> {
             &state.camera,
         );
 
-        // Camera-perspective panel edits land here: the shared profile cell
-        // is the live source, so projection always sees the panel's values.
+        // Camera-perspective panel edits land here: the shared profile cells
+        // are the live source, so projection always sees the panel's values.
+        // The parallax pointer offset is fed first from the raw frame cursor
+        // (clip space, -1..1, y up) so mouse movement anywhere on the screen
+        // drives the drift while the panel keeps owning toggle and strength.
+        camera_parallax_profile.borrow_mut().offset = frame
+            .input
+            .cursor_position
+            .map(|[x, y]| [x.clamp(-1.0, 1.0), y.clamp(-1.0, 1.0)])
+            .unwrap_or([0.0, 0.0]);
         state.camera.perspective = *camera_perspective_profile.borrow();
+        state.camera.parallax = *camera_parallax_profile.borrow();
+        // Depth-row wheel steps land here: drain them into the focus depth,
+        // then publish the live depth back so the row shows camera truth.
+        let depth_steps = camera_depth_link.drain_pending();
+        if depth_steps != 0 {
+            state.camera.pan_focus_depth(depth_steps);
+            session_dirty = true;
+        }
+        camera_depth_link.set_current(state.camera.focus_depth());
+        // Layers-row wheel steps land here: drain them into the camera's
+        // visible_plane_radius (never below the focus plane alone, never
+        // above the panel's cap), then publish the live count back.
+        let layer_steps = camera_layers_link.drain_pending();
+        if layer_steps != 0 {
+            state.camera.visible_plane_radius = (state.camera.visible_plane_radius + layer_steps)
+                .clamp(0, MAX_VISIBLE_PLANE_RADIUS);
+            session_dirty = true;
+        }
+        camera_layers_link.set_current(state.camera.visible_plane_radius);
         let camera = state.camera;
         let view_orientation = camera_view_orientation_for_camera(camera.swing, camera.roll);
         let cell_clip_size = cell_clip_size_for_state(state, frame.surface_size);

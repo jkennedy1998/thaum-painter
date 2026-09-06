@@ -14,4 +14,4 @@ serde_json.workspace = true
 thaum-painter-domain = { path = "../domain" }
 
 [dev-dependencies]
-thaum-renderer-domain = { path = "/home/j/Repos/thaum-renderer/domain" }
+thaum-renderer-domain = { path = "../../thaum-renderer/domain" }

@@ -20,7 +20,7 @@ This is the first implementation-ready saved file example for `domain/file/manif
   - painter-owned transfer notes
 
 ## module structure
-- `document.module_order` / `document.modules[]` is the top-level authored unit. One module becomes exactly one renderer cell-group; see `/home/j/Repos/thaum-painter/context/module-concept-audit.md`.
+- `document.module_order` / `document.modules[]` is the top-level authored unit. One module becomes exactly one renderer cell-group; see `thaum-painter/context/module-concept-audit.md`.
 - each module carries its own `placement`, which is the global-board position `domain/rendering/render-space/` copies onto the renderer cell-group.
 - each module owns `group_order` / `groups[]` for its intra-module content, nested one level deeper than in the pre-module shape.
 - a group's `local_placement` is relative to its owning module's local coordinate space, not the shared board.

@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-tools/individuals/fill
+# thaum-painter/domain/painter-tools/individuals/fill
 
 ## purpose
 Own the fill tool's registration truth as one tool encapsulation.

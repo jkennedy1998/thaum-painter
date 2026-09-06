@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-tools
+# thaum-painter/domain/painter-tools
 
 ## purpose
 Own painter tool registration as one encapsulation: a registry of tool descriptors plus one folder per tool, so adding a tool is one folder plus one registry line and every registration consumer reads the same truth.

@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/modules/individuals/hand-settings
+# thaum-painter/domain/modules/individuals/hand-settings
 
 ## purpose
 Own painter's compact hand-settings panel: the left/right paint-state editor for weight, edit/select masks, target mode, selection mode, and tool-property rows.
@@ -24,16 +24,16 @@ Own painter's compact hand-settings panel: the left/right paint-state editor for
   - module UI for left/right hand settings
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/painter-session/tool-state/`
-- `/home/j/Repos/thaum-painter/domain/painter-session/selection/`
-- `/home/j/Repos/thaum-renderer/domain/modules/shared/ui-palette/`
-- `/home/j/Repos/thaum-renderer/domain/modules/shared/panel-chrome/`
+- `thaum-painter/domain/painter-session/tool-state/`
+- `thaum-painter/domain/painter-session/selection/`
+- `thaum-renderer/domain/modules/shared/ui-palette/`
+- `thaum-renderer/domain/modules/shared/panel-chrome/`
 
 ## exposed interfaces
 - `HandSettingsModule::new(id, rect, tool_state, selection)` — build one compact settings panel bound to shared live tool-state and selection state
 
 ## interface consumers
-- `/home/j/Repos/thaum-painter/orchestration/entrypoint/`
+- `thaum-painter/orchestration/entrypoint/`
 
 ## artifacts
 - none

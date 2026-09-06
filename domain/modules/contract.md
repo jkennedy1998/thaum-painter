@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/modules
+# thaum-painter/domain/modules
 
 ## purpose
 Mirror `thaum-renderer/domain/modules/`'s Module format locally for thaum-painter, hosting painter-only modules on top of the renderer's shared registry/gizmo/chrome logic.
@@ -24,15 +24,15 @@ Mirror `thaum-renderer/domain/modules/`'s Module format locally for thaum-painte
   - modules contract
 
 ## dependencies
-- `/home/j/Repos/thaum-renderer/domain/modules/`
-- `/home/j/Repos/thaum-renderer/domain/modules/shared/`
-- `/home/j/Repos/thaum-renderer/domain/controls/`
+- `thaum-renderer/domain/modules/`
+- `thaum-renderer/domain/modules/shared/`
+- `thaum-renderer/domain/controls/`
 
 ## exposed interfaces
 - none yet
 
 ## interface consumers
-- `/home/j/Repos/thaum-painter/orchestration/entrypoint/`
+- `thaum-painter/orchestration/entrypoint/`
 
 ## artifacts
 - none

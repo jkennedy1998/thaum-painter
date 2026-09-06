@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-tools/individuals/stamp
+# thaum-painter/domain/painter-tools/individuals/stamp
 
 ## purpose
 Own the stamp tool's registration truth as one tool encapsulation.

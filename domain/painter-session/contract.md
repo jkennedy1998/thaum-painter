@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-session
+# thaum-painter/domain/painter-session
 
 ## purpose
 Own the bounded editing/session semantics that mutate a painter document over time.
@@ -40,8 +40,8 @@ Own the bounded editing/session semantics that mutate a painter document over ti
   - the former `app_runtime.rs` headless-runtime draft (never wired into `lib.rs`, never compiled) was deleted — the entrypoint frame loop is the live implementation, and its pointer-stroke logic was superseded by the session_document bridge + tool_state
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/painter-document/`
-- `/home/j/Repos/thaum-painter/domain/painter-operations/`
+- `thaum-painter/domain/painter-document/`
+- `thaum-painter/domain/painter-operations/`
 
 ## exposed interfaces
 ### session→document bridge

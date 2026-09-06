@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-session/history
+# thaum-painter/domain/painter-session/history
 
 ## purpose
 Own undo/redo history semantics for painter session changes.
@@ -21,7 +21,7 @@ Own undo/redo history semantics for painter session changes.
   - history contract
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/painter-session/commands/`
+- `thaum-painter/domain/painter-session/commands/`
 
 ## exposed interfaces
 - none

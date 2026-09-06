@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/file
+# thaum-painter/domain/file
 
 ## purpose
 Own the canonical thaum-painter saved file shape, including the manifest and every piece of authoring state the renderer does not own.
@@ -28,8 +28,8 @@ Own the canonical thaum-painter saved file shape, including the manifest and eve
   - file boundary contract
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/`
-- `/home/j/Repos/thaum-renderer/`
+- `thaum-painter/`
+- `thaum-renderer/`
 
 ## exposed interfaces
 ### thaum-painter file shape
@@ -39,12 +39,12 @@ effects: none
 via: contract
 
 ## interface consumers
-- `/home/j/Repos/thaum-painter/domain/painter-document/`
-- `/home/j/Repos/thaum-painter/domain/rendering/render-space/`
+- `thaum-painter/domain/painter-document/`
+- `thaum-painter/domain/rendering/render-space/`
 - future importer/exporter seams
 
 ## artifacts
-- `/home/j/Repos/thaum-painter/domain/file/manifest/example-thaum-painter-file-v1.json`
+- `thaum-painter/domain/file/manifest/example-thaum-painter-file-v1.json`
   - first concrete saved file example for downstream seams
 
 ## tests

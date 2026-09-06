@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-document/properties
+# thaum-painter/domain/painter-document/properties
 
 ## purpose
 Own editing-facing property-block views over painter file state.
@@ -25,7 +25,7 @@ Own editing-facing property-block views over painter file state.
   - `block_covering_breath`, the lookup that finds the bar (if any) covering a given breath
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/file/`
+- `thaum-painter/domain/file/`
 
 ## exposed interfaces
 ### block lookup

@@ -5,14 +5,14 @@ Pin the first concrete saved-file and render-space examples so future implementa
 
 ## current example artifacts
 ### saved file manifest
-- `/home/j/Repos/thaum-painter/domain/file/manifest/example-thaum-painter-file-v1.json`
-- `/home/j/Repos/thaum-painter/domain/file/manifest/example-thaum-painter-file-v1.md`
-- `/home/j/Repos/thaum-painter/domain/file/manifest/schema-thaum-painter-file-v1.json`
+- `thaum-painter/domain/file/manifest/example-thaum-painter-file-v1.json`
+- `thaum-painter/domain/file/manifest/example-thaum-painter-file-v1.md`
+- `thaum-painter/domain/file/manifest/schema-thaum-painter-file-v1.json`
 
 ### render-space handoff
-- `/home/j/Repos/thaum-painter/domain/rendering/render-space/example-render-space-v1.json`
-- `/home/j/Repos/thaum-painter/domain/rendering/render-space/example-render-space-v1.md`
-- `/home/j/Repos/thaum-painter/domain/rendering/render-space/schema-render-space-v1.json`
+- `thaum-painter/domain/rendering/render-space/example-render-space-v1.json`
+- `thaum-painter/domain/rendering/render-space/example-render-space-v1.md`
+- `thaum-painter/domain/rendering/render-space/schema-render-space-v1.json`
 
 ## intent
 - the file example is the first concrete statement of saved authored truth.

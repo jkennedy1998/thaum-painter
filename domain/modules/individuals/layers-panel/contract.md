@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/modules/individuals/layers-panel
+# thaum-painter/domain/modules/individuals/layers-panel
 
 ## purpose
 Own the one always-attached panel through which J browses, selects, and (over future passes) fully manipulates the document's layers and their animation over time.
@@ -28,8 +28,8 @@ Own the one always-attached panel through which J browses, selects, and (over fu
   - `LayersPanelModule`, `LayersPanelState`, `LayerRow`, `LayersPanelAction` — the layer list (select, add, delete, visibility/lock toggle), a timeline header (auto-key toggle, scrubbable breath ruler/playhead, visible breath labels), and nested property rows (raster/move) for the selected layer; the caller (orchestration) applies the requested action to the real document/session and syncs `LayersPanelState` back each frame
 
 ## dependencies
-- `/home/j/Repos/thaum-renderer/domain/modules/`
-- `/home/j/Repos/thaum-renderer/domain/modules/shared/`
+- `thaum-renderer/domain/modules/`
+- `thaum-renderer/domain/modules/shared/`
 
 ## exposed interfaces
 ### layer list + timeline header + nested property-track module
@@ -39,7 +39,7 @@ effects: none directly — the orchestration layer applies the action to the rea
 via: `LayersPanelModule`, `LayersPanelState`
 
 ## interface consumers
-- `/home/j/Repos/thaum-painter/orchestration/entrypoint/`
+- `thaum-painter/orchestration/entrypoint/`
 
 ## artifacts
 - none

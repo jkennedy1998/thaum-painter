@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter
+# thaum-painter
 
 ## purpose
 Own the thaum painter as its own repo-shaped authoring boundary for ASCII scene creation, saved painter documents, renderer export, and future game-facing art workflows.
@@ -37,12 +37,12 @@ Own the thaum painter as its own repo-shaped authoring boundary for ASCII scene 
 - `workers/`
   - bounded async/background seams
 - `context/`
-  - roadmap and design-truth notes; not an encapsulation, matching how `/home/j/Repos/thaum-renderer/` treats its own `context/`
+  - roadmap and design-truth notes; not an encapsulation, matching how `thaum-renderer/` treats its own `context/`
 - `plans/`
   - per-encapsulation and project-level implementation plans; not an encapsulation
 
 ## dependencies
-- `/home/j/Repos/thaum-renderer/`
+- `thaum-renderer/`
 
 ## exposed interfaces
 - none

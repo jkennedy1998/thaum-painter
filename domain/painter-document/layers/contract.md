@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-document/layers
+# thaum-painter/domain/painter-document/layers
 
 ## purpose
 Own editing-facing layer lookup, ordering, and placement views over saved painter file state. A layer is the top-level authored unit and maps directly to exactly one renderer `CellGroup`.
@@ -22,7 +22,7 @@ Own editing-facing layer lookup, ordering, and placement views over saved painte
   - layers contract
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/file/`
+- `thaum-painter/domain/file/`
 
 ## exposed interfaces
 - none

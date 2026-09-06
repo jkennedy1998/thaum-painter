@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/rendering/camera
+# thaum-painter/domain/rendering/camera
 
 ## purpose
 Own app-side camera intent and focus-resolution rules before state is handed to `thaum-renderer`.
@@ -27,10 +27,10 @@ Own app-side camera intent and focus-resolution rules before state is handed to 
   - one dispatch seam for the registry's camera actions (pan with its hover-dependent HUD/canvas split, swing, roll, depth focus, zoom); the entrypoint resolves action names and calls this seam
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/painter-document/`
-- `/home/j/Repos/thaum-painter/domain/painter-session/selection/`
-- `/home/j/Repos/thaum-renderer/domain/camera/`
-- `/home/j/Repos/thaum-renderer/domain/controls/`
+- `thaum-painter/domain/painter-document/`
+- `thaum-painter/domain/painter-session/selection/`
+- `thaum-renderer/domain/camera/`
+- `thaum-renderer/domain/controls/`
 
 ## exposed interfaces
 - none

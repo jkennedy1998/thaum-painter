@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/file/import-export
+# thaum-painter/domain/file/import-export
 
 ## purpose
 Own supported import/export wrappers around the canonical file, including painter-to-game and painter-to-painter transfer packaging.
@@ -22,8 +22,8 @@ Own supported import/export wrappers around the canonical file, including painte
   - import-export contract
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/file/manifest/`
-- `/home/j/Repos/thaum-painter/domain/rendering/render-space/`
+- `thaum-painter/domain/file/manifest/`
+- `thaum-painter/domain/rendering/render-space/`
 
 ## exposed interfaces
 - none

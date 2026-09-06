@@ -4,23 +4,23 @@
 Thaum painter is still mostly empty, while the old ASCII painter had a wide feature set spread across document runtime, timing, selection, clipboard, tools, import/export, and preview adapters. Before rebuilding behavior, this repo should sort most of the core encapsulations and contracts so implementation can land piece by piece with clean ownership.
 
 ## affected-encapsulations
-- `/home/j/Repos/thaum-painter/domain/file/`: edit
-- `/home/j/Repos/thaum-painter/domain/rendering/`: edit
-- `/home/j/Repos/thaum-painter/domain/painter-document/`: edit
-- `/home/j/Repos/thaum-painter/domain/painter-document/modules/`: add
-- `/home/j/Repos/thaum-painter/domain/painter-session/`: edit
-- `/home/j/Repos/thaum-painter/domain/painter-operations/`: edit
-- `/home/j/Repos/thaum-painter/context/`: edit
+- `thaum-painter/domain/file/`: edit
+- `thaum-painter/domain/rendering/`: edit
+- `thaum-painter/domain/painter-document/`: edit
+- `thaum-painter/domain/painter-document/modules/`: add
+- `thaum-painter/domain/painter-session/`: edit
+- `thaum-painter/domain/painter-operations/`: edit
+- `thaum-painter/context/`: edit
 
 ## encapsulation-plans
-- `/home/j/Repos/thaum-painter/domain/file/`: `plans/home-j-repos-thaum-painter-domain-file-plan.md`
-- `/home/j/Repos/thaum-painter/domain/rendering/render-space/`: `plans/home-j-repos-thaum-painter-domain-rendering-render-space-plan.md`
-- `/home/j/Repos/thaum-painter/domain/painter-document/`: `plans/home-j-repos-thaum-painter-domain-painter-document-plan.md`
-- `/home/j/Repos/thaum-painter/domain/painter-session/`: `plans/home-j-repos-thaum-painter-domain-painter-session-plan.md`
-- `/home/j/Repos/thaum-painter/domain/painter-operations/`: `plans/home-j-repos-thaum-painter-domain-painter-operations-plan.md`
+- `thaum-painter/domain/file/`: `plans/home-j-repos-thaum-painter-domain-file-plan.md`
+- `thaum-painter/domain/rendering/render-space/`: `plans/home-j-repos-thaum-painter-domain-rendering-render-space-plan.md`
+- `thaum-painter/domain/painter-document/`: `plans/home-j-repos-thaum-painter-domain-painter-document-plan.md`
+- `thaum-painter/domain/painter-session/`: `plans/home-j-repos-thaum-painter-domain-painter-session-plan.md`
+- `thaum-painter/domain/painter-operations/`: `plans/home-j-repos-thaum-painter-domain-painter-operations-plan.md`
 
 ## encapsulation-details
-### `/home/j/Repos/thaum-painter/domain/file/`
+### `thaum-painter/domain/file/`
 - action: edit
 - intent: break saved file ownership into manifest, storage, import-export, and migration seams
 - interface delta: add clearer sub-boundaries before implementation
@@ -30,7 +30,7 @@ Thaum painter is still mostly empty, while the old ASCII painter had a wide feat
 - tests: future file shape and migration tests
 - data: none
 
-### `/home/j/Repos/thaum-painter/domain/rendering/`
+### `thaum-painter/domain/rendering/`
 - action: edit
 - intent: separate app camera intent from render-space handoff
 - interface delta: add rendering camera seam beside render-space
@@ -40,7 +40,7 @@ Thaum painter is still mostly empty, while the old ASCII painter had a wide feat
 - tests: future translation tests
 - data: none
 
-### `/home/j/Repos/thaum-painter/domain/painter-document/`
+### `thaum-painter/domain/painter-document/`
 - action: edit
 - intent: narrow painter-document into editing-facing group/timing/property views
 - interface delta: add child seams for groups, timing, and properties
@@ -50,7 +50,7 @@ Thaum painter is still mostly empty, while the old ASCII painter had a wide feat
 - tests: future document-view tests
 - data: none
 
-### `/home/j/Repos/thaum-painter/domain/painter-session/`
+### `thaum-painter/domain/painter-session/`
 - action: edit
 - intent: split live authoring state into commands, history, selection, clipboard, and tool-state seams
 - interface delta: add child session boundaries matching major old runtime features
@@ -60,7 +60,7 @@ Thaum painter is still mostly empty, while the old ASCII painter had a wide feat
 - tests: future reducer/history/selection tests
 - data: none
 
-### `/home/j/Repos/thaum-painter/domain/painter-operations/`
+### `thaum-painter/domain/painter-operations/`
 - action: edit
 - intent: split pure operations into brush, shapes, fill, text, and image-import seams
 - interface delta: add pure operation boundaries matching the old tool surface
@@ -70,7 +70,7 @@ Thaum painter is still mostly empty, while the old ASCII painter had a wide feat
 - tests: future operation tests
 - data: none
 
-### `/home/j/Repos/thaum-painter/context/`
+### `thaum-painter/context/`
 - action: edit
 - intent: record the old feature audit and the new architecture direction before coding
 - interface delta: add architecture notes and roadmap updates

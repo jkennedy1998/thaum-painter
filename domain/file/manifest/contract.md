@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/file/manifest
+# thaum-painter/domain/file/manifest
 
 ## purpose
 Own the canonical top-level saved file manifest and versioned shape for thaum-painter assets.
@@ -31,7 +31,7 @@ Own the canonical top-level saved file manifest and versioned shape for thaum-pa
   - first machine-readable manifest schema draft
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/file/`
+- `thaum-painter/domain/file/`
 
 ## exposed interfaces
 ### parse_manifest — parse one saved thaum-painter file manifest from an already-decoded JSON value

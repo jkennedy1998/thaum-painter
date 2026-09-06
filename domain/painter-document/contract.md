@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-document
+# thaum-painter/domain/painter-document
 
 ## purpose
 Own the painter editing-facing document view over saved file state without taking ownership of the saved file manifest or the renderer handoff seam.
@@ -29,7 +29,7 @@ Own the painter editing-facing document view over saved file state without takin
   - painter-document contract
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/file/`
+- `thaum-painter/domain/file/`
 
 ## exposed interfaces
 ### painter document view

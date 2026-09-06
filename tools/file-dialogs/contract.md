@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/tools/file-dialogs
+# thaum-painter/tools/file-dialogs
 
 ## purpose
 Own the low-level native file-dialog and terminal-prompt plumbing for picking document paths, with no painter-domain truth of its own.

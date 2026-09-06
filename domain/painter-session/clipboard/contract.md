@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-session/clipboard
+# thaum-painter/domain/painter-session/clipboard
 
 ## purpose
 Own live clipboard and copy-buffer semantics for painter session workflows.
@@ -27,10 +27,10 @@ Own live clipboard and copy-buffer semantics for painter session workflows.
   - `WorldCopyData`, `UserClipboards`, copy-from-selection, paste-point resolution, and the `THAUM3D:` OS-clipboard codec
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/painter-session/selection/`
-- `/home/j/Repos/thaum-painter/domain/painter-session/paint-color/`
-- `/home/j/Repos/thaum-painter/domain/painter-operations/brush/`
-- `/home/j/Repos/thaum-painter/domain/file/storage/` (material name mapping shared with persisted cells)
+- `thaum-painter/domain/painter-session/selection/`
+- `thaum-painter/domain/painter-session/paint-color/`
+- `thaum-painter/domain/painter-operations/brush/`
+- `thaum-painter/domain/file/storage/` (material name mapping shared with persisted cells)
 
 ## exposed interfaces
 - none (in-crate module consumed by painter-session and the entrypoint)

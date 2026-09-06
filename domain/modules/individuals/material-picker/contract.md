@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/modules/individuals/material-picker
+# thaum-painter/domain/modules/individuals/material-picker
 
 ## purpose
 Own painter's material palette panel so left and right hands can choose material-backed colors separately from direct sprite RGB colors.
@@ -10,9 +10,9 @@ Own painter's material palette panel so left and right hands can choose material
 - material-band preview swatches for each material row
 
 ## does not own
-- live hand state, owned by `/home/j/Repos/thaum-painter/domain/painter-session/tool-state/`
-- renderer material definitions or band resolution, owned by `/home/j/Repos/thaum-renderer/domain/cell-materials/`
-- generic panel chrome or gizmo behavior, owned by `/home/j/Repos/thaum-renderer/domain/modules/shared/`
+- live hand state, owned by `thaum-painter/domain/painter-session/tool-state/`
+- renderer material definitions or band resolution, owned by `thaum-renderer/domain/cell-materials/`
+- generic panel chrome or gizmo behavior, owned by `thaum-renderer/domain/modules/shared/`
 
 ## children-encapsulations
 - none
@@ -22,16 +22,16 @@ Own painter's material palette panel so left and right hands can choose material
   - `MaterialPickerModule` and painter material assignment UI
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/painter-session/paint-color/`
-- `/home/j/Repos/thaum-painter/domain/painter-session/tool-state/`
-- `/home/j/Repos/thaum-renderer/domain/cell-materials/`
-- `/home/j/Repos/thaum-renderer/domain/modules/`
+- `thaum-painter/domain/painter-session/paint-color/`
+- `thaum-painter/domain/painter-session/tool-state/`
+- `thaum-renderer/domain/cell-materials/`
+- `thaum-renderer/domain/modules/`
 
 ## exposed interfaces
 - `MaterialPickerModule::new(id, rect, tool_state)`
 
 ## interface consumers
-- `/home/j/Repos/thaum-painter/orchestration/entrypoint/`
+- `thaum-painter/orchestration/entrypoint/`
 
 ## artifacts
 - none

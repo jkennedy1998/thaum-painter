@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-session/tool-state
+# thaum-painter/domain/painter-session/tool-state
 
 ## purpose
 Own live tool settings and active authoring-hand state for the painter session.
@@ -35,11 +35,11 @@ Own live tool settings and active authoring-hand state for the painter session.
   - in-progress lasso bound accumulation (`LassoStroke`) and its overlay preview cell group (path only, never the interior)
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/painter-operations/`
-- `/home/j/Repos/thaum-painter/domain/painter-session/paint-color/`
-- `/home/j/Repos/thaum-painter/domain/painter-session/clipboard/` (stamp consumes `WorldCopyData` payload shapes)
-- `/home/j/Repos/thaum-painter/domain/painter-tools/`
-- `/home/j/Repos/thaum-painter/domain/file/storage/`
+- `thaum-painter/domain/painter-operations/`
+- `thaum-painter/domain/painter-session/paint-color/`
+- `thaum-painter/domain/painter-session/clipboard/` (stamp consumes `WorldCopyData` payload shapes)
+- `thaum-painter/domain/painter-tools/`
+- `thaum-painter/domain/file/storage/`
 ## exposed interfaces
 - none
 

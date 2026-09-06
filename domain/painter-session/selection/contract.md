@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-session/selection
+# thaum-painter/domain/painter-session/selection
 
 ## purpose
 Own live selection state for plane and world-oriented authoring flows.
@@ -27,8 +27,8 @@ Own live selection state for plane and world-oriented authoring flows.
   - one dispatch seam for the registry's selection actions (mode set, clear, invert, all); shape actions re-commit their plane points to the shared selection channel here
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/painter-document/`
-- `/home/j/Repos/thaum-painter/domain/painter-operations/shapes/`
+- `thaum-painter/domain/painter-document/`
+- `thaum-painter/domain/painter-operations/shapes/`
 
 ## exposed interfaces
 - `PainterSelection`

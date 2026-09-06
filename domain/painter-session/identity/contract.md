@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-session/identity
+# thaum-painter/domain/painter-session/identity
 
 ## purpose
 Own the painter's stable per-install session identity: the globally-unique `user_id` that keys record ownership, plus the cosmetic display name and presence color.
@@ -24,7 +24,7 @@ Own the painter's stable per-install session identity: the globally-unique `user
   - `SessionIdentity`, generation, persistence, presence candidates, tests
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/modules/shared/` (palette lockstep test)
+- `thaum-painter/domain/modules/shared/` (palette lockstep test)
 
 ## exposed interfaces
 - `SessionIdentity::generate(display_name)` — fresh identity, random id + presence color

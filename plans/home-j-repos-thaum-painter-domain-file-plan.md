@@ -4,7 +4,7 @@
 The first pass spread saved asset thinking across painter-document and renderer-bridge ideas. This repo now needs a dedicated `domain/file/` seam so the saved app asset manifest and all non-renderer state have one owner.
 
 ## target-encapsulation
-- `/home/j/Repos/thaum-painter/domain/file/`: add
+- `thaum-painter/domain/file/`: add
 
 ## artifacts
 - future example saved painter asset files

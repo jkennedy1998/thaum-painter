@@ -4,7 +4,7 @@
 The old painter fused commands, history, selection, clipboard, and tool state into broad runtime behavior. This repo should sort those as separate session seams before implementation.
 
 ## target-encapsulation
-- `/home/j/Repos/thaum-painter/domain/painter-session/`: edit
+- `thaum-painter/domain/painter-session/`: edit
 
 ## artifacts
 - future session fixtures

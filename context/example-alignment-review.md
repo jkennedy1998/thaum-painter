@@ -10,8 +10,8 @@ The examples originally validated here modeled one flat `document.groups[]` list
 The module wrapper described directly above has itself been reversed. `document.groups[]` is flat again, one group mapping directly to one renderer `CellGroup` — same as the original pre-addendum-1 shape, but this time it's the intentional, permanent one. See `context/module-concept-audit.md`'s "superseded" section for why (the renderer's camera turned out to be universal, not module-local, so the bundling reason from addendum 1 no longer applies). The v1 example/schema JSON and `manifest.rs`/`render_space.rs` still need a code pass to catch up to this.
 
 ## validated examples
-- `/home/j/Repos/thaum-painter/domain/file/manifest/example-thaum-painter-file-v1.json`
-- `/home/j/Repos/thaum-painter/domain/rendering/render-space/example-render-space-v1.json`
+- `thaum-painter/domain/file/manifest/example-thaum-painter-file-v1.json`
+- `thaum-painter/domain/rendering/render-space/example-render-space-v1.json`
 
 ## result
 The current contract tree still holds.

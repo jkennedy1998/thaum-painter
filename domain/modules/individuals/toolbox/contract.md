@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/modules/individuals/toolbox
+# thaum-painter/domain/modules/individuals/toolbox
 
 ## purpose
 Own painter's toolbox panel: the old-feeling left/right tool chooser rebuilt as a renderer `Module`.
@@ -23,17 +23,17 @@ Own painter's toolbox panel: the old-feeling left/right tool chooser rebuilt as 
   - `ToolboxModule`, `ToolDef`, and row hit-testing/drawing behavior
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/painter-session/tool-state/`
-- `/home/j/Repos/thaum-renderer/domain/modules/`
-- `/home/j/Repos/thaum-renderer/domain/modules/shared/ui-palette/`
-- `/home/j/Repos/thaum-renderer/domain/modules/shared/panel-chrome/`
+- `thaum-painter/domain/painter-session/tool-state/`
+- `thaum-renderer/domain/modules/`
+- `thaum-renderer/domain/modules/shared/ui-palette/`
+- `thaum-renderer/domain/modules/shared/panel-chrome/`
 
 ## exposed interfaces
 - `ToolboxModule::new(id, rect, tool_state, tool_defs)`
   - build one toolbox bound directly to live painter tool-state
 
 ## interface consumers
-- `/home/j/Repos/thaum-painter/orchestration/entrypoint/`
+- `thaum-painter/orchestration/entrypoint/`
 
 ## artifacts
 - none

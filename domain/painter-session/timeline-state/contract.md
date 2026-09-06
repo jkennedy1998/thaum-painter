@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-session/timeline-state
+# thaum-painter/domain/painter-session/timeline-state
 
 ## purpose
 Own the live, unsaved playhead and auto-key state that drives which breath a session is editing at.
@@ -24,7 +24,7 @@ Own the live, unsaved playhead and auto-key state that drives which breath a ses
   - `TimelineState` (current breath, auto-key flag) and `resolve_editable_breath` (the auto-key/reject-edit rule)
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/painter-document/properties/`
+- `thaum-painter/domain/painter-document/properties/`
 
 ## exposed interfaces
 - none

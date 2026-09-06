@@ -4,7 +4,7 @@
 The old painter had a wide pure-tool surface in `tools.ts`, `image_import.ts`, and related helpers. This repo should split those headless behaviors into smaller operation seams before implementation.
 
 ## target-encapsulation
-- `/home/j/Repos/thaum-painter/domain/painter-operations/`: edit
+- `thaum-painter/domain/painter-operations/`: edit
 
 ## artifacts
 - future operation fixtures

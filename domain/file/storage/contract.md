@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/file/storage
+# thaum-painter/domain/file/storage
 
 ## purpose
 Own persistence surfaces for saving, loading, autosaving, and locating thaum-painter files.
@@ -22,7 +22,7 @@ Own persistence surfaces for saving, loading, autosaving, and locating thaum-pai
   - storage contract
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/file/manifest/`
+- `thaum-painter/domain/file/manifest/`
 
 ## exposed interfaces
 ### shared-document snapshot persistence
@@ -39,7 +39,7 @@ via: `load_or_create_shared_document`, `save_shared_document_snapshot`, `SharedD
   wholesale rewrites stay behind the log-divergence guard.
 
 ## interface consumers
-- `/home/j/Repos/thaum-painter/orchestration/entrypoint/`
+- `thaum-painter/orchestration/entrypoint/`
 - future file menus and autosave seams
 
 ## artifacts

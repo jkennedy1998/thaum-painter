@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/tai
+# thaum-painter/domain/tai
 
 ## purpose
 Own the painter's tool-assisted input (TAI) tests: painter-declared action bindings, the growable individuals script list, and the registry-driven harness that replays them through the renderer's TAI runner.
@@ -10,7 +10,7 @@ Own the painter's tool-assisted input (TAI) tests: painter-declared action bindi
 - the registry-driven harness that loads every registered script and runs it against painter bindings
 
 ## does not own
-- the script format or replay runner — consumed from `/home/j/Repos/thaum-renderer/domain/controls/tai/`
+- the script format or replay runner — consumed from `thaum-renderer/domain/controls/tai/`
 - raw input shapes or `ActionBindingMap` — consumed from renderer `domain/controls/`
 - app-level UI assertion helpers beyond action fires (add on top of the fired-log only when a script genuinely needs them)
 - live-window input injection
@@ -29,7 +29,7 @@ Own the painter's tool-assisted input (TAI) tests: painter-declared action bindi
   - one folder + one script per painter TAI
 
 ## script format
-Renderer-owned. See `/home/j/Repos/thaum-renderer/domain/controls/tai/contract.md`; copy `template/script.json` from there.
+Renderer-owned. See `thaum-renderer/domain/controls/tai/contract.md`; copy `template/script.json` from there.
 
 ## adding a painter TAI (growth path)
 1. copy the renderer template into `individuals/taiNN_name/`, rename the script `id`
@@ -38,8 +38,8 @@ Renderer-owned. See `/home/j/Repos/thaum-renderer/domain/controls/tai/contract.m
 4. only touch `tai.rs` if the script needs a painter binding that isn't declared yet
 
 ## dependencies
-- `/home/j/Repos/thaum-renderer/domain/controls/tai/` (TaiScript runner)
-- `/home/j/Repos/thaum-painter/domain/`
+- `thaum-renderer/domain/controls/tai/` (TaiScript runner)
+- `thaum-painter/domain/`
 
 ## exposed interfaces
 - painter tai seam
@@ -47,7 +47,7 @@ Renderer-owned. See `/home/j/Repos/thaum-renderer/domain/controls/tai/contract.m
 
 ## interface consumers
 - `tai.rs` inline tests
-- `/home/j/Repos/thaum-painter/orchestration/entrypoint/src/main.rs` — the entrypoint's live key dispatch resolves physical key presses through `painter_bindings()` and fires named actions (registry-owned keys never fall through to live-only match arms); wheel-bound actions stay wheel-handled
+- `thaum-painter/orchestration/entrypoint/src/main.rs` — the entrypoint's live key dispatch resolves physical key presses through `painter_bindings()` and fires named actions (registry-owned keys never fall through to live-only match arms); wheel-bound actions stay wheel-handled
 
 ## artifacts
 - none

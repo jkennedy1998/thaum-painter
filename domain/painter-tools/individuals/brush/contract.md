@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-tools/individuals/brush
+# thaum-painter/domain/painter-tools/individuals/brush
 
 ## purpose
 Own the brush tool's registration truth as one tool encapsulation.

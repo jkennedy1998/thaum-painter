@@ -10,8 +10,9 @@ pub mod canvas_pointer;
 pub mod clipboard;
 #[path = "painter-session/identity/identity.rs"]
 pub mod identity;
-#[path = "debug-log/debug_log.rs"]
-pub mod debug_log;
+/// Debug logging moved into the renderer domain so renderer and host share one
+/// sink; the painter keeps the same call path through this re-export.
+pub use thaum_renderer_domain::debug_log;
 #[path = "file/document_locations.rs"]
 pub mod document_locations;
 #[path = "painter-session/sync/document_sync.rs"]

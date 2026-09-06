@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-operations/text
+# thaum-painter/domain/painter-operations/text
 
 ## purpose
 Own text-entry and text-stamping semantics for painter authoring.
@@ -28,8 +28,8 @@ Own text-entry and text-stamping semantics for painter authoring.
   - `text_cells(text, origin, orientation) -> Vec<(CellPoint, char)>`, `TAB_WIDTH`
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/painter-operations/brush/`
-- `/home/j/Repos/thaum-painter/domain/painter-session/clipboard/`
+- `thaum-painter/domain/painter-operations/brush/`
+- `thaum-painter/domain/painter-session/clipboard/`
 
 ## exposed interfaces
 ### text layout

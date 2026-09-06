@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-operations/shapes
+# thaum-painter/domain/painter-operations/shapes
 
 ## purpose
 Own pure line, rectangle, lasso, and later 3d shape rasterization helpers for painter authoring.
@@ -27,7 +27,7 @@ Own pure line, rectangle, lasso, and later 3d shape rasterization helpers for pa
   - `lasso_points(path)` even-odd closed-polygon rasterization (interior plus bound, path's plane) + raster tests
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/painter-operations/brush/`
+- `thaum-painter/domain/painter-operations/brush/`
 
 ## exposed interfaces
 ### lasso rasterization

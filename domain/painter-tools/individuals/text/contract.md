@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-tools/individuals/text
+# thaum-painter/domain/painter-tools/individuals/text
 
 ## purpose
 Own the text tool's registration truth as one tool encapsulation.

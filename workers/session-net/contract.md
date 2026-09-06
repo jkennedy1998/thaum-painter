@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/workers/session-net
+# thaum-painter/workers/session-net
 
 ## purpose
 The entrypoint-facing seam over the host/client pair. The owning painter app holds one `Option<SessionNet>` and treats hosting and joining identically: `publish(record)` for records it just applied locally, `sync(&mut runtime)` to pull everyone else's in host order.
@@ -25,7 +25,7 @@ The entrypoint-facing seam over the host/client pair. The owning painter app hol
 ## dependencies
 - `../session-host/` (core, server, `SessionUser`)
 - `../session-client/` (`SessionClient`, `SessionClientError`)
-- `/home/j/Repos/thaum-painter/domain/file/storage/` (runtime, record, document)
+- `thaum-painter/domain/file/storage/` (runtime, record, document)
 
 ## exposed interfaces
 - `SessionNet` — `host`, `join`, `publish`, `sync`, `user_id`, `is_host`, `is_connected`, `roster`, `cursor`

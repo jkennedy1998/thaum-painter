@@ -4,7 +4,7 @@
 The first pass used a broad bridge idea. This repo now needs a dedicated `domain/rendering/render-space/` seam for how file or live app state sends data to `thaum-renderer`.
 
 ## target-encapsulation
-- `/home/j/Repos/thaum-painter/domain/rendering/render-space/`: add
+- `thaum-painter/domain/rendering/render-space/`: add
 
 ## artifacts
 - future sample render-space payloads and fixtures

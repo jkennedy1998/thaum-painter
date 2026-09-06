@@ -9,7 +9,7 @@ authors.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thaum-renderer-domain = { path = "/home/j/Repos/thaum-renderer/domain" }
+thaum-renderer-domain = { path = "../../thaum-renderer/domain" }
 
 [lib]
 path = "lib.rs"

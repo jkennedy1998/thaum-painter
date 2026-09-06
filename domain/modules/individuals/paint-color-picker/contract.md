@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/modules/individuals/paint-color-picker
+# thaum-painter/domain/modules/individuals/paint-color-picker
 
 ## purpose
 Own painter's indexed color picker binding: a painter-facing module that reuses the renderer's generic `ColorPickerModule`, swaps in painter's old 37-color indexed palette, and writes clicks into live painter `tool-state` so left/right mouse buttons actually get separate flat RGB colors.
@@ -21,14 +21,14 @@ Own painter's indexed color picker binding: a painter-facing module that reuses 
   - painter-bound wrapper over renderer `ColorPickerModule`
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/painter-session/tool-state/`
-- `/home/j/Repos/thaum-renderer/domain/modules/individuals/color-picker/`
+- `thaum-painter/domain/painter-session/tool-state/`
+- `thaum-renderer/domain/modules/individuals/color-picker/`
 
 ## exposed interfaces
 - `PaintColorPickerModule::new(id, rect, tool_state, palette)` — build one painter-bound color picker over shared live tool-state
 
 ## interface consumers
-- `/home/j/Repos/thaum-painter/orchestration/entrypoint/`
+- `thaum-painter/orchestration/entrypoint/`
 
 ## artifacts
 - none

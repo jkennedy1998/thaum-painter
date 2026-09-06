@@ -12,8 +12,9 @@ use thaum_painter_domain::{
 };
 use thaum_renderer_domain::{
     conflicting_actions, effective_bindings, format_raw_input, ActionBindingMap,
-    CameraPerspectiveModule, ControlsProfile, ControlsPanelModule, ModuleRect, ModuleRegistry,
-    NumberFieldEdit, PerspectiveProfile, UiCustomizationModule, UiPalette,
+    CameraDepthLink, CameraLayersLink, CameraPerspectiveModule, ControlsProfile, ControlsPanelModule, ModuleRect,
+    ModuleRegistry, NumberFieldEdit, ParallaxProfile, PerspectiveProfile, UiCustomizationModule,
+    UiPalette,
 };
 
 /// Registers every painter module and returns the registry. Shared handles
@@ -34,6 +35,9 @@ pub(crate) fn build_painter_modules(
     painter_bindings: &ActionBindingMap,
     ui_palette: &UiPalette,
     camera_perspective_profile: &Rc<RefCell<PerspectiveProfile>>,
+    camera_parallax_profile: &Rc<RefCell<ParallaxProfile>>,
+    camera_depth_link: &Rc<CameraDepthLink>,
+    camera_layers_link: &Rc<CameraLayersLink>,
 ) -> ModuleRegistry {
     let mut modules = ModuleRegistry::new();
     modules.register(Box::new(
@@ -151,9 +155,14 @@ pub(crate) fn build_painter_modules(
             x0: 46,
             y0: 14,
             x1: 70,
-            y1: 23,
+            // 11 tall: content 8 = exactly the 7 rows (scale/position/floor/
+            // parallax/str/depth/layers) plus the reserved bottom hint row.
+            y1: 25,
         },
         camera_perspective_profile.clone(),
+        camera_parallax_profile.clone(),
+        camera_depth_link.clone(),
+        camera_layers_link.clone(),
     )));
     modules.register(Box::new(UiCustomizationModule::new(
         "painter_ui_customization",

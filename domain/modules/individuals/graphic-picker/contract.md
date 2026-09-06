@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/modules/individuals/graphic-picker
+# thaum-painter/domain/modules/individuals/graphic-picker
 
 ## purpose
 Own painter's graphic picker panel: one painter-facing module for choosing either glyph graphics or sprite graphics into the live left/right hand state.
@@ -28,17 +28,17 @@ Own painter's graphic picker panel: one painter-facing module for choosing eithe
   - `GraphicPickerModule`, supported glyph-section parsing, and picker draw/hit behavior
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/painter-session/tool-state/`
-- `/home/j/Repos/thaum-renderer/domain/modules/`
-- `/home/j/Repos/thaum-renderer/domain/cell-graphic/`
-- `/home/j/Repos/thaum-renderer/orchestration/renderer-assets/cell-sprites/monothaum-atlas-v3/sections.txt`
+- `thaum-painter/domain/painter-session/tool-state/`
+- `thaum-renderer/domain/modules/`
+- `thaum-renderer/domain/cell-graphic/`
+- `thaum-renderer/orchestration/renderer-assets/cell-sprites/monothaum-atlas-v3/sections.txt`
 
 ## exposed interfaces
 - `GraphicPickerModule::new(id, rect, tool_state)`
   - build one painter-bound graphic picker over shared live tool-state
 
 ## interface consumers
-- `/home/j/Repos/thaum-painter/orchestration/entrypoint/`
+- `thaum-painter/orchestration/entrypoint/`
 
 ## artifacts
 - none

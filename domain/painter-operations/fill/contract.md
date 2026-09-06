@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-operations/fill
+# thaum-painter/domain/painter-operations/fill
 
 ## purpose
 Own flood-fill and region replacement semantics for painter authoring.
@@ -21,7 +21,7 @@ Own flood-fill and region replacement semantics for painter authoring.
   - fill contract
 
 ## dependencies
-- `/home/j/Repos/thaum-painter/domain/painter-operations/brush/`
+- `thaum-painter/domain/painter-operations/brush/`
 
 ## exposed interfaces
 - none

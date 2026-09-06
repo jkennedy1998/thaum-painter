@@ -9,7 +9,7 @@ use thaum_renderer_domain::{
 
 use crate::tool_state::{HandState, PaintHand, ToolState};
 
-const GLYPH_SECTIONS_TEXT: &str = include_str!("/home/j/Repos/thaum-renderer/orchestration/renderer-assets/cell-sprites/monothaum-atlas-v3/sections.txt");
+const GLYPH_SECTIONS_TEXT: &str = thaum_renderer_domain::MONOTHAUM_ATLAS_V3_SECTIONS_TEXT;
 const SUPPORTED_SPRITE_PATHS: &[&str] = &["proofs/channel-bands.png", "proofs/grass.png"];
 const RECENT_CAPACITY: usize = 10;
 const RECENT_PITCH: i32 = 2;

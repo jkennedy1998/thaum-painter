@@ -1,4 +1,4 @@
-# /home/j/Repos/thaum-painter/domain/painter-tools/individuals
+# thaum-painter/domain/painter-tools/individuals
 
 ## purpose
 Host one folder per registered painter tool, each owning that tool's registration truth via the `RegisteredTool` seam.
