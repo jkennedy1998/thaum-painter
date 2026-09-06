@@ -1,18 +1,19 @@
 //! Session client: the connecting side of a hosted multiplayer session.
 //!
 //! Mirrors `domain/painter-session/sync/`'s `SyncedDocumentSession` semantics
-//! over the wire: the client owns a document runtime built from the host's
+//! over the wire: the caller owns the document runtime (the entrypoint's live
+//! runtime is THE runtime); the client feeds it foreign records in host
 //! `Welcome` snapshot, applies foreign records in host-arrival order, skips
-//! its own (already applied locally at publish), and publishes its own edits
-//! with the canonical append-then-apply flow. Nothing here is UI; the owning
-//! painter app drives `sync` from its frame loop and reads presence/roster
-//! caches after it.
+//! its own (already applied locally at publish). Join is Figma's fresh-copy
+//! model: `connect` returns the host's snapshot for the caller to build its
+//! runtime from, and every arriving record is applied on top — the client
+//! replays the full log, so a reconnect with the same `user_id` converges
+//! without any delta catch-up.
 //!
 //! Transport is the same NDJSON wire as the host: one `ClientMessage` per
 //! line out, one `HostMessage` per line in. The `Hello` handshake happens
 //! synchronously inside `connect` (snapshot in hand or a loud error), then
-//! reader/writer threads take over. Reconnect is a fresh `connect` — same
-//! `user_id`, fresh snapshot, Figma's model; there is no delta catch-up.
+//! reader/writer threads take over.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
@@ -55,9 +56,9 @@ impl std::error::Error for SessionClientError {}
 
 pub struct SessionClient {
     pub user_id: String,
-    pub runtime: SharedDocumentRuntime,
     /// Read cursor into the host's log: how many records this client has
-    /// received. Starts at the `Welcome` log length; every `Record` advances it.
+    /// received and applied. Starts at 0 — joiners replay the full log onto
+    /// the snapshot, so pre-join edits converge too.
     consumed_count: u64,
     roster: Vec<SessionUser>,
     cursors: HashMap<String, Option<[i32; 3]>>,
@@ -70,31 +71,24 @@ pub struct SessionClient {
 }
 
 impl SessionClient {
-    /// Connects, performs the `Hello` handshake, and builds the local runtime
-    /// from the host's snapshot. Returns with the joiner already in the
-    /// roster (the `Welcome` roster includes self) and cursors empty.
-    pub fn connect(address: &str, user: SessionUser) -> Result<Self, SessionClientError> {
-        Self::connect_with_runtime(address, user, SharedDocumentRuntime::new)
-            .map(|(client, _)| client)
-            .map_err(|error| match error {
-                JoinError::Io(error) => SessionClientError::Io(error),
-                JoinError::Denied(reason) => SessionClientError::Denied(reason),
-                JoinError::Timeout => SessionClientError::Timeout,
-                JoinError::Json(error) => SessionClientError::Json(error),
-            })
-    }
-
-    /// Like `connect`, but the runtime is built by the caller from the
-    /// snapshot (handy for tests or custom construction). Returns the client
-    /// plus the `Welcome` log length as the read cursor baseline.
-    pub fn connect_with_runtime<F>(
+    /// Connects and performs the `Hello` handshake. Returns the client plus
+    /// the host's snapshot document — the caller builds its runtime from it
+    /// (fresh copy; Figma's model). The joiner is already in the roster and
+    /// cursors are empty.
+    pub fn connect(
         address: &str,
         user: SessionUser,
-        build_runtime: F,
-    ) -> Result<(Self, u64), JoinError>
-    where
-        F: FnOnce(thaum_painter_domain::storage::SharedDocumentFile) -> SharedDocumentRuntime,
+    ) -> Result<(Self, thaum_painter_domain::storage::SharedDocumentFile), SessionClientError>
     {
+        Self::connect_inner(address, user).map_err(|error| match error {
+            JoinError::Io(error) => SessionClientError::Io(error),
+            JoinError::Denied(reason) => SessionClientError::Denied(reason),
+            JoinError::Timeout => SessionClientError::Timeout,
+            JoinError::Json(error) => SessionClientError::Json(error),
+        })
+    }
+
+    fn connect_inner(address: &str, user: SessionUser) -> Result<(Self, thaum_painter_domain::storage::SharedDocumentFile), JoinError> {
         let stream = TcpStream::connect(address)?;
         stream.set_nodelay(true).ok();
         stream
@@ -135,15 +129,16 @@ impl SessionClient {
         let inbound: Arc<Mutex<VecDeque<HostMessage>>> =
             Arc::new(Mutex::new(VecDeque::new()));
 
-        // Reader thread: wire -> inbound queue. EOF or garbage sets
-        // connected=false so the frame loop can see the loss.
-        let reader_stream = stream.try_clone()?;
+        // Reader thread: wire -> inbound queue. It takes over the handshake's
+        // BufReader itself — a fresh reader could lose lines the handshake
+        // buffered past the Welcome (e.g. the replayed history records).
+        // EOF or garbage sets connected=false so the frame loop sees the loss.
         let reader_connected = Arc::clone(&connected);
         let reader_inbound = Arc::clone(&inbound);
         let reader_thread = thread::Builder::new()
             .name("session-client-reader".into())
             .spawn(move || {
-                let mut reader = BufReader::new(reader_stream);
+                let mut reader = reader;
                 loop {
                     let mut line = String::new();
                     match reader.read_line(&mut line) {
@@ -173,15 +168,13 @@ impl SessionClient {
                 }
             })?;
 
-        let runtime = build_runtime(snapshot);
         let mut cursors = HashMap::new();
         for member in &roster {
             cursors.insert(member.user_id.clone(), None);
         }
         let client = Self {
             user_id: user.user_id,
-            runtime,
-            consumed_count: log_length,
+            consumed_count: 0,
             roster,
             cursors,
             inbound,
@@ -191,14 +184,17 @@ impl SessionClient {
             writer_thread: Some(writer_thread),
             stream,
         };
-        Ok((client, log_length))
+        Ok((client, snapshot))
     }
 
     /// Frame-loop sync: drain inbound messages. Foreign records apply in host
-    /// order; own records are skipped (applied locally at publish). Presence
-    /// and roster messages update the caches this returns. Returns how many
-    /// foreign records were applied.
-    pub fn sync(&mut self) -> Result<usize, SessionClientError> {
+    /// order into the caller's runtime; own records are skipped (applied
+    /// locally at publish). Presence and roster messages update the caches
+    /// this returns. Returns how many foreign records were applied.
+    pub fn sync(
+        &mut self,
+        runtime: &mut SharedDocumentRuntime,
+    ) -> Result<usize, SessionClientError> {
         if !self.is_connected() {
             return Err(SessionClientError::Disconnected);
         }
@@ -210,7 +206,7 @@ impl SessionClient {
                 HostMessage::Record { record } => {
                     self.consumed_count += 1;
                     if record.user_id != self.user_id {
-                        self.runtime.apply_action_record(record);
+                        runtime.apply_action_record(record);
                         applied += 1;
                     }
                 }
@@ -233,22 +229,10 @@ impl SessionClient {
         Ok(applied)
     }
 
-    /// Forward-edit publish: apply locally, then ship (canonical
-    /// append-then-apply minus the disk append — the host owns the log).
-    pub fn publish_action(&mut self, record: SharedDocumentActionRecord) -> Result<(), SessionClientError> {
-        self.runtime.apply_action_record(record.clone());
-        self.send(ClientMessage::Action { record })
-    }
-
-    /// History (undo/redo) publish: the local runtime already mutated its
-    /// canvases via `undo_top_action`/`redo_top_action`, so the record is
-    /// pushed onto the history stacks without re-applying — the live
-    /// `apply_shared_history_action` flow, shipped.
-    pub fn publish_history_record(
-        &mut self,
-        record: SharedDocumentActionRecord,
-    ) -> Result<(), SessionClientError> {
-        self.runtime.push_history_record(record.clone());
+    /// Ship one record the caller already applied locally and appended to its
+    /// own log (the canonical apply-then-ship flow — revert records included;
+    /// the caller's history stacks were mutated by the undo/redo itself).
+    pub fn send_action(&self, record: SharedDocumentActionRecord) -> Result<(), SessionClientError> {
         self.send(ClientMessage::Action { record })
     }
 
@@ -368,9 +352,64 @@ mod tests {
         }
     }
 
-    fn connect_client(port: u16, id: &str) -> SessionClient {
-        SessionClient::connect(&format!("127.0.0.1:{port}"), session_user(id))
-            .expect("client joins")
+    /// One test user: client + the caller-owned runtime it syncs into.
+    struct TestPeer {
+        client: SessionClient,
+        runtime: SharedDocumentRuntime,
+    }
+
+    impl TestPeer {
+        fn connect(port: u16, id: &str) -> Self {
+            let (client, snapshot) = SessionClient::connect(
+                &format!("127.0.0.1:{port}"),
+                session_user(id),
+            )
+            .expect("client joins");
+            Self { client, runtime: SharedDocumentRuntime::new(snapshot) }
+        }
+
+        /// The canonical apply-then-ship publish flow.
+        fn publish(&mut self, record: SharedDocumentActionRecord) {
+            self.runtime.apply_action_record(record.clone());
+            self.client.send_action(record).expect("send action");
+        }
+
+        fn sync(&mut self) -> usize {
+            self.client.sync(&mut self.runtime).expect("sync")
+        }
+
+        /// Wire hops are async; poll sync until the expected record count lands.
+        fn sync_for(&mut self, expected: usize) -> usize {
+            let mut applied = 0;
+            for _ in 0..100 {
+                applied += self.sync();
+                if applied >= expected {
+                    return applied;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            applied
+        }
+
+        fn canvas_len(&self) -> usize {
+            self.runtime
+                .canvas_for_layer("layer-1", 0)
+                .cloned()
+                .unwrap_or_default()
+                .len()
+        }
+
+        fn stroke(&self, action_id: &str, position: CellPoint, color: (u8, u8, u8)) -> SharedDocumentActionRecord {
+            SharedDocumentActionRecord::cell_patch_set(
+                action_id.to_string(),
+                self.runtime.document.document_id.clone(),
+                "layer-1".to_string(),
+                self.client.user_id.clone(),
+                "t".to_string(),
+                vec![SharedCellPatch::new(position, None, Some(&paint(color)))],
+                None,
+            )
+        }
     }
 
     fn paint(color: (u8, u8, u8)) -> PaintedCell {
@@ -381,141 +420,125 @@ mod tests {
         }
     }
 
-    fn canvas_len(client: &SessionClient) -> usize {
-        client
-            .runtime
-            .canvas_for_layer("layer-1", 0)
-            .cloned()
-            .unwrap_or_default()
-            .len()
-    }
-
-    fn stroke_record(
-        client: &SessionClient,
-        action_id: &str,
-        position: CellPoint,
-        color: (u8, u8, u8),
-    ) -> SharedDocumentActionRecord {
-        SharedDocumentActionRecord::cell_patch_set(
-            action_id.to_string(),
-            client.runtime.document.document_id.clone(),
-            "layer-1".to_string(),
-            client.user_id.clone(),
-            "t".to_string(),
-            vec![SharedCellPatch::new(position, None, Some(&paint(color)))],
-            None,
-        )
-    }
-
-    /// Wire hops are async; poll sync until the expected record count lands.
-    fn sync_for(client: &mut SessionClient, expected: usize) -> usize {
-        let mut applied = 0;
-        for _ in 0..100 {
-            applied += client.sync().unwrap();
-            if applied >= expected {
-                return applied;
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-        applied
-    }
-
     #[test]
-    fn join_builds_runtime_from_host_snapshot_and_roster_includes_self() {
+    fn join_returns_snapshot_and_roster_includes_self() {
         let (_host, server) = spawn_host();
-        let client = connect_client(server.port, "bob");
-        assert_eq!(client.consumed_count(), 0);
-        assert_eq!(client.roster().len(), 1);
-        assert_eq!(client.roster()[0].user_id, "bob");
-        assert_eq!(canvas_len(&client), 0);
-        client.shutdown();
+        let peer = TestPeer::connect(server.port, "bob");
+        assert_eq!(peer.client.consumed_count(), 0);
+        assert_eq!(peer.client.roster().len(), 1);
+        assert_eq!(peer.client.roster()[0].user_id, "bob");
+        assert_eq!(peer.canvas_len(), 0);
+        peer.client.shutdown();
         server.shutdown();
     }
 
     #[test]
     fn two_clients_converge_through_publish_and_sync() {
         let (_host, server) = spawn_host();
-        let mut alice = connect_client(server.port, "alice");
-        let mut bob = connect_client(server.port, "bob");
-        alice.sync().unwrap(); // roster (bob joined)
-        bob.sync().unwrap();
+        let mut alice = TestPeer::connect(server.port, "alice");
+        let mut bob = TestPeer::connect(server.port, "bob");
+        alice.sync(); // roster (bob joined)
+        bob.sync();
 
         // Alice paints; bob syncs it in.
-        let record = stroke_record(&alice, "a-1", CellPoint { x: 0, y: 0, z: 0 }, (255, 0, 0));
-        alice.publish_action(record).unwrap();
-        assert_eq!(canvas_len(&alice), 1); // applied locally at publish
-        assert_eq!(sync_for(&mut bob, 1), 1);
-        assert_eq!(canvas_len(&bob), 1);
+        let record = alice.stroke("a-1", CellPoint { x: 0, y: 0, z: 0 }, (255, 0, 0));
+        alice.publish(record);
+        assert_eq!(alice.canvas_len(), 1); // applied locally at publish
+        assert_eq!(bob.sync_for(1), 1);
+        assert_eq!(bob.canvas_len(), 1);
 
         // Bob paints back; alice syncs. Interleaved log order holds.
-        let record = stroke_record(&bob, "b-1", CellPoint { x: 1, y: 0, z: 0 }, (0, 255, 0));
-        bob.publish_action(record).unwrap();
-        assert_eq!(sync_for(&mut alice, 1), 1);
-        assert_eq!(canvas_len(&alice), 2);
+        let record = bob.stroke("b-1", CellPoint { x: 1, y: 0, z: 0 }, (0, 255, 0));
+        bob.publish(record);
+        assert_eq!(alice.sync_for(1), 1);
+        assert_eq!(alice.canvas_len(), 2);
         // Each client's cursor has consumed only the other's record — the
         // host excludes the sender from its own record's broadcast.
-        assert_eq!(alice.consumed_count(), 1);
-        assert_eq!(bob.consumed_count(), 1);
+        assert_eq!(alice.client.consumed_count(), 1);
+        assert_eq!(bob.client.consumed_count(), 1);
 
         // Re-syncing applies nothing (own records skipped, cursor advanced).
-        assert_eq!(alice.sync().unwrap(), 0);
-        assert_eq!(bob.sync().unwrap(), 0);
+        assert_eq!(alice.sync(), 0);
+        assert_eq!(bob.sync(), 0);
 
-        alice.shutdown();
-        bob.shutdown();
+        alice.client.shutdown();
+        bob.client.shutdown();
+        server.shutdown();
+    }
+
+    #[test]
+    fn late_joiner_replays_the_full_log_onto_the_snapshot() {
+        let (_host, server) = spawn_host();
+        let mut alice = TestPeer::connect(server.port, "alice");
+        alice.sync();
+        let record = alice.stroke("a-1", CellPoint { x: 0, y: 0, z: 0 }, (9, 0, 0));
+        alice.publish(record);
+        let record = alice.stroke("a-2", CellPoint { x: 1, y: 0, z: 0 }, (0, 9, 0));
+        alice.publish(record);
+
+        // Carol joins after two strokes: snapshot plus full-log replay.
+        let mut carol = TestPeer::connect(server.port, "carol");
+        assert_eq!(carol.sync_for(2), 2);
+        assert_eq!(carol.canvas_len(), 2);
+        assert_eq!(carol.client.consumed_count(), 2);
+
+        alice.client.shutdown();
+        carol.client.shutdown();
         server.shutdown();
     }
 
     #[test]
     fn presence_round_trips_between_clients() {
         let (_host, server) = spawn_host();
-        let mut alice = connect_client(server.port, "alice");
-        let mut bob = connect_client(server.port, "bob");
-        alice.sync().unwrap();
+        let mut alice = TestPeer::connect(server.port, "alice");
+        let mut bob = TestPeer::connect(server.port, "bob");
+        alice.sync();
 
-        alice.send_presence(Some([3, 4, 0])).unwrap();
+        alice.client.send_presence(Some([3, 4, 0])).unwrap();
         // Wait for the wire hop, then sync bob's side.
         for _ in 0..50 {
-            bob.sync().unwrap();
-            if bob.cursor("alice") == Some([3, 4, 0]) {
+            bob.sync();
+            if bob.client.cursor("alice") == Some([3, 4, 0]) {
                 break;
             }
             thread::sleep(Duration::from_millis(10));
         }
-        assert_eq!(bob.cursor("alice"), Some([3, 4, 0]));
-        assert_eq!(bob.cursor("bob"), None);
+        assert_eq!(bob.client.cursor("alice"), Some([3, 4, 0]));
+        assert_eq!(bob.client.cursor("bob"), None);
 
-        alice.shutdown();
-        bob.shutdown();
+        alice.client.shutdown();
+        bob.client.shutdown();
         server.shutdown();
     }
 
     #[test]
     fn duplicate_identity_join_is_denied_loudly() {
         let (_host, server) = spawn_host();
-        let _alice = connect_client(server.port, "alice");
+        let alice = TestPeer::connect(server.port, "alice");
         let result = SessionClient::connect(&format!("127.0.0.1:{}", server.port), session_user("alice"));
         match result {
             Err(SessionClientError::Denied(reason)) => assert_eq!(reason, "user-id-in-use"),
             Err(other) => panic!("expected denied, got {other}"),
             Ok(_) => panic!("expected denied, got a session"),
         }
+        alice.client.shutdown();
         server.shutdown();
     }
 
     #[test]
     fn disconnect_is_visible_to_the_frame_loop() {
         let (_host, server) = spawn_host();
-        let alice = connect_client(server.port, "alice");
-        alice.stream.shutdown(Shutdown::Both).unwrap();
+        let alice = TestPeer::connect(server.port, "alice");
+        alice.client.stream.shutdown(Shutdown::Both).unwrap();
         // Reader thread notices EOF and clears connected.
         for _ in 0..50 {
-            if !alice.is_connected() {
+            if !alice.client.is_connected() {
                 break;
             }
             thread::sleep(Duration::from_millis(10));
         }
-        assert!(!alice.is_connected());
+        assert!(!alice.client.is_connected());
+        alice.client.shutdown();
         server.shutdown();
     }
 }

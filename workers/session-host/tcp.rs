@@ -76,6 +76,30 @@ pub fn spawn_session_host_server(
             // connection says `Hello`. Routed-to drains use this map.
             let senders: Arc<Mutex<HashMap<String, mpsc::Sender<String>>>> =
                 Arc::new(Mutex::new(HashMap::new()));
+
+            // Outbound pump: the host core only queues; this thread drains
+            // every client's queue onto its wire on a short tick. Covers
+            // host-local publishes (`apply_local_record`) that no connection
+            // thread would otherwise notice, and keeps the per-message drain
+            // in `serve_connection` as the low-latency fast path.
+            {
+                let host = Arc::clone(&host);
+                let senders = Arc::clone(&senders);
+                let pump_shutdown = Arc::clone(&accept_shutdown);
+                let _ = thread::Builder::new()
+                    .name("session-host-pump".into())
+                    .spawn(move || loop {
+                        if pump_shutdown.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        {
+                            let mut host = host.lock().expect("session host lock");
+                            drain_and_route(&mut host, &senders);
+                        }
+                        thread::sleep(Duration::from_millis(10));
+                    });
+            }
+
             loop {
                 if accept_shutdown.load(Ordering::SeqCst) {
                     return;
@@ -148,18 +172,33 @@ fn serve_connection(
             },
         };
 
+        // Register the outbound sender BEFORE handling: once the host queues
+        // messages for this user, any other connection's drain (or the pump)
+        // must find the sender, or the messages are silently dropped.
+        if joined_user_id.is_none() {
+            if let ClientMessage::Hello { .. } = &message {
+                senders.lock().expect("senders lock").insert(user_id.clone(), outbound_tx.clone());
+            }
+        }
+
         let denied_reason = {
             let mut host = host.lock().expect("session host lock");
             match host.handle_client_message(&user_id, message) {
                 Ok(()) => {
                     if joined_user_id.is_none() {
                         joined_user_id = Some(user_id.clone());
-                        senders.lock().expect("senders lock").insert(user_id.clone(), outbound_tx.clone());
                     }
                     drain_and_route(&mut host, &senders);
                     None
                 }
-                Err(rejection) => Some(rejection_reason(rejection)),
+                Err(rejection) => {
+                    // A failed Hello never registered this identity on the
+                    // host; drop the early sender registration with it.
+                    if joined_user_id.is_none() {
+                        senders.lock().expect("senders lock").remove(&user_id);
+                    }
+                    Some(rejection_reason(rejection))
+                }
             }
         };
 

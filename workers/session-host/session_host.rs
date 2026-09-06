@@ -162,6 +162,13 @@ impl SessionHost {
                     log_length,
                     roster: self.roster(),
                 });
+                // Full-log replay: the joiner's snapshot is the document as of
+                // host-log start, so it applies every historical record from
+                // cursor 0 (Figma's fresh-copy-plus-replay convergence).
+                let history: Vec<SharedDocumentActionRecord> = self.records.clone();
+                for record in history {
+                    self.queue_to(&user.user_id, HostMessage::Record { record });
+                }
                 self.broadcast_others(
                     &user.user_id,
                     HostMessage::Roster { users: self.roster() },
@@ -205,6 +212,16 @@ impl SessionHost {
         self.clients.retain(|client| client.user.user_id != user_id);
         self.cursors.remove(user_id);
         self.broadcast_others(user_id, HostMessage::Roster { users: self.roster() });
+    }
+
+    /// The host user's own edits: the local app already applied the record
+    /// to its runtime, so this only enters the log and broadcasts to every
+    /// connected client (arrival order keeps the log totally ordered).
+    pub fn apply_local_record(&mut self, record: SharedDocumentActionRecord) {
+        self.records.push(record.clone());
+        for client in &mut self.clients {
+            client.outgoing.push_back(HostMessage::Record { record: record.clone() });
+        }
     }
 
     /// Drains one client's queued messages (the transport's read side).
@@ -417,6 +434,27 @@ mod tests {
         assert_eq!(
             host.take_outgoing("alice"),
             vec![HostMessage::Roster { users: host.roster() }]
+        );
+    }
+
+    #[test]
+    fn local_host_record_enters_log_and_reaches_every_client() {
+        let mut host = host();
+        hello(&mut host, "alice");
+        hello(&mut host, "bob");
+        host.take_outgoing("alice");
+        host.take_outgoing("bob");
+
+        host.apply_local_record(stroke("host-1", "host-user", 3));
+        assert_eq!(host.records().len(), 1);
+        assert_eq!(host.records()[0].action_id, "host-1");
+        assert_eq!(
+            host.take_outgoing("alice"),
+            vec![HostMessage::Record { record: stroke("host-1", "host-user", 3) }]
+        );
+        assert_eq!(
+            host.take_outgoing("bob"),
+            vec![HostMessage::Record { record: stroke("host-1", "host-user", 3) }]
         );
     }
 

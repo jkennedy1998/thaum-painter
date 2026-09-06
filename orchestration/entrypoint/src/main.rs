@@ -1389,6 +1389,54 @@ fn main() -> Result<()> {
     // would break silently on schema changes.
     let mut shared_document = new_unsaved_document();
     let mut shared_document_paths = painter_shared_document_paths(&shared_document.document.document_id);
+
+    // Multiplayer boot (env-driven v1; the session-module UI is the next
+    // slice): THAUM_SESSION_HOST[=port] hosts a LAN session, or
+    // THAUM_SESSION_JOIN=ip[:port] joins one. Joining replaces the blank boot
+    // document with the host's snapshot (Figma's fresh-copy model); every
+    // record that reaches this process afterwards is applied in host order.
+    let mut session_net: Option<thaum_painter_workers::SessionNet> = None;
+    match thaum_painter_workers::session_net_boot_from_env() {
+        thaum_painter_workers::SessionNetBoot::Host(port) => {
+            // Snapshot source freezes the boot document: the host log starts
+            // empty at boot, so joiners rebuild exactly via snapshot + full
+            // record replay. (Structure edits that still bypass the record
+            // log are not replayed — closed by the structure-record slice.)
+            let boot_document = shared_document.document.clone();
+            let net = thaum_painter_workers::SessionNet::host(
+                Box::new(move || boot_document.clone()),
+                thaum_painter_workers::session_user_from_identity(&session_identity),
+                port,
+            );
+            match net {
+                Ok(net) => {
+                    eprintln!("session hosting on port {port} as {}", net.user_id());
+                    session_net = Some(net);
+                }
+                Err(error) => eprintln!("failed to host session on port {port}: {error}"),
+            }
+        }
+        thaum_painter_workers::SessionNetBoot::Join(raw) => {
+            let address = thaum_painter_workers::join_address(&raw);
+            let net = thaum_painter_workers::SessionNet::join(
+                &address,
+                thaum_painter_workers::session_user_from_identity(&session_identity),
+            );
+            match net {
+                Ok((net, snapshot)) => {
+                    shared_document = SharedDocumentRuntime::new(snapshot);
+                    shared_document_paths = painter_shared_document_paths(
+                        &shared_document.document.document_id,
+                    );
+                    eprintln!("joined session at {address} as {}", net.user_id());
+                    session_net = Some(net);
+                }
+                Err(error) => eprintln!("failed to join session at {address}: {error}"),
+            }
+        }
+        thaum_painter_workers::SessionNetBoot::None => {}
+    }
+    let mut net_published: usize = 0;
     let mut current_document_root: Option<PathBuf> = None;
 
     let mut state = boot_renderer(config)?;
@@ -1560,8 +1608,47 @@ fn main() -> Result<()> {
             && last_playback_step.elapsed() >= PLAYBACK_BREATH_INTERVAL;
         let blink_due = typing_mode.is_active()
             && cursor_blink_at.elapsed() >= CURSOR_BLINK_INTERVAL;
-        if !input_dirty && !playback_due && !blink_due && !session_dirty {
+        // Multiplayer frame seam: publish this frame's new local records
+        // (strokes, undo/redo, selections — everything that appended to the
+        // runtime's action log), then pull foreign ones in host order. Runs
+        // before the demand gate: remote edits make the frame dirty alone.
+        let mut network_applied = 0usize;
+        if let Some(net) = session_net.as_mut() {
+            if net.is_connected() {
+                let total = shared_document.actions.len();
+                while net_published < total {
+                    let record = shared_document.actions[net_published].clone();
+                    net_published += 1;
+                    if let Err(error) = net.publish(record) {
+                        eprintln!("session publish failed: {error}");
+                        break;
+                    }
+                }
+                match net.sync(&mut shared_document) {
+                    Ok(applied) => network_applied = applied,
+                    Err(error) => eprintln!("session sync failed: {error}"),
+                }
+            }
+        }
+        if !input_dirty && !playback_due && !blink_due && !session_dirty && network_applied == 0 {
             return Ok(());
+        }
+        if network_applied > 0 {
+            // Foreign records changed document truth: resync the live mirrors
+            // (canvas, active layer, selection cache) the same way the
+            // snapshot-conflict recovery path does.
+            let current_breath = timeline_state.borrow().current_breath;
+            active_layer_id =
+                resolved_active_layer_id(&shared_document, Some(&active_layer_id));
+            sync_canvas_from_active_layer(
+                &shared_document,
+                &active_layer_id,
+                current_breath,
+                &mut canvas,
+            );
+            selection.borrow_mut().replace_points(
+                shared_document.selection_points(DEFAULT_SELECTION_CHANNEL_ID),
+            );
         }
         last_frame_cursor = frame.input.cursor_position;
         last_pointer_down = frame.input.pointer_down;
