@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# run-and-build-linux — rebuild the linux lane through the one shared build
+# pipeline (the same one build-all-environments uses) and boot the built exe.
+#
+# The lane exe is the source of truth: what you run here is byte-identical to
+# the folder you would zip and send to someone.
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+"$script_dir/build-all-environments" linux
+
+exec "$script_dir/../builds/linux/thaum painter/thaum painter" "$@"

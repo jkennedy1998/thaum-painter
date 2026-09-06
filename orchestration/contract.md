@@ -16,7 +16,7 @@ Own the minimal boot/composition seam for standing up thaum-painter usage, wirin
 - UI module composition (deferred; see `context/roadmap.md`)
 
 ## children-encapsulations
-- `entrypoint/`
+- `build-commands/`
   - default
 
 ## contents
@@ -32,7 +32,7 @@ Own the minimal boot/composition seam for standing up thaum-painter usage, wirin
 - none
 
 ## interface consumers
-- humans and operators running thaum-painter locally, via `entrypoint/`
+- humans and operators running thaum-painter locally, via `build-commands/`
 
 ## artifacts
 - none
@@ -44,4 +44,4 @@ Own the minimal boot/composition seam for standing up thaum-painter usage, wirin
 - none
 
 ## notes
-- `entrypoint/` is the first real boot-composition surface here — a runnable proof app, not yet real painter-file loading. This parent stays a pure boundary; concrete boot code lives in the child, matching `thaum-renderer/orchestration/`'s own boot/asset-root split.
+- `build-commands/` is the first real boot-composition surface here — the runnable app plus its two build commands (`build-all-environments`, `run-and-build-linux`) and the per-environment lanes under `orchestration/builds/`. This parent stays a pure boundary; concrete boot code lives in the child, matching `thaum-renderer/orchestration/`'s own boot/asset-root split.

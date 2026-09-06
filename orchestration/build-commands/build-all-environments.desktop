@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=thaum-painter (build all environments)
+Comment=Rebuilds the linux and windows lanes under orchestration/builds/
+Exec=sh -c "$HOME/Repos/thaum-painter/orchestration/build-commands/build-all-environments"
+Terminal=true
+Icon=utilities-terminal
+Categories=Development;

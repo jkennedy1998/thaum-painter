@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# build-all-environments — build thaum-painter distribution lanes.
+#
+# One build pipeline per environment. Each lane folder is deleted and rebuilt
+# in full on every run — no version churn, the folder is always current:
+#
+#   orchestration/builds/linux/thaum painter/    (thaum painter + renderer-assets/ + licenses)
+#   orchestration/builds/windows/thaum painter/  (thaum painter.exe + renderer-assets/ + licenses)
+#   orchestration/builds/mac/thaum painter/      (needs macOS — added later via CI)
+#
+# Usage: ./build-all-environments [environment...]
+#   no args  = every known environment
+#   names    = only those (e.g. `./build-all-environments linux`)
+#
+# Sending a build to someone = zip the lane folder. The lane root holds the
+# exe directly, so a lane folder is the whole app.
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+painter_root="$(cd "$script_dir/../.." && pwd)"
+renderer_root="$(cd "$painter_root/../thaum-renderer" && pwd)"
+builds_root="$painter_root/orchestration/builds"
+cargo_cache="$builds_root/.cargo-cache"   # cargo build cache; regenerable, git-ignored
+lane_name="thaum painter"
+
+source "$HOME/.cargo/env" 2>/dev/null || true
+cd "$painter_root"
+
+# assemble_lane <lane_dir> <built_exe> <exe_name>
+# shared tail of the pipeline: replace the lane folder with exe + assets + licenses
+assemble_lane() {
+  local lane_dir="$1" built_exe="$2" exe_name="$3"
+  rm -rf "$lane_dir"
+  mkdir -p "$lane_dir"
+  cp "$built_exe" "$lane_dir/$exe_name"
+  cp -r "$renderer_root/orchestration/renderer-assets" "$lane_dir/renderer-assets"
+  cp "$painter_root/context/LICENSE.md" "$lane_dir/LICENSE"
+  cp "$renderer_root/context/LICENSE.md" "$lane_dir/RENDERER-LICENSE"
+  echo "built: $lane_dir"
+}
+
+build_linux() {
+  cargo build --release -p thaum-painter-entrypoint
+  assemble_lane "$builds_root/linux/$lane_name" \
+    "$cargo_cache/release/thaum-painter-entrypoint" "thaum painter"
+}
+
+build_windows() {
+  cargo build --release --target x86_64-pc-windows-gnu -p thaum-painter-entrypoint
+  assemble_lane "$builds_root/windows/$lane_name" \
+    "$cargo_cache/x86_64-pc-windows-gnu/release/thaum-painter-entrypoint.exe" "thaum painter.exe"
+}
+
+build_mac() {
+  echo "skip mac: mac binaries require macOS to build; this lane arrives with the GitHub CI workflow" >&2
+}
+
+platform="${1:-}"
+case "$platform" in
+  "" )       build_linux; build_windows; build_mac ;;
+  linux)     build_linux ;;
+  windows)   build_windows ;;
+  mac)       build_mac ;;
+  *) echo "unknown environment: $platform (known: linux, windows, mac)" >&2; exit 2 ;;
+esac

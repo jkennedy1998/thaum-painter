@@ -1,7 +1,7 @@
 [workspace]
 members = [
   "domain",
-  "orchestration/entrypoint",
+  "orchestration/build-commands",
   "workers"
 ]
 resolver = "2"

@@ -1,0 +1,5 @@
+# All cargo build output for this workspace lands under orchestration/builds/
+# (.cargo-cache is the regenerable build cache; lane folders hold the shippable
+# builds). Keeps build files out of the repo root and out of encapsulations.
+[build]
+target-dir = "orchestration/builds/.cargo-cache"

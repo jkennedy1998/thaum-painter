@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=thaum-painter (build + run)
-Comment=Rebuilds thaum-painter-entrypoint and boots the renderer window
-Exec=thaum-painter/orchestration/entrypoint/run.sh
-Path=thaum-painter/orchestration/entrypoint
-Terminal=true
-Icon=utilities-terminal
-Categories=Development;
