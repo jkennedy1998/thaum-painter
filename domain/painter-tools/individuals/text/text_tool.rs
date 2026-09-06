@@ -21,7 +21,7 @@ mod tests {
         let descriptor = TextTool::descriptor();
         assert_eq!(descriptor.id, "text");
         assert_eq!(descriptor.label, "Text");
-        assert_eq!(descriptor.icon, 'T');
+        assert_eq!(descriptor.icon, 'a');
         assert_eq!(
             descriptor.property_row_ids,
             &["text_char_step", "text_enter_step"]

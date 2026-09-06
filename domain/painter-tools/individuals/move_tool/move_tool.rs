@@ -24,7 +24,7 @@ mod tests {
         let descriptor = MoveTool::descriptor();
         assert_eq!(descriptor.id, "move");
         assert_eq!(descriptor.label, "Move");
-        assert_eq!(descriptor.icon, '✥');
+        assert_eq!(descriptor.icon, '#');
         assert!(descriptor.property_row_ids.is_empty());
         assert_eq!(descriptor.select_action, Some("painter_select_move"));
         assert_eq!(descriptor.hotkey, Some("M"));

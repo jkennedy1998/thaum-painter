@@ -21,7 +21,7 @@ mod tests {
         let descriptor = EraseTool::descriptor();
         assert_eq!(descriptor.id, "erase");
         assert_eq!(descriptor.label, "Erase");
-        assert_eq!(descriptor.icon, '◫');
+        assert_eq!(descriptor.icon, '=');
         assert_eq!(descriptor.property_row_ids, &["brush_size"]);
         assert_eq!(descriptor.select_action, None);
         assert_eq!(descriptor.hotkey, None);

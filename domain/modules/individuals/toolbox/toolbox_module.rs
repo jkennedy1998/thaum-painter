@@ -14,6 +14,8 @@ pub struct ToolDef {
     pub tool: PaintTool,
     pub icon: char,
     pub label: &'static str,
+    /// Toolbox tooltip copy: what the tool does.
+    pub description: &'static str,
 }
 
 pub struct ToolboxModule {
@@ -60,6 +62,19 @@ impl ToolboxModule {
         content_y + content_height - 1 - index as i32
     }
 
+    /// Absolute screen-space rect of one tool row: the panel's usable
+    /// content span on that row, matching `tool_at` hit-testing.
+    fn row_rect(&self, index: usize) -> ModuleRect {
+        let (content_x, _) = PanelChrome::content_origin();
+        let (content_width, _) = PanelChrome::content_size(self.rect);
+        ModuleRect {
+            x0: self.rect.x0 + content_x,
+            y0: self.rect.y0 + self.row_y(index),
+            x1: self.rect.x0 + content_x + content_width - 1,
+            y1: self.rect.y0 + self.row_y(index),
+        }
+    }
+
     fn tool_at(&self, x: i32, y: i32) -> Option<PaintTool> {
         let local_x = x - self.rect.x0;
         let local_y = y - self.rect.y0;
@@ -85,10 +100,19 @@ impl Module for ToolboxModule {
         self.rect
     }
 
-    /// Tooltip hotspots: the module's gizmo bar, so every gizmo-enabled
-    /// panel grows tooltips from one shared implementation.
+    /// Tooltip hotspots: the module's gizmo bar plus one row hotspot per
+    /// tool, so hovering a tool explains it ("icon Name" + what it does)
+    /// through the shared tooltip implementation.
     fn hotspots(&self) -> Vec<Hotspot> {
-        self.gizmos.hotspots(self.rect)
+        let mut hotspots = self.gizmos.hotspots(self.rect);
+        hotspots.extend(self.tool_defs.iter().enumerate().map(|(index, def)| {
+            Hotspot::new(
+                self.row_rect(index),
+                format!("{} {}", def.icon, def.label),
+                def.description,
+            )
+        }));
+        hotspots
     }
 
     fn draw(&self) -> CellGroup {
@@ -276,16 +300,19 @@ mod tests {
                 tool: PaintTool::Brush,
                 icon: 'B',
                 label: "Brush",
+                description: "paints cells",
             },
             ToolDef {
                 tool: PaintTool::Erase,
                 icon: 'E',
                 label: "Erase",
+                description: "clears cells",
             },
             ToolDef {
                 tool: PaintTool::Fill,
                 icon: 'F',
                 label: "Fill",
+                description: "flood-fills cells",
             },
         ]
     }
@@ -437,6 +464,28 @@ mod tests {
 
         let group = toolbox.draw();
         assert_eq!(group.cells[&CellPoint { x: 5, y: 1, z: 0 }].color, medium);
+    }
+
+    #[test]
+    fn hotspots_frame_each_tool_row_with_icon_name_and_description() {
+        let toolbox = ToolboxModule::new("toolbox", rect(), tool_state(), tool_defs());
+
+        let hotspots = toolbox.hotspots();
+
+        for (index, def) in tool_defs().iter().enumerate() {
+            let expected_rect = ModuleRect {
+                x0: 1,
+                y0: toolbox.row_y(index),
+                x1: 16,
+                y1: toolbox.row_y(index),
+            };
+            let hotspot = hotspots
+                .iter()
+                .find(|hotspot| hotspot.rect == expected_rect)
+                .unwrap_or_else(|| panic!("no hotspot for {}", def.label));
+            assert_eq!(hotspot.title, format!("{} {}", def.icon, def.label));
+            assert_eq!(hotspot.description, def.description);
+        }
     }
 
     #[test]

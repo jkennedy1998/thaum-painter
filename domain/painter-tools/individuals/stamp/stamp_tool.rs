@@ -22,7 +22,7 @@ mod tests {
         let descriptor = StampTool::descriptor();
         assert_eq!(descriptor.id, "stamp");
         assert_eq!(descriptor.label, "Stamp");
-        assert_eq!(descriptor.icon, '❖');
+        assert_eq!(descriptor.icon, '□');
         assert!(descriptor.property_row_ids.is_empty());
         assert_eq!(descriptor.select_action, Some("painter_select_stamp"));
         assert_eq!(descriptor.hotkey, Some("V"));

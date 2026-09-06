@@ -21,7 +21,7 @@ mod tests {
         let descriptor = BrushTool::descriptor();
         assert_eq!(descriptor.id, "brush");
         assert_eq!(descriptor.label, "Brush");
-        assert_eq!(descriptor.icon, '✎');
+        assert_eq!(descriptor.icon, '|');
         assert_eq!(descriptor.property_row_ids, &["brush_size"]);
         assert_eq!(descriptor.select_action, Some("painter_select_pencil"));
         assert_eq!(descriptor.hotkey, Some("P"));

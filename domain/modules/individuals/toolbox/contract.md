@@ -8,6 +8,7 @@ Own painter's toolbox panel: the old-feeling left/right tool chooser rebuilt as 
 - left-click assigns the left-hand tool
 - right-click assigns the right-hand tool
 - visible left/right/both assignment indicators per tool row
+- one tooltip row hotspot per tool: the row's content-span rect with title "<icon> <label>" and the registry descriptor's description, rendered by the shared tooltip seam
 - the direct bridge from toolbox clicks into live painter `tool-state`
 
 ## does not own
@@ -41,7 +42,7 @@ Own painter's toolbox panel: the old-feeling left/right tool chooser rebuilt as 
 ## tests
 - inline `#[cfg(test)]` in `toolbox_module.rs`
   - light
-  - validates row hit-testing, left/right assignment, and draw indicators
+  - validates row hit-testing, left/right assignment, draw indicators, and per-tool-row tooltip hotspots
 
 ## data
 - none

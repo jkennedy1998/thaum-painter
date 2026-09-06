@@ -4,7 +4,7 @@
 Own painter tool registration as one encapsulation: a registry of tool descriptors plus one folder per tool, so adding a tool is one folder plus one registry line and every registration consumer reads the same truth.
 
 ## owns
-- the `ToolDescriptor` registration shape: id, label, icon, tool-specific property rows, select action, default hotkey
+- the `ToolDescriptor` registration shape: id, label, icon, description (toolbox tooltip copy), tool-specific property rows, select action, default hotkey
 - the `RegisteredTool` seam each `individuals/` tool folder implements
 - the single `ALL_TOOLS` registry list and its lookup helpers
 - drift tests asserting registry <-> tool folders <-> `PaintTool` enum <-> tai hotkeys

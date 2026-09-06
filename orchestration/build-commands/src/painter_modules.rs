@@ -57,6 +57,7 @@ pub(crate) fn build_painter_modules(
                         tool: PaintTool::from_id(descriptor.id)?,
                         icon: descriptor.icon,
                         label: descriptor.label,
+                        description: descriptor.description,
                     })
                 })
                 .collect(),

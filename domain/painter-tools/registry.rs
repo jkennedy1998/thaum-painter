@@ -16,6 +16,8 @@ pub struct ToolDescriptor {
     pub label: &'static str,
     /// Toolbox glyph.
     pub icon: char,
+    /// Toolbox tooltip copy: what the tool does.
+    pub description: &'static str,
     /// Tool-specific property row ids this tool uses in the properties panel.
     pub property_row_ids: &'static [&'static str],
     /// Hotkey action that equips this tool, if any, e.g. "painter_select_pencil".
@@ -29,7 +31,8 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
     ToolDescriptor {
         id: "brush",
         label: "Brush",
-        icon: '✎',
+        icon: '|',
+        description: "edit cell content near the cursor",
         property_row_ids: &["brush_size"],
         select_action: Some("painter_select_pencil"),
         hotkey: Some("P"),
@@ -37,7 +40,8 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
     ToolDescriptor {
         id: "erase",
         label: "Erase",
-        icon: '◫',
+        icon: '=',
+        description: "clear cell content near the cursor",
         property_row_ids: &["brush_size"],
         select_action: None,
         hotkey: None,
@@ -46,6 +50,7 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
         id: "fill",
         label: "Fill",
         icon: '▧',
+        description: "flood-fill matching cells near the cursor",
         property_row_ids: &["fill_diagonal", "fill_match_channels"],
         select_action: Some("painter_select_bucket"),
         hotkey: Some("B"),
@@ -54,6 +59,7 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
         id: "lasso",
         label: "Lasso",
         icon: '◌',
+        description: "select cells by drawing around them",
         property_row_ids: &[],
         select_action: Some("painter_select_lasso"),
         hotkey: Some("L"),
@@ -61,7 +67,8 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
     ToolDescriptor {
         id: "stamp",
         label: "Stamp",
-        icon: '❖',
+        icon: '□',
+        description: "use the current clipboard content as a stamp",
         property_row_ids: &[],
         select_action: Some("painter_select_stamp"),
         hotkey: Some("V"),
@@ -69,7 +76,8 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
     ToolDescriptor {
         id: "move",
         label: "Move",
-        icon: '✥',
+        icon: '#',
+        description: "move selected cell content",
         property_row_ids: &[],
         select_action: Some("painter_select_move"),
         hotkey: Some("M"),
@@ -77,7 +85,8 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
     ToolDescriptor {
         id: "text",
         label: "Text",
-        icon: 'T',
+        icon: 'a',
+        description: "type out cell content",
         property_row_ids: &["text_char_step", "text_enter_step"],
         select_action: None,
         hotkey: None,
@@ -86,6 +95,7 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
         id: "picker",
         label: "Picker",
         icon: '◉',
+        description: "pick the content and color under the cursor",
         property_row_ids: &["picker_opposite_hand"],
         select_action: None,
         hotkey: None,
