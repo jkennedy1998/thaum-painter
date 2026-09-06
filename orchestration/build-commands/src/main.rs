@@ -496,6 +496,15 @@ fn normalize_open_document_root(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+/// The typed-path terminal fallback exists for jobo's Linux portal failures
+/// (xdg-desktop-portal / DBus) and must never run on Windows: the native
+/// dialog's cancel path routes here, and blocking on hidden console stdin
+/// reads as a hard crash (observed on Windows 2026-09-06). On every other
+/// platform a dialog cancel simply cancels.
+fn terminal_path_fallback_enabled() -> bool {
+    cfg!(target_os = "linux")
+}
+
 fn prompt_open_document_root(file_root: &Path) -> Option<PathBuf> {
     let selected = FileDialog::new()
         .set_directory(file_root)
@@ -507,6 +516,9 @@ fn prompt_open_document_root(file_root: &Path) -> Option<PathBuf> {
         return Some(path);
     }
     log_missing_dialog_selection("open", file_root);
+    if !terminal_path_fallback_enabled() {
+        return None;
+    }
     prompt_path_in_terminal(
         "native open dialog unavailable; type a document.json path or a document folder path",
         file_root,
@@ -579,6 +591,9 @@ fn prompt_save_document_root(file_root: &Path, title: &str) -> Option<PathBuf> {
         return Some(path);
     }
     log_missing_dialog_selection("save", file_root);
+    if !terminal_path_fallback_enabled() {
+        return None;
+    }
     prompt_path_in_terminal(
         "native save dialog unavailable; type a target document.json path or a folder/name path",
         file_root,
