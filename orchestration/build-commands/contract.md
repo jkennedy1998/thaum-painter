@@ -65,10 +65,12 @@ Own the two build commands for thaum-painter — the human-facing way to build a
 - none
 
 ## notes
-- Environments: `linux` (host build), `windows` (cross `x86_64-pc-windows-gnu`, needs the mingw toolchain installed once), `mac` (impossible from Linux — arrives with the GitHub CI workflow; the command prints a skip message until then).
+- Environments: `linux` (host build), `windows` (cross `x86_64-pc-windows-gnu`, needs the mingw toolchain installed once), `mac` (impossible from Linux — built by GitHub CI, owned by `.github/workflows/build-mac.yml` in this repo; it checks out thaum-renderer as a sibling, builds on `macos-latest` (Apple Silicon), assembles the same lane layout, zips it, and uploads `thaum-painter-mac.zip` as a run artifact; the command prints a pointer message until then).
 - Runtime paths stay portable: `painter_root()` in `main.rs` resolves writes as `THAUM_PAINTER_ROOT` env → compiled repo root when on disk (dev runs keep the repo layout) → the exe's own folder. So the linux lane exe run on jobo still writes into the repo dev layout, and a lane sent to another machine is self-contained next to its exe.
 - Asset resolution: `THAUM_RENDERER_ASSET_ROOT` env → `renderer-assets/` next to the exe → compiled repo path.
 - Source-of-truth from J: regular SAVE must never crash or hang on a dialog. Quick save writes `context/painter/painter-files/<slugified-title>/` with `-NN` bump; native dialog stack only on SAVE AS/OPEN (XDG portal backend failed instantly on jobo).
 - Source-of-truth from J: files save relative to wherever the painter lives, same painter-shaped structure, just relocated under the exe's folder when deployed.
 - Cross-repo path deps use relative sibling paths (`../../../thaum-renderer/...` from here); no compiled-in absolute machine paths.
 - `run-and-build-linux` replaced the old `run.sh`; `build-all-environments` replaced `package.sh`. The old `orchestration/entrypoint/` name is retired — this encapsulation now owns building, not just booting.
+- The GitHub CI mac workflow reuses this lane layout (exe + `renderer-assets/` + both LICENSE files, zipped lane folder) and triggers on push to `main` and on manual `workflow_dispatch`. It builds from pushed state only: uncommitted local changes never reach the mac lane.
+- The mac lane binary is unsigned; recipients must bypass Gatekeeper once (`xattr -cr "thaum painter"` or right-click → Open on first launch).

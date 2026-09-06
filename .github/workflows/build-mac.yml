@@ -1,0 +1,60 @@
+name: build-mac
+
+# Builds the mac lane (same layout as build-all-environments produces:
+# "thaum painter" exe + renderer-assets/ + both LICENSE files) and uploads it
+# as a zip artifact. thaum-renderer is checked out as a sibling repo because
+# the painter workspace references it by relative path.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build-mac:
+    runs-on: macos-latest # Apple Silicon build; Intel macs run it via Rosetta 2
+    steps:
+      - name: checkout thaum-painter
+        uses: actions/checkout@v4
+        with:
+          path: thaum-painter
+
+      - name: checkout thaum-renderer (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: jkennedy1998/thaum-renderer
+          path: thaum-renderer
+
+      - name: install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: thaum-painter
+
+      - name: build
+        working-directory: thaum-painter
+        run: cargo build --release -p thaum-painter-entrypoint
+
+      - name: assemble mac lane zip
+        working-directory: thaum-painter
+        run: |
+          set -euo pipefail
+          lane="orchestration/builds/mac/thaum painter"
+          exe="orchestration/builds/.cargo-cache/release/thaum-painter-entrypoint"
+          rm -rf orchestration/builds/mac
+          mkdir -p "$lane"
+          cp "$exe" "$lane/thaum painter"
+          cp -r ../thaum-renderer/orchestration/renderer-assets "$lane/renderer-assets"
+          cp context/LICENSE.md "$lane/LICENSE"
+          cp ../thaum-renderer/context/LICENSE.md "$lane/RENDERER-LICENSE"
+          cd orchestration/builds/mac
+          zip -qry thaum-painter-mac.zip "thaum painter"
+          mv thaum-painter-mac.zip "$GITHUB_WORKSPACE/"
+
+      - name: upload lane zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: thaum-painter-mac
+          path: thaum-painter-mac.zip

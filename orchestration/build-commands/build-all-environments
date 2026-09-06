@@ -52,7 +52,7 @@ build_windows() {
 }
 
 build_mac() {
-  echo "skip mac: mac binaries require macOS to build; this lane arrives with the GitHub CI workflow" >&2
+  echo "skip mac: mac binaries require macOS to build; the mac lane builds on GitHub CI (.github/workflows/build-mac.yml) and uploads thaum-painter-mac.zip as a run artifact" >&2
 }
 
 platform="${1:-}"
