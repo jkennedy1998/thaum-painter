@@ -26,11 +26,17 @@ Own the canonical top-level saved file schema and versioned shape for thaum-pain
 - `file_schema.rs`
   - rust file-schema parsing/validation shapes, owned by this encapsulation (currently still parses the pre-reversal module-wrapped shape; needs an implementation pass, see notes)
 - `example-thaum-painter-file-v1.json`
-  - first implementation-ready saved file example
+  - v1 generation example (historical: now rejected by the gate — kept as a generation marker)
 - `example-thaum-painter-file-v1.md`
-  - saved file shape notes
+  - v1 saved file shape notes
 - `schema-thaum-painter-file-v1.json`
-  - first machine-readable file schema draft
+  - v1 machine-readable file schema draft (historical)
+- `example-thaum-painter-file-v2.json`
+  - current-generation saved file example (binary-bars generation)
+- `example-thaum-painter-file-v2.md`
+  - v2 saved file shape notes (what changed from v1 and why)
+- `schema-thaum-painter-file-v2.json`
+  - current machine-readable file schema draft
 
 ## dependencies
 - `thaum-painter/domain/file/`
@@ -55,19 +61,22 @@ via: rust fn
 - render-space
 
 ## artifacts
-- `example-thaum-painter-file-v1.json`
-  - first-pass saved file fixture
-- `schema-thaum-painter-file-v1.json`
-  - first-pass machine-readable file schema
+- `example-thaum-painter-file-v2.json`
+  - current-generation saved file fixture
+- `schema-thaum-painter-file-v2.json`
+  - current machine-readable file schema
+- `example-thaum-painter-file-v1.json` + `schema-thaum-painter-file-v1.json`
+  - v1 generation records (historical; the gate rejects v1 with the explicit version message)
 
 ## tests
 - inline `#[cfg(test)]` in `file_schema.rs`
-  - example file parses; unsupported version and wrong kind reject with explicit messages
+  - v2 example parses; v1 example rejects as an unsupported generation; unsupported version and wrong kind reject with explicit messages
 
 ## data
 - none
 
 ## notes
 - renamed from `manifest/` (2026-09-07, J-approved): "what's the current schema version" is the sentence the code should be able to say; "manifest" was vague.
+- schema version bumped 1 -> 2 (2026-09-07, binary-bars redesign): the break is binary tiling — property tracks tile the full layer span with empty/solid bars, no voids. The interchange shape is unchanged; v1 files are not imported or migrated, they reject cleanly at load (`storage/`'s typed gate). Cross-reference: `plans/project-thaum-painter-binary-bars-plan.md`.
 - the schema version changes ONLY when the shape breaks. No importer, no migration pass — old files are recognized as unsupported and rejected cleanly at load, never a crash. J fixes friend files case-by-case.
 - load-time gate ownership: `parse_file_schema` provides kind/version validation; `storage/`'s `load_document_file` wires it into the actual load seam so rejection happens before any body deserialization.

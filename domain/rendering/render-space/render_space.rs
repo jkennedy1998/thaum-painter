@@ -4,7 +4,6 @@ use thaum_renderer_domain::{
     CellWeight, Composition, DataLanes, WorldPoint,
 };
 
-use crate::interpolation::{resolve_gap_fill, GapFill};
 use crate::file_schema::{parse_grid_point, GridPoint, Group, FileSchema, RasterSegment, Rgb};
 
 /// The transient renderer handoff assembled from one file schema at one active breath.
@@ -77,9 +76,9 @@ fn active_move_offset(group: &Group, active_breath: u32) -> Result<GridPoint> {
         .iter()
         .find(|block| breath_in_window(active_breath, block.start_breath, block.end_breath))
     else {
-        return match resolve_gap_fill(&move_property.blocks, active_breath) {
-            GapFill::NoContent => Ok(GridPoint::default()),
-        };
+        // Binary tiling: a breath not covered by a solid block is an empty —
+        // render nothing (interim behavior; per-row interpolation is a later pass).
+        return Ok(GridPoint::default());
     };
     parse_grid_point(&block.value).with_context(|| {
         format!(
@@ -99,9 +98,9 @@ fn build_group_cell_group(group: &Group, active_breath: u32) -> Result<CellGroup
         return Ok(cell_group);
     }
     let Some(segment) = active_raster_segment(group, active_breath) else {
-        return match resolve_gap_fill(&group.raster_segments, active_breath) {
-            GapFill::NoContent => Ok(cell_group),
-        };
+        // Binary tiling: a breath not covered by a solid segment is an empty —
+        // render nothing (interim behavior; per-row interpolation is a later pass).
+        return Ok(cell_group);
     };
     let move_offset = active_move_offset(group, active_breath)
         .with_context(|| format!("group '{}' has an invalid move offset", group.id))?;
@@ -170,7 +169,7 @@ mod tests {
     use crate::storage::{SharedCellPatch, SharedDocumentFile};
 
     const EXAMPLE_FILE_SCHEMA_JSON: &str =
-        include_str!("../../file/file-schema/example-thaum-painter-file-v1.json");
+        include_str!("../../file/file-schema/example-thaum-painter-file-v2.json");
 
     fn example_file_schema() -> FileSchema {
         parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap()

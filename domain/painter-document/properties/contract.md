@@ -13,10 +13,9 @@ Own editing-facing property-block views over painter file state.
 - canonical stored property schema
 - mutation commands
 - renderer handoff
+- gap-fill/interpolation behavior (the old `interpolation/` child was deleted 2026-09-07 with the binary-bars redesign — voids stopped existing, and per-row interpolation is a future pass)
 
 ## children-encapsulations
-- `interpolation/`
-  - default
 - `pieces/`
   - default
 

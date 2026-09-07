@@ -15,7 +15,7 @@ use crate::properties::{breath_in_span, destructive_breath_span, pushed_breath_s
 use crate::{Canvas, PaintColor, PaintedCell};
 
 pub const SHARED_DOCUMENT_KIND: &str = "thaum-painter-shared-document";
-pub const SHARED_DOCUMENT_SCHEMA_VERSION: u32 = 1;
+pub const SHARED_DOCUMENT_SCHEMA_VERSION: u32 = 2;
 
 /// The one selection channel that exists until channel-picker UI arrives. Selection
 /// channels are document-owned (per file, not per layer) so every user edits the same

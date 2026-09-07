@@ -146,107 +146,19 @@ fn paint_flow_end_to_end_on_fresh_document() {
 
 #[test]
 fn paint_flow_on_real_local_document() {
-    // Mirror the fixed boot: seek the playhead to a breath the raster track covers
-    // (the document has a leading gap at breaths 0..8).
+    // The real local-document artifact is still a pre-bars schema-v1 file. The
+    // binary-bars schema gate rejects it cleanly at load (typed error, no partial
+    // state) — J migrates real files case-by-case, so the repro against it now
+    // asserts that clean rejection instead of a paint flow.
     let root = std::path::Path::new("../orchestration/artifacts/shared-documents/local-document");
     if !root.exists() {
         panic!("local-document not found at {:?}", root);
     }
     let paths = SharedDocumentPaths::new(root.to_path_buf());
-    let document =
-        thaum_painter_domain::storage::load_document_file(&paths.document_file_path).unwrap();
-    let actions =
-        thaum_painter_domain::storage::load_action_records(&paths.actions_file_path).unwrap();
-    println!("replayed action records: {}", actions.len());
-    let mut runtime = SharedDocumentRuntime::replay(document, actions);
-    println!("runtime actions: {}", runtime.actions.len());
-
-    let breath = runtime
-        .first_breath_with_raster_block("layer-1")
-        .expect("raster track exists");
-    println!("boot playhead seeks breath {breath}");
-
-    let mut canvas = runtime
-        .canvas_for_layer("layer-1", breath)
-        .cloned()
-        .unwrap_or_default();
-    println!("boot canvas cells at breath {breath}: {}", canvas.len());
-
-    let bounds = CanvasBounds {
-        x0: -60,
-        y0: -50,
-        x1: -40,
-        y1: -30,
-        z: -12,
-        plane_axis: CanvasPlaneAxis::Z,
-    };
-    let mut selection = PainterSelection::new(bounds);
-    let mut tool_state = ToolState::default();
-    tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Brush);
-
-    let block_id = runtime
-        .active_raster_block_id("layer-1", breath)
-        .expect("block covering the sought breath");
-    println!("block id: {block_id}");
-
-    // Press with no selection: the stroke must produce patches.
-    let before = canvas.clone();
-    let mut candidate = before.clone();
-    tool_state.apply_at_for_hand(
-        &mut candidate,
-        &mut selection,
-        CellPoint {
-            x: -50,
-            y: -40,
-            z: -12,
-        },
-        PaintHand::Left,
-        bounds,
-        flat_view(),
-    );
-    let patches = collect_canvas_patches(&before, &candidate);
-    println!("press patches (no selection): {}", patches.len());
-    assert!(
-        !patches.is_empty(),
-        "brush press produced no patches with empty selection"
-    );
-    runtime.stage_canvas_patches("layer-1", &block_id, &patches);
-    canvas = candidate;
-
-    let view = runtime
-        .canvas_for_layer("layer-1", breath)
-        .expect("canvas after stage");
-    assert!(
-        view.contains_key(&CellPoint {
-            x: -50,
-            y: -40,
-            z: -12
-        }),
-        "staged cell invisible"
-    );
-
-    // Press with a selection elsewhere on the plane: edits outside the selection
-    // are gated. This is expected selection semantics, surfaced here as a probe.
-    let mut selection = PainterSelection::new(bounds);
-    selection.apply_plane_points([CellPoint {
-        x: -60,
-        y: -50,
-        z: -12,
-    }]);
-    let before = canvas.clone();
-    let mut candidate = before.clone();
-    tool_state.apply_at_for_hand(
-        &mut candidate,
-        &mut selection,
-        CellPoint {
-            x: -55,
-            y: -45,
-            z: -12,
-        },
-        PaintHand::Left,
-        bounds,
-        flat_view(),
-    );
-    let patches = collect_canvas_patches(&before, &candidate);
-    println!("press patches (selection elsewhere): {}", patches.len());
+    let error = thaum_painter_domain::storage::load_document_file(&paths.document_file_path)
+        .expect_err("v1 local document must reject cleanly under the v2 gate");
+    let message = error.to_string();
+    assert!(message.contains("schema v1"), "unexpected error: {message}");
+    assert!(message.contains("reads v2"), "unexpected error: {message}");
+    let _ = paths;
 }

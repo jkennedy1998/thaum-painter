@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
 pub const FILE_SCHEMA_KIND: &str = "thaum-painter-file";
-pub const FILE_SCHEMA_VERSION: u32 = 1;
+pub const FILE_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GridPoint {
@@ -482,13 +482,23 @@ pub fn parse_file_schema_from_str(text: &str) -> Result<FileSchema> {
 mod tests {
     use super::*;
 
-    const EXAMPLE_FILE_SCHEMA_JSON: &str = include_str!("example-thaum-painter-file-v1.json");
+    const EXAMPLE_FILE_SCHEMA_JSON: &str = include_str!("example-thaum-painter-file-v2.json");
+    const EXAMPLE_FILE_SCHEMA_V1_JSON: &str = include_str!("example-thaum-painter-file-v1.json");
 
     #[test]
     fn parses_the_pinned_example_file_schema_without_error() {
         let schema = parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap();
-        assert_eq!(schema.version, 1);
+        assert_eq!(schema.version, 2);
         assert_eq!(schema.metadata.document_id, "doc_cavern_sign_001");
+    }
+
+    #[test]
+    fn the_v1_example_is_now_an_unsupported_generation() {
+        // Binary-bars schema break: v1 files are recognized as unsupported with
+        // the explicit version-difference message, never imported or migrated.
+        let error = parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_V1_JSON).unwrap_err();
+        assert!(error.to_string().contains("version"));
+        assert!(error.to_string().contains("got 1"));
     }
 
     #[test]
@@ -580,21 +590,25 @@ mod tests {
 
     #[test]
     fn rejects_a_file_schema_with_the_wrong_kind() {
-        let value = serde_json::json!({ "kind": "not-thaum-painter-file", "version": 1 });
+        let value = serde_json::json!({ "kind": "not-thaum-painter-file", "version": FILE_SCHEMA_VERSION });
         let error = parse_file_schema(&value).unwrap_err();
         assert!(error.to_string().contains("kind"));
     }
 
     #[test]
     fn rejects_a_file_schema_with_an_unsupported_version() {
-        let value = serde_json::json!({ "kind": FILE_SCHEMA_KIND, "version": 2 });
+        // v1 is the pre-bars generation and now rejects; so does anything newer.
+        let value = serde_json::json!({ "kind": FILE_SCHEMA_KIND, "version": 1 });
+        let error = parse_file_schema(&value).unwrap_err();
+        assert!(error.to_string().contains("version"));
+        let value = serde_json::json!({ "kind": FILE_SCHEMA_KIND, "version": FILE_SCHEMA_VERSION + 1 });
         let error = parse_file_schema(&value).unwrap_err();
         assert!(error.to_string().contains("version"));
     }
 
     #[test]
     fn rejects_a_file_schema_missing_a_required_field() {
-        let value = serde_json::json!({ "kind": FILE_SCHEMA_KIND, "version": 1 });
+        let value = serde_json::json!({ "kind": FILE_SCHEMA_KIND, "version": FILE_SCHEMA_VERSION });
         let error = parse_file_schema(&value).unwrap_err();
         assert!(error.to_string().contains("metadata"));
     }

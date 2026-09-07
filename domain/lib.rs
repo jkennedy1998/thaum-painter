@@ -23,8 +23,6 @@ pub mod fill;
 pub mod graphic_picker_module;
 #[path = "modules/individuals/hand-settings/hand_settings_module.rs"]
 pub mod hand_settings_module;
-#[path = "painter-document/properties/interpolation/interpolation.rs"]
-pub mod interpolation;
 #[path = "painter-operations/shapes/lasso.rs"]
 pub mod lasso;
 #[path = "painter-session/tool-state/lasso_stroke.rs"]
@@ -90,7 +88,6 @@ pub use fill::{
 pub use graphic_picker_module::GraphicPickerModule;
 pub use identity::{SessionIdentity, PRESENCE_CANDIDATE_COLORS};
 pub use hand_settings_module::HandSettingsModule;
-pub use interpolation::{resolve_gap_fill, surrounding_items, BreathRanged, GapFill};
 pub use layers_panel_module::{
     LayerPropertyKind, LayerRow, LayersPanelAction, LayersPanelModule, LayersPanelState,
     PropertyTrackBlock, PropertyTrackRow,

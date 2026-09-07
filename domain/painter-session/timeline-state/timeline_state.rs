@@ -1,5 +1,4 @@
-use crate::file_schema::PropertyBlock;
-use crate::properties::block_covering_breath;
+use crate::pieces::{covering_bar_cell, BreathBar, CellType};
 
 /// Live, unsaved playhead and auto-key state for the painter session, plus
 /// the playback session (play/pause and loop-wrap) that drives the playhead
@@ -71,27 +70,34 @@ impl TimelineState {
     }
 
     /// Resolves which breath a property edit at the current playhead is allowed to land on.
-    /// Auto-key on always allows the current playhead. Auto-key off only allows the playhead
-    /// when an existing bar in `blocks` already covers it; otherwise the edit is rejected.
-    pub fn resolve_editable_breath(&self, blocks: &[PropertyBlock]) -> Option<u32> {
+    /// Auto-key on always allows the current playhead. Auto-key off allows the playhead only
+    /// when the covering bar is **solid** (the user is looking at a key); over an **empty**
+    /// bar the edit is rejected — the user cannot submit a new key with auto-key off, and
+    /// under binary tiling an empty bar covers the breath just like a solid one, so the old
+    /// any-bar-covers check would wrongly admit it.
+    pub fn resolve_editable_breath<B: BreathBar>(&self, blocks: &[B]) -> Option<u32> {
         if self.auto_key_enabled {
             return Some(self.current_breath);
         }
-        block_covering_breath(blocks, self.current_breath).map(|_| self.current_breath)
+        covering_bar_cell(blocks, self.current_breath)
+            .filter(|cell| cell.cell_type == CellType::Solid)
+            .map(|_| self.current_breath)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::Value;
+    use crate::storage::SharedDocumentPropertyBlock;
 
-    fn block(id: &str, start_breath: u32, end_breath: u32) -> PropertyBlock {
-        PropertyBlock {
-            id: id.to_string(),
+
+    fn bar(start_breath: u32, length_breaths: u32, is_blank: bool) -> SharedDocumentPropertyBlock {
+        SharedDocumentPropertyBlock {
+            id: format!("b{start_breath}-{length_breaths}"),
             start_breath,
-            end_breath,
-            value: Value::Null,
+            length_breaths,
+            is_blank,
+            value: None,
         }
     }
 
@@ -107,23 +113,37 @@ mod tests {
         let mut state = TimelineState::default();
         state.auto_key_enabled = true;
         state.set_current_breath(42);
-        assert_eq!(state.resolve_editable_breath(&[]), Some(42));
+        assert_eq!(
+            state.resolve_editable_breath(&[] as &[SharedDocumentPropertyBlock]),
+            Some(42)
+        );
     }
 
     #[test]
-    fn auto_key_off_allows_the_breath_when_a_bar_covers_it() {
+    fn auto_key_off_allows_the_breath_when_a_solid_bar_covers_it() {
         let mut state = TimelineState::default();
         state.set_current_breath(5);
-        let blocks = vec![block("a", 0, 8)];
+        let blocks = vec![bar(0, 8, false)];
         assert_eq!(state.resolve_editable_breath(&blocks), Some(5));
     }
 
     #[test]
-    fn auto_key_off_rejects_the_edit_when_the_playhead_sits_in_a_gap() {
+    fn auto_key_off_rejects_the_edit_when_the_playhead_sits_over_an_empty_bar() {
+        // Binary tiling: an empty bar covers the breath, but the user cannot submit
+        // a new key with auto-key off and is not looking at a key — reject.
         let mut state = TimelineState::default();
         state.set_current_breath(3);
-        let blocks = vec![block("a", 0, 2), block("b", 5, 8)];
+        let blocks = vec![bar(0, 8, true)];
         assert_eq!(state.resolve_editable_breath(&blocks), None);
+    }
+
+    #[test]
+    fn auto_key_on_allows_the_breath_over_an_empty_bar_too() {
+        let mut state = TimelineState::default();
+        state.auto_key_enabled = true;
+        state.set_current_breath(3);
+        let blocks = vec![bar(0, 8, true)];
+        assert_eq!(state.resolve_editable_breath(&blocks), Some(3));
     }
 
     #[test]
