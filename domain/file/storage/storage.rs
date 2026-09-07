@@ -1767,6 +1767,28 @@ impl SharedDocumentRuntime {
         track.blocks.remove(index);
         self.block_canvases
             .remove(&(layer_id.to_string(), block_id.to_string()));
+        // Re-tile like every other mutating seam: merging the trailing blank
+        // into a content block must still leave a trailing blank representative
+        // (and any stranded edge-locked mode must normalize away).
+        let (start_breath, length_breaths) = {
+            let Some(layer) = self
+                .document
+                .layers
+                .iter()
+                .find(|layer| layer.layer_id == layer_id)
+            else {
+                return true;
+            };
+            (layer.start_breath, layer.length_breaths)
+        };
+        let track = self
+            .ensure_property_track_mut(layer_id, property_id)
+            .expect("track existed above");
+        track.blocks = retiled_property_track(
+            std::mem::take(&mut track.blocks),
+            start_breath,
+            length_breaths,
+        );
         true
     }
 
@@ -4659,6 +4681,180 @@ mod tests {
         // Keyframes before the drag are untouched.
         assert_eq!(runtime.move_offset_for_layer("layer-1", 2).x, 2);
         assert_eq!(runtime.move_offset_for_layer("layer-1", 12).x, 12);
+    }
+
+    // --- property-track invariant fuzzer -------------------------------------
+    // The past-extent keyframe-vaporizing bug was found by hand-testing one
+    // seam against the binary-tiling invariants. This fuzzer does that
+    // systematically: it drives every mutating seam with deterministic
+    // pseudo-random arguments and asserts, after EVERY operation, that the
+    // track still holds the invariants the design truth promises (J
+    // 2026-09-07): contiguous tiling, no overlaps/gaps, no adjacent empties,
+    // trailing blank representative, unique ids, edge-locked loop modes.
+    struct FuzzRand(u64);
+    impl FuzzRand {
+        fn next(&mut self) -> u64 {
+            // xorshift64*
+            let mut x = self.0;
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            self.0 = x;
+            x.wrapping_mul(0x2545F4914F6CDD1D)
+        }
+        fn below(&mut self, bound: u64) -> u64 {
+            self.next() % bound.max(1)
+        }
+    }
+
+    fn assert_track_invariants(
+        runtime: &SharedDocumentRuntime,
+        layer_id: &str,
+        property_id: &str,
+        seed: u64,
+        op: usize,
+    ) {
+        let track = runtime
+            .property_track(layer_id, property_id)
+            .unwrap_or_else(|| panic!("seed {seed} op {op}: move track vanished"));
+        let blocks = &track.blocks;
+        assert!(!blocks.is_empty(), "seed {seed} op {op}: empty track");
+        assert!(
+            blocks.last().unwrap().is_blank,
+            "seed {seed} op {op}: track must end with a blank representative; shape {}",
+            runtime.property_track_shape(layer_id, property_id)
+        );
+        let mut used_ids: Vec<&str> = Vec::new();
+        for (index, block) in blocks.iter().enumerate() {
+            assert!(block.length_breaths >= 1, "seed {seed} op {op}: zero-length block {}", block.id);
+            assert!(
+                !used_ids.contains(&block.id.as_str()),
+                "seed {seed} op {op}: duplicate id {}", block.id
+            );
+            used_ids.push(&block.id);
+            if index > 0 {
+                let previous = &blocks[index - 1];
+                let previous_end = previous.start_breath + previous.length_breaths;
+                assert_eq!(
+                    block.start_breath, previous_end,
+                    "seed {seed} op {op}: gap/overlap before block {} (shape {})",
+                    block.id,
+                    runtime.property_track_shape(layer_id, property_id)
+                );
+                assert!(
+                    !(previous.is_blank && block.is_blank),
+                    "seed {seed} op {op}: adjacent empties {} + {}",
+                    previous.id,
+                    block.id
+                );
+            }
+            match block.interpretation.as_deref() {
+                Some("loop_out") => assert!(
+                    index + 1 == blocks.len(),
+                    "seed {seed} op {op}: loop_out stranded off the last blank"
+                ),
+                Some("loop_in") => assert!(
+                    index == 0,
+                    "seed {seed} op {op}: loop_in stranded off the first blank"
+                ),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn fuzzed_property_track_mutations_hold_the_binary_tiling_invariants() {
+        for property in ["move", "raster"] {
+            for seed in [0x9E3779B97F4A7C15, 0xD1B54A32D192ED03, 0x4873A2B5F1E0C6D9] {
+            let mut rand = FuzzRand(seed);
+            let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+                "doc-1", "Doc", "layer-1", "Layer 1",
+            ));
+            let layer_window_end: u32 = 24;
+            for op in 0..300usize {
+                let track = runtime.property_track("layer-1", property).unwrap();
+                let pick = rand.below(10);
+                // Random breaths deliberately walk past the stored extent —
+                // the infinite region is where the vaporizing bug lived.
+                let breath = rand.below((layer_window_end as u64) * 2) as u32;
+                let block_id = track.blocks[rand.below(track.blocks.len() as u64) as usize].id.clone();
+                let (changed, trace): (bool, String) = match pick {
+                    0 => (
+                        runtime.add_move_offset(
+                            "layer-1",
+                            breath,
+                            WorldPoint { x: rand.below(7) as i32 - 3, y: 0, z: 0 },
+                        ),
+                        format!("add_move at {breath}"),
+                    ),
+                    1 => (
+                        runtime.split_property_block("layer-1", property, &block_id, breath).is_some(),
+                        format!("split {block_id} at {breath}"),
+                    ),
+                    2 => {
+                        let new_length = 1 + rand.below(6) as u32;
+                        let new_start = breath.min(layer_window_end.saturating_sub(1));
+                        (
+                            runtime.set_property_block_timing_destructive(
+                                "layer-1", property, &block_id, new_start, new_length,
+                            ),
+                            format!("destructive {block_id} -> {new_start}+{new_length}"),
+                        )
+                    }
+                    3 => {
+                        let new_length = 1 + rand.below(6) as u32;
+                        let new_start = breath.min(layer_window_end.saturating_sub(1));
+                        (
+                            runtime.set_property_block_timing_pushed(
+                                "layer-1", property, &block_id, new_start, new_length,
+                            ),
+                            format!("pushed {block_id} -> {new_start}+{new_length}"),
+                        )
+                    }
+                    4 => (
+                        runtime.cycle_property_block_interp_mode("layer-1", property, &block_id),
+                        format!("cycle-mode {block_id}"),
+                    ),
+                    5 => (
+                        runtime.cycle_property_block_ease_out("layer-1", property, &block_id),
+                        format!("ease-out {block_id}"),
+                    ),
+                    6 => (
+                        runtime.cycle_property_block_ease_in("layer-1", property, &block_id),
+                        format!("ease-in {block_id}"),
+                    ),
+                    7 => (
+                        runtime.merge_empty_property_block(
+                            "layer-1", property, &block_id, rand.below(2) == 0,
+                        ),
+                        format!("merge-empty {block_id}"),
+                    ),
+                    8 => (
+                        runtime.blank_property_block("layer-1", property, &block_id),
+                        format!("blank {block_id}"),
+                    ),
+                    _ => {
+                        let other_id = track.blocks[rand.below(track.blocks.len() as u64) as usize].id.clone();
+                        (
+                            runtime.swap_property_blocks("layer-1", property, &block_id, &other_id)
+                                || runtime
+                                    .duplicate_property_block("layer-1", property, &block_id)
+                                    .is_some(),
+                            format!("swap/dup {block_id} <-> {other_id}"),
+                        )
+                    }
+                };
+                let _ = changed;
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    assert_track_invariants(&runtime, "layer-1", property, seed, op);
+                }));
+                if result.is_err() {
+                    eprintln!("failing op {op} on {property}: {trace}");
+                    std::panic::resume_unwind(result.unwrap_err());
+                }
+            }
+            }
+        }
     }
 
     #[test]
