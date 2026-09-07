@@ -10,7 +10,7 @@ Own the one always-attached panel through which J browses, selects, and (over fu
 - the panel's own draw/hit-test/gizmo wiring, implementing `thaum-renderer`'s `Module` trait directly
 
 ## does not own
-- canonical layer storage (`domain/file/storage/`) or the saved layer schema (`domain/file/manifest/`)
+- canonical layer storage (`domain/file/storage/`) or the saved layer schema (`domain/file/file-schema/`)
 - the layer document view (`domain/painter-document/layers/`)
 - the timeline-state playhead/auto-key resolution logic itself (`painter-session/timeline-state/`) — this module only reads/writes a mirrored breath+auto-key readout and queues actions for the orchestration layer to apply back onto the real `TimelineState`
 - gating compositing/visibility by `SharedDocumentLayer` timing fields — those ranges are document data today, but not a first-class visible authoring bar in this panel pass

@@ -8,7 +8,7 @@ use std::rc::Rc;
 use crate::brush::Canvas;
 use crate::document_locations::INITIAL_LAYER_ID;
 use crate::layers_panel_module::{
-    LayerPropertyKind, LayersPanelAction, MergeDirection, PropertyTrackBlock, PropertyTrackRow,
+    LayerPropertyKind, LayersPanelAction, PropertyTrackBlock, PropertyTrackRow,
 };
 use crate::selection_state::PainterSelection;
 use crate::session_document::{
@@ -16,7 +16,7 @@ use crate::session_document::{
     recover_snapshot_conflict, sync_canvas_from_active_layer,
 };
 use crate::storage::{
-    save_shared_document_snapshot, PropertyBlockMergeDirection, SharedDocumentPaths,
+    save_shared_document_snapshot, SharedDocumentPaths,
     SharedDocumentRuntime,
 };
 use crate::timeline_state::TimelineState;
@@ -239,6 +239,9 @@ pub fn apply_layers_panel_action(
         LayersPanelAction::SetLoopWindow(start_breath, end_breath) => {
             shared_document.set_document_window(start_breath, end_breath);
         }
+        // The clamp timing seam died with the void concept: a plain timing edit now
+        // resolves destructively (a shrink is a plain trim; a grow consumes neighbors
+        // into blanks). The panel routing pass re-maps each interaction branch.
         LayersPanelAction::SetPropertyBlockTiming(
             layer_id,
             property_id,
@@ -246,7 +249,7 @@ pub fn apply_layers_panel_action(
             start_breath,
             length_breaths,
         ) => {
-            shared_document.set_property_block_timing(
+            shared_document.set_property_block_timing_destructive(
                 &layer_id,
                 &property_id,
                 &block_id,
@@ -311,18 +314,6 @@ pub fn apply_layers_panel_action(
         }
         LayersPanelAction::BlankPropertyBlock(layer_id, property_id, block_id) => {
             shared_document.blank_property_block(&layer_id, &property_id, &block_id);
-        }
-        LayersPanelAction::MergeBlankPropertyBlock(layer_id, property_id, block_id, direction) => {
-            let direction = match direction {
-                MergeDirection::Left => PropertyBlockMergeDirection::Left,
-                MergeDirection::Right => PropertyBlockMergeDirection::Right,
-            };
-            shared_document.merge_blank_property_block(
-                &layer_id,
-                &property_id,
-                &block_id,
-                direction,
-            );
         }
         LayersPanelAction::SwapPropertyBlocks(
             layer_id,

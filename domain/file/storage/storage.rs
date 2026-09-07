@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fmt,
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
@@ -7,11 +8,10 @@ use std::{
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use thaum_renderer_domain::{CellGraphic, CellMaterialId, CellPoint, SpriteGraphic};
+use serde_json::Value;
+use thaum_renderer_domain::{CellGraphic, CellMaterialId, CellPoint, SpriteGraphic, WorldPoint};
 
-use crate::properties::{
-    breath_in_span, clamped_breath_span, destructive_breath_span, pushed_breath_span,
-};
+use crate::properties::{breath_in_span, destructive_breath_span, pushed_breath_span};
 use crate::{Canvas, PaintColor, PaintedCell};
 
 pub const SHARED_DOCUMENT_KIND: &str = "thaum-painter-shared-document";
@@ -36,13 +36,11 @@ pub struct SharedDocumentPropertyBlock {
     pub length_breaths: u32,
     #[serde(default)]
     pub is_blank: bool,
-}
-
-/// Which content neighbor a blank property block merges into.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PropertyBlockMergeDirection {
-    Left,
-    Right,
+    /// Per-kind payload for value-carrying property kinds. Move blocks hold
+    /// an `{x,y,z}` render offset; timing-only kinds (raster) leave it `None`.
+    /// `serde(default)` keeps existing files loading unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +76,66 @@ fn default_layer_length_breaths() -> u32 {
     24
 }
 
+/// Re-tiles one property track's blocks over the layer's breath span so the track
+/// stays fully covered: blocks are clipped into the span (fully-outside ones dropped),
+/// and every uncovered window becomes a blank block. Binary channels — every breath is
+/// empty or solid, never a void.
+fn retiled_property_track(
+    blocks: Vec<SharedDocumentPropertyBlock>,
+    span_start: u32,
+    span_length: u32,
+) -> Vec<SharedDocumentPropertyBlock> {
+    let span_end = span_start.saturating_add(span_length.max(1));
+    let mut clipped: Vec<SharedDocumentPropertyBlock> = Vec::new();
+    for mut block in blocks {
+        let block_end = block.start_breath + block.length_breaths.max(1);
+        let new_start = block.start_breath.max(span_start);
+        let new_end = block_end.min(span_end);
+        if new_end <= new_start {
+            // Fully outside the span — nothing left to cover.
+            continue;
+        }
+        block.start_breath = new_start;
+        block.length_breaths = new_end - new_start;
+        clipped.push(block);
+    }
+    clipped.sort_by_key(|block| block.start_breath);
+    let mut tiled: Vec<SharedDocumentPropertyBlock> = Vec::with_capacity(clipped.len() + 2);
+    let mut cursor = span_start;
+    for mut block in clipped {
+        let block_end = block.start_breath + block.length_breaths;
+        if block_end <= cursor {
+            // Fully covered by an earlier block (only possible in broken data); drop it.
+            continue;
+        }
+        if block.start_breath > cursor {
+            tiled.push(SharedDocumentPropertyBlock {
+                id: next_property_block_id(&tiled),
+                start_breath: cursor,
+                length_breaths: block.start_breath - cursor,
+                is_blank: true,
+                value: None,
+            });
+        } else {
+            // Overlapping broken data: trim to the first uncovered breath.
+            block.start_breath = cursor;
+            block.length_breaths = block_end - cursor;
+        }
+        cursor = block.start_breath + block.length_breaths;
+        tiled.push(block);
+    }
+    if cursor < span_end {
+        tiled.push(SharedDocumentPropertyBlock {
+            id: next_property_block_id(&tiled),
+            start_breath: cursor,
+            length_breaths: span_end - cursor,
+            is_blank: true,
+            value: None,
+        });
+    }
+    tiled
+}
+
 fn default_raster_property_track(
     start_breath: u32,
     length_breaths: u32,
@@ -89,8 +147,17 @@ fn default_raster_property_track(
             start_breath,
             length_breaths: length_breaths.max(1),
             is_blank: false,
+            value: None,
         }],
     }
+}
+
+/// Parses a move block's `{x,y,z}` offset value — the same shape the old
+/// system's move properties carried and the file-schema import path parses.
+fn parse_move_offset(value: &Value) -> Option<[i32; 3]> {
+    let object = value.as_object()?;
+    let axis = |key: &str| object.get(key).and_then(Value::as_i64).map(|v| v as i32);
+    Some([axis("x")?, axis("y")?, axis("z")?])
 }
 
 fn next_property_block_id(blocks: &[SharedDocumentPropertyBlock]) -> String {
@@ -725,6 +792,86 @@ impl SharedDocumentRuntime {
         &self.document.layers
     }
 
+    /// The active move property block's `{x,y,z}` render offset at `breath`,
+    /// or the zero offset when the layer has no move track, no block covers
+    /// the breath, or the value is missing/malformed. Move offsets are
+    /// optional metadata: absence renders the layer unshifted.
+    pub fn move_offset_for_layer(&self, layer_id: &str, breath: u32) -> WorldPoint {
+        let Some(track) = self.property_track(layer_id, "move") else {
+            return WorldPoint::origin();
+        };
+        let Some(block) = track
+            .blocks
+            .iter()
+            .find(|block| breath_in_span(breath, block.start_breath, block.length_breaths))
+        else {
+            return WorldPoint::origin();
+        };
+        block
+            .value
+            .as_ref()
+            .and_then(parse_move_offset)
+            .map(|offset| WorldPoint {
+                x: offset[0],
+                y: offset[1],
+                z: offset[2],
+            })
+            .unwrap_or_else(WorldPoint::origin)
+    }
+
+    /// Adds `delta` to the move block covering `breath` on `layer_id`,
+    /// creating the move track and a block spanning the layer's own timing
+    /// window when either is missing. Returns whether the document changed.
+    pub fn add_move_offset(&mut self, layer_id: &str, breath: u32, delta: WorldPoint) -> bool {
+        if delta == WorldPoint::origin() {
+            return false;
+        }
+        let (start_breath, length_breaths) = {
+            let Some(layer) = self
+                .document
+                .layers
+                .iter()
+                .find(|layer| layer.layer_id == layer_id)
+            else {
+                return false;
+            };
+            (layer.start_breath, layer.length_breaths)
+        };
+        let Some(track) = self.ensure_property_track_mut(layer_id, "move") else {
+            return false;
+        };
+        let block = if let Some(position) = track
+            .blocks
+            .iter()
+            .position(|block| breath_in_span(breath, block.start_breath, block.length_breaths))
+        {
+            &mut track.blocks[position]
+        } else {
+            track.blocks.push(SharedDocumentPropertyBlock {
+                id: next_property_block_id(&track.blocks),
+                start_breath,
+                length_breaths: length_breaths.max(1),
+                is_blank: false,
+                value: None,
+            });
+            track.blocks.last_mut().expect("just pushed")
+        };
+        let current = block
+            .value
+            .as_ref()
+            .and_then(parse_move_offset)
+            .unwrap_or([0, 0, 0]);
+        block.value = Some(
+            serde_json::json!({
+                "x": current[0] + delta.x,
+                "y": current[1] + delta.y,
+                "z": current[2] + delta.z,
+            }),
+        );
+        block.is_blank = false;
+        true
+    }
+
     pub fn property_track(
         &self,
         layer_id: &str,
@@ -908,42 +1055,16 @@ impl SharedDocumentRuntime {
         };
         layer.start_breath = start_breath;
         layer.length_breaths = length_breaths.max(1);
-        true
-    }
-
-    /// Reshapes one property block's breath range. A block may never cross another
-    /// block in its channel: the requested range is clamped into the free window
-    /// between the block's neighbors, so no two blocks in a channel can share a breath.
-    pub fn set_property_block_timing(
-        &mut self,
-        layer_id: &str,
-        property_id: &str,
-        block_id: &str,
-        start_breath: u32,
-        length_breaths: u32,
-    ) -> bool {
-        let Some(track) = self.ensure_property_track_mut(layer_id, property_id) else {
-            return false;
-        };
-        let Some(index) = track.blocks.iter().position(|block| block.id == block_id) else {
-            return false;
-        };
-        let original = (
-            track.blocks[index].start_breath,
-            track.blocks[index].length_breaths,
-        );
-        let others: Vec<(u32, u32)> = track
-            .blocks
-            .iter()
-            .enumerate()
-            .filter(|(other_index, _)| *other_index != index)
-            .map(|(_, block)| (block.start_breath, block.length_breaths))
-            .collect();
-        let (start, length) =
-            clamped_breath_span(&others, original, (start_breath, length_breaths.max(1)));
-        let block = &mut track.blocks[index];
-        block.start_breath = start;
-        block.length_breaths = length;
+        // Binary tiling: the layer's span changed, so every property track re-tiles
+        // over the new span — uncovered windows become blank blocks.
+        let (span_start, span_length) = (layer.start_breath, layer.length_breaths);
+        for track in &mut layer.property_tracks {
+            track.blocks = retiled_property_track(
+                std::mem::take(&mut track.blocks),
+                span_start,
+                span_length,
+            );
+        }
         true
     }
 
@@ -998,8 +1119,11 @@ impl SharedDocumentRuntime {
     }
 
     /// Reshapes one property block destructively (`destructive_breath_span`): the block
-    /// takes its full requested span and covered neighbors yield — truncated, removed,
-    /// or split around it. A shrink overlaps nothing, so it acts as a plain trim.
+    /// takes its full requested span and covered neighbors yield into empty cell types —
+    /// partially overlapped neighbors shrink to their remainder and turn blank (content
+    /// discarded), fully covered ones are removed outright. The edited block's vacated
+    /// range and every other uncovered window re-tile into blank blocks, so the track
+    /// never leaves a void. A shrink overlaps nothing, so it acts as a plain trim.
     pub fn set_property_block_timing_destructive(
         &mut self,
         layer_id: &str,
@@ -1008,10 +1132,17 @@ impl SharedDocumentRuntime {
         start_breath: u32,
         length_breaths: u32,
     ) -> bool {
-        // Plan pass over an immutable track: compute the destructive resolution and
-        // snapshot the victims' canvases (split right fragments inherit the victim's
-        // content, matching `split_property_block`'s both-halves-identical semantics).
-        // The borrow must end before the mutable apply pass below.
+        let Some(layer) = self
+            .document
+            .layers
+            .iter()
+            .find(|layer| layer.layer_id == layer_id)
+        else {
+            return false;
+        };
+        let (span_start, span_length) = (layer.start_breath, layer.length_breaths);
+        // Plan pass over an immutable track: compute the destructive resolution. The
+        // borrow must end before the mutable apply pass below.
         let plan = {
             let Some(track) = self.property_track(layer_id, property_id) else {
                 return false;
@@ -1038,25 +1169,12 @@ impl SharedDocumentRuntime {
                 .filter(|(other_index, _)| *other_index != index)
                 .map(|(other_index, _)| other_index)
                 .collect();
-            let destructive =
-                destructive_breath_span(&other_spans, (start_breath, length_breaths.max(1)));
-            let split_canvases: Vec<(usize, Canvas)> = destructive
-                .splits
-                .iter()
-                .map(|(slice_index, _)| {
-                    let victim_track_index = other_track_indices[*slice_index];
-                    let victim = &track.blocks[victim_track_index];
-                    let canvas = self
-                        .block_canvases
-                        .get(&(layer_id.to_string(), victim.id.clone()))
-                        .cloned()
-                        .unwrap_or_default();
-                    (victim_track_index, canvas)
-                })
-                .collect();
-            Some((destructive, other_track_indices, split_canvases))
+            Some((
+                destructive_breath_span(&other_spans, (start_breath, length_breaths.max(1))),
+                other_track_indices,
+            ))
         };
-        let Some((destructive, other_track_indices, split_canvases)) = plan else {
+        let Some((destructive, other_track_indices)) = plan else {
             return false;
         };
         let Some((track, index)) = self.property_track_block_mut(layer_id, property_id, block_id)
@@ -1065,69 +1183,51 @@ impl SharedDocumentRuntime {
         };
         track.blocks[index].start_breath = destructive.edited.0;
         track.blocks[index].length_breaths = destructive.edited.1;
-        for (other_index, (start, length)) in destructive.truncated {
-            let track_index = other_track_indices[other_index];
-            track.blocks[track_index].start_breath = start;
-            track.blocks[track_index].length_breaths = length;
-        }
-        // Removals and splits shift indices, so apply them highest-index-first. A split
-        // keeps its left piece under the old id and inserts a fresh right piece after
-        // the edited span that inherits the victim's canvas — both halves start as
-        // identical copies and diverge as they are edited separately.
-        let mut splits_and_removals: Vec<(usize, Option<u32>)> = destructive
-            .splits
-            .into_iter()
-            .map(|(slice_index, split_breath)| {
-                (other_track_indices[slice_index], Some(split_breath))
-            })
-            .chain(
-                destructive
-                    .removed
-                    .into_iter()
-                    .map(|slice_index| (other_track_indices[slice_index], None)),
-            )
-            .collect();
-        splits_and_removals.sort_by_key(|(index, _)| std::cmp::Reverse(*index));
+        // Victims yield into empty cell types; their canvases are discarded with them.
         let mut dropped_canvas_keys = Vec::new();
-        let mut inserted_canvases: Vec<(String, Canvas)> = Vec::new();
-        for (other_index, split_breath) in splits_and_removals {
-            let other = &track.blocks[other_index];
-            let other_canvas_key = (layer_id.to_string(), other.id.clone());
-            let other_end = other.start_breath + other.length_breaths;
-            let other_is_blank = other.is_blank;
-            match split_breath {
-                Some(split_breath) => {
-                    track.blocks[other_index].length_breaths = split_breath - other.start_breath;
-                    let next_id = next_property_block_id(&track.blocks);
-                    let edited_end = destructive.edited.0 + destructive.edited.1;
-                    track.blocks.insert(
-                        other_index + 1,
-                        SharedDocumentPropertyBlock {
-                            id: next_id.clone(),
-                            start_breath: edited_end,
-                            length_breaths: other_end - edited_end,
-                            is_blank: other_is_blank,
-                        },
-                    );
-                    let victim_canvas = split_canvases
-                        .iter()
-                        .find(|(victim_track_index, _)| *victim_track_index == other_index)
-                        .map(|(_, canvas)| canvas.clone())
-                        .unwrap_or_default();
-                    inserted_canvases.push((next_id, victim_canvas));
-                }
-                None => {
-                    track.blocks.remove(other_index);
-                    dropped_canvas_keys.push(other_canvas_key);
-                }
-            }
+        for (other_index, (start, length)) in destructive.blanked {
+            let track_index = other_track_indices[other_index];
+            let victim = &mut track.blocks[track_index];
+            victim.start_breath = start;
+            victim.length_breaths = length;
+            victim.is_blank = true;
+            victim.value = None;
+            dropped_canvas_keys.push((layer_id.to_string(), victim.id.clone()));
+        }
+        // Removals shift indices, so apply them highest-index-first.
+        let mut removed_track_indices: Vec<usize> = destructive
+            .removed
+            .iter()
+            .map(|slice_index| other_track_indices[*slice_index])
+            .collect();
+        removed_track_indices.sort_by_key(|&track_index| std::cmp::Reverse(track_index));
+        for track_index in removed_track_indices {
+            let removed_id = track.blocks[track_index].id.clone();
+            track.blocks.remove(track_index);
+            dropped_canvas_keys.push((layer_id.to_string(), removed_id));
         }
         for key in dropped_canvas_keys {
             self.block_canvases.remove(&key);
         }
-        for (new_block_id, canvas) in inserted_canvases {
-            self.block_canvases
-                .insert((layer_id.to_string(), new_block_id), canvas);
+        // Binary tiling: the edited block's vacated range becomes blank and the track
+        // stays fully covered — no void ever appears.
+        if let Some(track) = self
+            .document
+            .layers
+            .iter_mut()
+            .find(|layer| layer.layer_id == layer_id)
+            .and_then(|layer| {
+                layer
+                    .property_tracks
+                    .iter_mut()
+                    .find(|track| track.property_id == property_id)
+            })
+        {
+            track.blocks = retiled_property_track(
+                std::mem::take(&mut track.blocks),
+                span_start,
+                span_length,
+            );
         }
         true
     }
@@ -1184,6 +1284,7 @@ impl SharedDocumentRuntime {
                 start_breath: right_start,
                 length_breaths: right_length,
                 is_blank: block.is_blank,
+                value: block.value.clone(),
             },
         );
         // The new right half starts with its own (empty) canvas; the caller propagates
@@ -1247,58 +1348,6 @@ impl SharedDocumentRuntime {
         block.is_blank = true;
         self.block_canvases
             .insert((layer_id.to_string(), block_id.to_string()), Canvas::new());
-        true
-    }
-
-    /// Merges a blank block into its content neighbor on `direction`, extending that neighbor
-    /// to cover the blank's range and removing the blank block. Returns `false` if the block
-    /// isn't blank or has no content neighbor on that side.
-    pub fn merge_blank_property_block(
-        &mut self,
-        layer_id: &str,
-        property_id: &str,
-        block_id: &str,
-        direction: PropertyBlockMergeDirection,
-    ) -> bool {
-        let Some(track) = self.ensure_property_track_mut(layer_id, property_id) else {
-            return false;
-        };
-        let Some(index) = track.blocks.iter().position(|block| block.id == block_id) else {
-            return false;
-        };
-        if !track.blocks[index].is_blank {
-            return false;
-        }
-        let blank_start = track.blocks[index].start_breath;
-        let blank_end = blank_start + track.blocks[index].length_breaths.max(1) - 1;
-        match direction {
-            PropertyBlockMergeDirection::Left => {
-                let Some(previous) = index.checked_sub(1).map(|i| &mut track.blocks[i]) else {
-                    return false;
-                };
-                if previous.is_blank {
-                    return false;
-                }
-                let previous_start = previous.start_breath;
-                previous.length_breaths = blank_end.max(previous_start) - previous_start + 1;
-                track.blocks.remove(index);
-            }
-            PropertyBlockMergeDirection::Right => {
-                let Some(next) = track.blocks.get_mut(index + 1) else {
-                    return false;
-                };
-                if next.is_blank {
-                    return false;
-                }
-                let next_end = next.start_breath + next.length_breaths.max(1) - 1;
-                next.start_breath = blank_start.min(next.start_breath);
-                next.length_breaths = next_end.max(blank_start) - next.start_breath + 1;
-                track.blocks.remove(index);
-            }
-        }
-        // The blank's canvas is empty by definition; the content neighbor keeps its own.
-        self.block_canvases
-            .remove(&(layer_id.to_string(), block_id.to_string()));
         true
     }
 
@@ -1676,8 +1725,79 @@ pub fn load_or_create_shared_document(
 pub fn load_document_file(path: &Path) -> Result<SharedDocumentFile> {
     let text = fs::read_to_string(path)
         .with_context(|| format!("failed to read shared document file at {}", path.display()))?;
-    serde_json::from_str(&text)
+    let value: Value = serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse shared document JSON at {}", path.display()))?;
+    ensure_supported_file_schema(path, &value)?;
+    serde_json::from_value(value)
         .with_context(|| format!("failed to parse shared document JSON at {}", path.display()))
+}
+
+/// A saved file exists but this build cannot open it: its kind or schema version
+/// does not match what this code reads. Distinct from parse errors so the open
+/// flow can reject cleanly — no partial state, no crash — with an explicit
+/// version-difference message. The schema version only changes when the shape
+/// breaks, so the version number alone describes the file's generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnsupportedFileError {
+    pub path: PathBuf,
+    pub reason: UnsupportedFileReason,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnsupportedFileReason {
+    KindMismatch { found: String, supported: String },
+    VersionMismatch { found: u32, supported: u32 },
+}
+
+impl fmt::Display for UnsupportedFileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unsupported file at {} — ", self.path.display())?;
+        match &self.reason {
+            UnsupportedFileReason::KindMismatch { found, supported } => {
+                write!(f, "file kind '{found}' is not '{supported}'")
+            }
+            UnsupportedFileReason::VersionMismatch { found, supported } => {
+                if *found == 0 {
+                    write!(f, "file carries no schema version; this app reads v{supported}")
+                } else {
+                    write!(f, "file is schema v{found}, this app reads v{supported}")
+                }
+            }
+        }
+    }
+}
+
+impl std::error::Error for UnsupportedFileError {}
+
+/// The load-time schema gate: kind and version are checked BEFORE the body is
+/// deserialized, so an old- or new-schema file is rejected as unsupported up
+/// front instead of failing field-by-field (or worse, loading with silent
+/// serde defaults). A missing kind or version field is treated as unsupported,
+/// not malformed: the file predates or postdates this reader either way.
+fn ensure_supported_file_schema(path: &Path, value: &Value) -> Result<()> {
+    let unsupported = |reason| UnsupportedFileError {
+        path: path.to_path_buf(),
+        reason,
+    };
+    match value.get("file_kind").and_then(Value::as_str) {
+        Some(kind) if kind == SHARED_DOCUMENT_KIND => {}
+        found => {
+            return Err(unsupported(UnsupportedFileReason::KindMismatch {
+                found: found.unwrap_or("<missing>").to_string(),
+                supported: SHARED_DOCUMENT_KIND.to_string(),
+            })
+            .into());
+        }
+    }
+    let found = value.get("schema_version").and_then(Value::as_u64);
+    if found != Some(SHARED_DOCUMENT_SCHEMA_VERSION as u64) {
+        return Err(unsupported(UnsupportedFileReason::VersionMismatch {
+            found: found.unwrap_or(0) as u32,
+            supported: SHARED_DOCUMENT_SCHEMA_VERSION,
+        })
+        .into());
+    }
+    Ok(())
 }
 
 pub fn write_document_atomic(path: &Path, document: &SharedDocumentFile) -> Result<()> {
@@ -2799,6 +2919,113 @@ mod tests {
     }
 
     #[test]
+    fn load_rejects_a_newer_schema_version_with_an_explicit_message() {
+        let unique = format!(
+            "thaum-painter-storage-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let paths = SharedDocumentPaths::new(root.clone());
+        let mut document = SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
+        document.schema_version = SHARED_DOCUMENT_SCHEMA_VERSION + 1;
+        write_document_atomic(&paths.document_file_path, &document).unwrap();
+
+        let error = load_document_file(&paths.document_file_path).unwrap_err();
+        let unsupported = error
+            .downcast_ref::<UnsupportedFileError>()
+            .expect("load failure must be the typed unsupported-file error");
+        assert_eq!(
+            unsupported.reason,
+            UnsupportedFileReason::VersionMismatch {
+                found: SHARED_DOCUMENT_SCHEMA_VERSION + 1,
+                supported: SHARED_DOCUMENT_SCHEMA_VERSION,
+            }
+        );
+        assert!(error
+            .to_string()
+            .contains(&format!("file is schema v{}, this app reads v{}", SHARED_DOCUMENT_SCHEMA_VERSION + 1, SHARED_DOCUMENT_SCHEMA_VERSION)));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn load_rejects_a_wrong_kind_file_without_deserializing_its_body() {
+        let unique = format!(
+            "thaum-painter-storage-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("foreign.json");
+        fs::write(
+            &path,
+            r#"{ "file_kind": "not-thaum-painter", "schema_version": 1, "document_id": "x" }"#,
+        )
+        .unwrap();
+
+        let error = load_document_file(&path).unwrap_err();
+        let unsupported = error
+            .downcast_ref::<UnsupportedFileError>()
+            .expect("load failure must be the typed unsupported-file error");
+        assert_eq!(
+            unsupported.reason,
+            UnsupportedFileReason::KindMismatch {
+                found: "not-thaum-painter".to_string(),
+                supported: SHARED_DOCUMENT_KIND.to_string(),
+            }
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn load_rejects_a_file_missing_kind_or_version_as_unsupported() {
+        let unique = format!(
+            "thaum-painter-storage-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&root).unwrap();
+        // Right kind but no version field: the version gate must fire with the
+        // explicit "carries no schema version" message.
+        let path = root.join("unversioned.json");
+        fs::write(
+            &path,
+            format!(
+                r#"{{ "file_kind": "{}", "document_id": "doc-1", "title": "Doc", "layers": [] }}"#,
+                SHARED_DOCUMENT_KIND
+            ),
+        )
+        .unwrap();
+        let error = load_document_file(&path).unwrap_err();
+        assert!(error.downcast_ref::<UnsupportedFileError>().is_some());
+        assert!(error.to_string().contains("carries no schema version"));
+
+        // No kind field at all: the kind gate must fire with the explicit
+        // "<missing>" message.
+        let path = root.join("kindless.json");
+        fs::write(
+            &path,
+            r#"{ "document_id": "doc-1", "title": "Doc", "layers": [] }"#,
+        )
+        .unwrap();
+        let error = load_document_file(&path).unwrap_err();
+        assert!(error.downcast_ref::<UnsupportedFileError>().is_some());
+        assert!(error.to_string().contains("file kind '<missing>'"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn set_layer_visible_excludes_a_hidden_layer_from_compositing() {
         let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
             "doc-1", "Doc", "layer-1", "Layer 1",
@@ -2927,196 +3154,103 @@ mod tests {
     }
 
     #[test]
-    fn destructive_timing_split_right_fragment_inherits_the_victim_canvas() {
+    fn destructive_timing_victims_become_blanks_and_the_track_stays_tiled() {
         let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
             "doc-1", "Doc", "layer-1", "Layer 1",
         ));
         runtime.split_property_block("layer-1", "raster", "block-1", 8);
-        runtime.set_property_block_timing("layer-1", "raster", "block-2", 16, 8);
-        // block-2 (16..24) carries content; block-1 (0..8) is empty.
-        runtime.apply_action_record(SharedDocumentActionRecord::cell_patch_set(
-            "a1",
-            "doc-1",
-            "layer-1",
-            "u1",
-            "1",
-            vec![SharedCellPatch::new(point(0, 0), None, Some(&cell('B')))],
-            Some("block-2".to_string()),
-        ));
+        runtime.set_property_block_timing_destructive("layer-1", "raster", "block-2", 16, 8);
 
-        // block-1 is destructively moved into the MIDDLE of block-2 (16..24):
-        // edited span 18..22 straddles block-2's interior, so block-2 splits at 18 —
-        // a left fragment keeps 16..18 under the old id, and a fresh right fragment
-        // covers 22..24 carrying block-2's content.
+        // block-1 (0..8, empty) slides destructively into the middle of block-2
+        // (16..24): the victim keeps only its pre-edited remainder and turns blank,
+        // and every vacated window re-tiles into blank blocks — no void anywhere.
         assert!(
             runtime.set_property_block_timing_destructive("layer-1", "raster", "block-1", 18, 4)
         );
-        let blocks = &runtime.property_track("layer-1", "raster").unwrap().blocks;
-        assert_eq!(blocks.len(), 3);
-        let right = blocks
+        let track = runtime.property_track("layer-1", "raster").unwrap();
+        let covered: Vec<(u32, u32, bool)> = track
+            .blocks
             .iter()
-            .find(|block| block.start_breath == 22)
-            .expect("split right fragment should exist");
-        assert_eq!(right.length_breaths, 2);
+            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .collect();
         assert_eq!(
-            runtime
-                .canvas_for_layer("layer-1", 23)
-                .unwrap()
-                .get(&point(0, 0)),
-            Some(&cell('B')),
-            "the right fragment must inherit the victim's content, not start empty"
-        );
-        // The left fragment keeps the victim's canvas too (both halves start identical).
-        assert_eq!(
-            runtime
-                .canvas_for_layer("layer-1", 17)
-                .unwrap()
-                .get(&point(0, 0)),
-            Some(&cell('B'))
+            covered,
+            vec![
+                (0, 8, true),
+                (8, 16, true),
+                (16, 18, true),
+                (18, 22, false),
+                (22, 24, true),
+            ]
         );
     }
 
     #[test]
-    fn destructive_timing_truncates_removes_and_splits_covered_neighbors() {
+    fn destructive_timing_shrink_leaves_the_vacated_range_blank() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+
+        // block-1 (0..24) shrinks to 0..8: breaths 8..24 re-tile into blanks.
+        assert!(
+            runtime.set_property_block_timing_destructive("layer-1", "raster", "block-1", 0, 8)
+        );
+        let track = runtime.property_track("layer-1", "raster").unwrap();
+        let covered: Vec<(u32, u32, bool)> = track
+            .blocks
+            .iter()
+            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .collect();
+        assert_eq!(covered, vec![(0, 8, false), (8, 24, true)]);
+    }
+
+    #[test]
+    fn destructive_timing_removes_fully_covered_neighbors() {
         let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
             "doc-1", "Doc", "layer-1", "Layer 1",
         ));
         runtime.split_property_block("layer-1", "raster", "block-1", 8);
-        runtime.set_property_block_timing("layer-1", "raster", "block-2", 16, 8);
 
-        // block-1 (0..8) grows destructively to 0..20: block-2 (16..24) truncates to
-        // start at the edited block's end.
+        // block-1 (0..8) grows destructively to 0..24: block-2 (8..24) is fully
+        // covered, so it is removed outright — the edited block covers its range.
         assert!(
-            runtime.set_property_block_timing_destructive("layer-1", "raster", "block-1", 0, 20)
-        );
-        let blocks = &runtime.property_track("layer-1", "raster").unwrap().blocks;
-        assert_eq!((blocks[0].start_breath, blocks[0].length_breaths), (0, 20));
-        assert_eq!((blocks[1].start_breath, blocks[1].length_breaths), (20, 4));
-
-        // A fully covered neighbor disappears entirely.
-        runtime.set_property_block_timing("layer-1", "raster", "block-2", 24, 8);
-        assert!(
-            runtime.set_property_block_timing_destructive("layer-1", "raster", "block-1", 0, 40)
+            runtime.set_property_block_timing_destructive("layer-1", "raster", "block-1", 0, 24)
         );
         let blocks = &runtime.property_track("layer-1", "raster").unwrap().blocks;
         assert_eq!(blocks.len(), 1);
-        assert_eq!((blocks[0].start_breath, blocks[0].length_breaths), (0, 40));
-    }
-
-    #[test]
-    fn set_property_block_timing_updates_one_block() {
-        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
-            "doc-1", "Doc", "layer-1", "Layer 1",
-        ));
-
-        assert!(runtime.set_property_block_timing("layer-1", "raster", "block-1", 3, 7));
-        let block = &runtime.property_track("layer-1", "raster").unwrap().blocks[0];
-
-        assert_eq!(block.start_breath, 3);
-        assert_eq!(block.length_breaths, 7);
-    }
-
-    #[test]
-    fn set_property_block_timing_cannot_cross_a_neighbor_block() {
-        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
-            "doc-1", "Doc", "layer-1", "Layer 1",
-        ));
-        runtime.split_property_block("layer-1", "raster", "block-1", 8);
-        runtime.set_property_block_timing("layer-1", "raster", "block-2", 16, 8);
-
-        // Dragging block-2's start to 4 would land it on block-1; it clamps to block-1's end.
-        assert!(runtime.set_property_block_timing("layer-1", "raster", "block-2", 4, 8));
-        let blocks = &runtime.property_track("layer-1", "raster").unwrap().blocks;
-        assert_eq!(blocks[1].start_breath, 8);
-
-        // And a block cannot grow across the other one either.
-        assert!(runtime.set_property_block_timing("layer-1", "raster", "block-1", 0, 100));
-        let blocks = &runtime.property_track("layer-1", "raster").unwrap().blocks;
-        assert_eq!(blocks[0].start_breath, 0);
-        assert_eq!(blocks[0].length_breaths, 8);
-
-        // No two blocks in the channel share a breath.
-        let first = (blocks[0].start_breath, blocks[0].length_breaths);
-        let second = (blocks[1].start_breath, blocks[1].length_breaths);
-        assert!(!breath_in_span(second.0, first.0, first.1));
-    }
-
-    #[test]
-    fn blank_property_block_marks_a_content_block_as_blank() {
-        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
-            "doc-1", "Doc", "layer-1", "Layer 1",
-        ));
-
-        assert!(runtime.blank_property_block("layer-1", "raster", "block-1"));
-        let block = &runtime.property_track("layer-1", "raster").unwrap().blocks[0];
-        assert!(block.is_blank);
-
-        assert!(!runtime.blank_property_block("layer-1", "raster", "missing-block"));
-    }
-
-    #[test]
-    fn merge_blank_property_block_left_extends_the_previous_content_block() {
-        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
-            "doc-1", "Doc", "layer-1", "Layer 1",
-        ));
-        runtime.split_property_block("layer-1", "raster", "block-1", 8);
-        runtime.blank_property_block("layer-1", "raster", "block-2");
-
-        assert!(runtime.merge_blank_property_block(
-            "layer-1",
-            "raster",
-            "block-2",
-            PropertyBlockMergeDirection::Left,
-        ));
-        let blocks = &runtime.property_track("layer-1", "raster").unwrap().blocks;
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].id, "block-1");
-        assert_eq!(blocks[0].start_breath, 0);
-        assert_eq!(blocks[0].length_breaths, 24);
+        assert_eq!((blocks[0].start_breath, blocks[0].length_breaths), (0, 24));
         assert!(!blocks[0].is_blank);
     }
 
     #[test]
-    fn merge_blank_property_block_right_extends_the_next_content_block() {
+    fn set_layer_timing_retiles_tracks_to_the_new_span() {
         let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
             "doc-1", "Doc", "layer-1", "Layer 1",
         ));
         runtime.split_property_block("layer-1", "raster", "block-1", 8);
-        runtime.blank_property_block("layer-1", "raster", "block-1");
 
-        assert!(runtime.merge_blank_property_block(
-            "layer-1",
-            "raster",
-            "block-1",
-            PropertyBlockMergeDirection::Right,
-        ));
-        let blocks = &runtime.property_track("layer-1", "raster").unwrap().blocks;
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].id, "block-2");
-        assert_eq!(blocks[0].start_breath, 0);
-        assert_eq!(blocks[0].length_breaths, 24);
-        assert!(!blocks[0].is_blank);
-    }
+        // Grow the layer span to 32: the uncovered tail re-tiles into a blank block.
+        assert!(runtime.set_layer_timing("layer-1", 0, 32));
+        let track = runtime.property_track("layer-1", "raster").unwrap();
+        let covered: Vec<(u32, u32, bool)> = track
+            .blocks
+            .iter()
+            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .collect();
+        assert_eq!(
+            covered,
+            vec![(0, 8, false), (8, 24, false), (24, 32, true)]
+        );
 
-    #[test]
-    fn merge_blank_property_block_fails_without_a_content_neighbor_on_that_side() {
-        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
-            "doc-1", "Doc", "layer-1", "Layer 1",
-        ));
-        runtime.blank_property_block("layer-1", "raster", "block-1");
-
-        assert!(!runtime.merge_blank_property_block(
-            "layer-1",
-            "raster",
-            "block-1",
-            PropertyBlockMergeDirection::Left,
-        ));
-        assert!(!runtime.merge_blank_property_block(
-            "layer-1",
-            "raster",
-            "block-1",
-            PropertyBlockMergeDirection::Right,
-        ));
+        // Shrink the span to 12: the block past the end clips into it.
+        assert!(runtime.set_layer_timing("layer-1", 0, 12));
+        let track = runtime.property_track("layer-1", "raster").unwrap();
+        let covered: Vec<(u32, u32, bool)> = track
+            .blocks
+            .iter()
+            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .collect();
+        assert_eq!(covered, vec![(0, 8, false), (8, 12, false)]);
     }
 
     #[test]

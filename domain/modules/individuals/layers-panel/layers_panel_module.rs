@@ -17,15 +17,6 @@ pub enum LayerPropertyKind {
     Move,
 }
 
-/// Which content neighbor a blank property block merges into, mirroring
-/// `thaum_painter_domain::PropertyBlockMergeDirection` without coupling this module to
-/// canonical storage (see this encapsulation's "does not own"). The orchestration layer maps
-/// this onto the storage-owned enum when applying the action.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MergeDirection {
-    Left,
-    Right,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PropertyTrackBlock {
@@ -75,7 +66,6 @@ pub enum LayersPanelAction {
     SetPropertyBlockTimingDestructive(String, String, String, u32, u32),
     SplitPropertyBlock(String, String, String, u32),
     BlankPropertyBlock(String, String, String),
-    MergeBlankPropertyBlock(String, String, String, MergeDirection),
     SwapPropertyBlocks(String, String, String, String),
     /// Commits a dragged loop-window bar: the document's active timeline span.
     /// The bar itself cannot be split or deleted, so this is the only edit it
@@ -338,26 +328,6 @@ fn resolve_property_drag_mode(
     }
 }
 
-/// Which side a blank block should merge into on a right double-click, mirroring the old
-/// system's `getBlankCompactDirection`: the start/end caps always compact toward that side,
-/// a single-breath blank compacts left, and a blank's interior compacts toward whichever
-/// half of its span was clicked.
-fn blank_merge_direction(hit: &PropertyBlockHit, block: &PropertyTrackBlock) -> MergeDirection {
-    match hit.mode {
-        PropertyBlockHitMode::BlankStart => MergeDirection::Left,
-        PropertyBlockHitMode::BlankEnd => MergeDirection::Right,
-        PropertyBlockHitMode::BlankSingle => MergeDirection::Left,
-        _ => {
-            let end = block.start_breath + block.length_breaths.max(1) - 1;
-            let midpoint = (block.start_breath + end) / 2;
-            if hit.breath <= midpoint {
-                MergeDirection::Left
-            } else {
-                MergeDirection::Right
-            }
-        }
-    }
-}
 
 /// How a press-drag on the loop-window bar reshapes the document's active
 /// timeline span. The bar has no swap notion, so left and right body drags
@@ -746,19 +716,8 @@ impl LayersPanelModule {
         if is_double_click {
             self.property_block_drag = None;
             if hit.is_blank {
-                if button == ModulePointerButton::Right {
-                    if let Some(block) = self.find_property_block(&hit) {
-                        let direction = blank_merge_direction(&hit, &block);
-                        self.state.borrow_mut().queue_action(
-                            LayersPanelAction::MergeBlankPropertyBlock(
-                                hit.layer_id,
-                                hit.property_id,
-                                hit.block_id,
-                                direction,
-                            ),
-                        );
-                    }
-                }
+                // Blanks carry no content, so a double-click has nothing to edit;
+                // the empty-piece interaction surface lands in the routing pass.
                 return;
             }
             if button == ModulePointerButton::Left && hit.mode == PropertyBlockHitMode::BodyMove {
@@ -2136,66 +2095,6 @@ mod tests {
     }
 
     #[test]
-    fn right_double_clicking_the_left_half_of_a_blank_merges_it_left() {
-        let state = state_with_a_blank_between_two_content_blocks();
-        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
-        let (timeline_start, _) = panel.timeline_bounds();
-        let y = panel.row_y(5);
-
-        panel.on_pointer_event(ModulePointerEvent::Click {
-            x: timeline_start + 4,
-            y,
-            button: ModulePointerButton::Right,
-        });
-        state.borrow_mut().take_pending_action();
-        panel.on_pointer_event(ModulePointerEvent::Click {
-            x: timeline_start + 4,
-            y,
-            button: ModulePointerButton::Right,
-        });
-
-        assert_eq!(
-            state.borrow_mut().take_pending_action(),
-            Some(LayersPanelAction::MergeBlankPropertyBlock(
-                "layer-1".to_string(),
-                "raster".to_string(),
-                "block-2".to_string(),
-                MergeDirection::Left,
-            ))
-        );
-    }
-
-    #[test]
-    fn right_double_clicking_the_right_half_of_a_blank_merges_it_right() {
-        let state = state_with_a_blank_between_two_content_blocks();
-        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
-        let (timeline_start, _) = panel.timeline_bounds();
-        let y = panel.row_y(5);
-
-        panel.on_pointer_event(ModulePointerEvent::Click {
-            x: timeline_start + 6,
-            y,
-            button: ModulePointerButton::Right,
-        });
-        state.borrow_mut().take_pending_action();
-        panel.on_pointer_event(ModulePointerEvent::Click {
-            x: timeline_start + 6,
-            y,
-            button: ModulePointerButton::Right,
-        });
-
-        assert_eq!(
-            state.borrow_mut().take_pending_action(),
-            Some(LayersPanelAction::MergeBlankPropertyBlock(
-                "layer-1".to_string(),
-                "raster".to_string(),
-                "block-2".to_string(),
-                MergeDirection::Right,
-            ))
-        );
-    }
-
-    #[test]
     fn left_click_dragging_the_center_of_a_blank_scrubs_the_timeline_instead_of_dragging() {
         let state = state_with_a_blank_between_two_content_blocks();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
@@ -2669,3 +2568,4 @@ mod tests {
         assert!(panel.is_hidden());
     }
 }
+

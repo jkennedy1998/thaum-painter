@@ -13,7 +13,7 @@ Own live selection state for plane and world-oriented authoring flows.
 ## does not own
 - clipboard payloads
 - pure shape rasterization
-- saved file manifest ownership
+- saved file schema ownership
 
 ## children-encapsulations
 - none

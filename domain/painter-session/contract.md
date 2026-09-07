@@ -48,7 +48,7 @@ Own the bounded editing/session semantics that mutate a painter document over ti
 send: runtime + live session state (canvas, tool state, selection, action counter)
 returns: document mutations (staged patches, committed records, reverted history) + persisted snapshot/log writes
 effects: write-files (actions.jsonl, document.json via storage)
-via: `stage_image_edit_chunk`, `commit_staged_paint_stroke`, `commit_selection_channel`, `apply_shared_history_action`, `recover_snapshot_conflict`
+via: `stage_image_edit_chunk`, `commit_staged_paint_stroke`, `commit_selection_channel`, `commit_move_offset`, `apply_shared_history_action`, `recover_snapshot_conflict`
 
 ## interface consumers
 - `orchestration/entrypoint/` (the live app frame loop)

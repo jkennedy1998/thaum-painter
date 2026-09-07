@@ -50,7 +50,7 @@ via: each `individuals/<tool>/` type implementing `RegisteredTool`
 
 ## interface consumers
 - `painter-session/tool-state/` (enum <-> registry bridge, property manifest)
-- `persistence/user-session-state/` (persistence names)
+- `user-state/user-session-state/` (persistence names)
 - `modules/individuals/hand-settings/` (tool labels)
 - `modules/individuals/toolbox/` consumers build the `ToolDef` list from descriptors
 - `orchestration/entrypoint/` (toolbox registration, hotkey action mapping)

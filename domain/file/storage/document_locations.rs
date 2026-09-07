@@ -1,8 +1,7 @@
 //! Painter document location defaults and root resolution: where documents and
-//! session artifacts live, legacy root migration, and per-root document loading.
+//! session artifacts live, and per-root document loading.
 
 use std::env;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -36,31 +35,14 @@ pub fn default_shared_document(document_id: &str) -> SharedDocumentFile {
     )
 }
 
-fn legacy_painter_file_root(repo_root: &Path) -> PathBuf {
-    repo_root.join("orchestration/context/painter/painter-files")
-}
-
-fn migrate_legacy_painter_file_root(legacy_root: &Path, target_root: &Path) {
-    if target_root.exists() || !legacy_root.exists() {
-        return;
-    }
-    if let Some(parent) = target_root.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let _ = fs::rename(legacy_root, target_root);
-}
-
 /// Resolves the painter saved-file root: the `THAUM_PAINTER_FILE_ROOT` env
-/// override, else the repo's `context/painter/painter-files` folder (migrating
-/// the legacy orchestration-local root on first run).
+/// override, else the repo's `context/painter/painter-files` folder.
 pub fn resolve_painter_file_root(repo_root: &Path) -> PathBuf {
     if let Ok(path) = env::var("THAUM_PAINTER_FILE_ROOT") {
         return PathBuf::from(path);
     }
 
-    let target_root = repo_root.join("context/painter/painter-files");
-    migrate_legacy_painter_file_root(&legacy_painter_file_root(repo_root), &target_root);
-    target_root
+    repo_root.join("context/painter/painter-files")
 }
 
 pub fn load_document_from_root(

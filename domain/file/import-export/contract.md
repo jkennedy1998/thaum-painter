@@ -10,7 +10,7 @@ Own supported import/export wrappers around the canonical file, including painte
 - boundaries for plain-text, JSON, or packaged transfer forms when supported
 
 ## does not own
-- canonical manifest shape
+- canonical file schema shape
 - legacy migration internals
 - renderer runtime behavior
 
@@ -22,7 +22,7 @@ Own supported import/export wrappers around the canonical file, including painte
   - import-export contract
 
 ## dependencies
-- `thaum-painter/domain/file/manifest/`
+- `thaum-painter/domain/file/file-schema/`
 - `thaum-painter/domain/rendering/render-space/`
 
 ## exposed interfaces
@@ -42,5 +42,5 @@ Own supported import/export wrappers around the canonical file, including painte
 - none
 
 ## notes
-- import/export should wrap or transform the canonical saved file represented by `domain/file/manifest/example-thaum-painter-file-v1.json`.
+- import/export should wrap or transform the canonical saved file represented by `domain/file/file-schema/example-thaum-painter-file-v1.json`.
 - renderer-facing export profiles may target handoff shapes equivalent to `domain/rendering/render-space/example-render-space-v1.json` without making that transient shape the canonical saved file.

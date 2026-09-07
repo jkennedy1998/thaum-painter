@@ -1,4 +1,4 @@
-use crate::manifest::PropertyBlock;
+use crate::file_schema::PropertyBlock;
 
 /// Finds the property block, if any, whose breath range covers `breath`.
 pub fn block_covering_breath(blocks: &[PropertyBlock], breath: u32) -> Option<&PropertyBlock> {
@@ -8,7 +8,7 @@ pub fn block_covering_breath(blocks: &[PropertyBlock], breath: u32) -> Option<&P
 }
 
 /// Exclusive end of a start+length breath span. Every block shape in the painter
-/// (manifest `PropertyBlock`, stored `SharedDocumentPropertyBlock`, panel rows) resolves
+/// (file-schema `PropertyBlock`, stored `SharedDocumentPropertyBlock`, panel rows) resolves
 /// its range through these span helpers so breath semantics stay defined in one place.
 pub fn span_end_breath(start_breath: u32, length_breaths: u32) -> u32 {
     start_breath.saturating_add(length_breaths)
@@ -17,41 +17,6 @@ pub fn span_end_breath(start_breath: u32, length_breaths: u32) -> u32 {
 /// True when `breath` falls inside the start+length span (the span covers it).
 pub fn breath_in_span(breath: u32, start_breath: u32, length_breaths: u32) -> bool {
     breath >= start_breath && breath < span_end_breath(start_breath, length_breaths)
-}
-
-/// Clamps a requested (start, length) span so it cannot cross any other block in its
-/// property channel: no two blocks in one channel may ever share a breath. `original`
-/// is the moving block's current span before the edit; `others` are the channel's
-/// remaining (start, length) spans. Blocks fully left/right of the original set the
-/// free window's bounds; a block straddling the original (only possible in
-/// already-overlapping stored data) folds to whichever side of the original's midpoint
-/// it sits on, so moving a block also unwedges previously overlapping data. The result
-/// always fits inside the free window, preserving the requested length where possible.
-pub fn clamped_breath_span(
-    others: &[(u32, u32)],
-    original: (u32, u32),
-    requested: (u32, u32),
-) -> (u32, u32) {
-    let original_end = span_end_breath(original.0, original.1);
-    let original_middle = original.0 + original.1 / 2;
-    let mut left_limit = 0u32;
-    let mut right_limit = u32::MAX;
-    for &(start, length) in others {
-        let end = span_end_breath(start, length);
-        if end <= original.0 {
-            left_limit = left_limit.max(end);
-        } else if start >= original_end || original_middle < start + length / 2 {
-            right_limit = right_limit.min(start);
-        } else {
-            left_limit = left_limit.max(end);
-        }
-    }
-    let length = requested
-        .1
-        .max(1)
-        .min(right_limit.saturating_sub(left_limit));
-    let start = requested.0.clamp(left_limit, right_limit - length);
-    (start, length)
 }
 
 /// Result of a push (time-preserving) span edit: the edited block's new span plus the
@@ -98,21 +63,26 @@ pub fn pushed_breath_span(
 }
 
 /// Result of a destructive (overwrite) span edit: the edited block's new span plus how
-/// every overlapped neighbor resolves. Target content wins — covered neighbors are
-/// truncated, fully covered ones removed, and a neighbor that straddles the whole new
-/// span splits into two pieces around it. Indices refer to positions in the `others`
-/// slice passed to `destructive_breath_span`.
+/// every overlapped neighbor resolves. Under binary tiling victims become blanks — a
+/// partially overlapped neighbor keeps only its un-covered remainder and turns empty
+/// (content discarded), and a fully covered neighbor is removed outright (the edited
+/// block covers its range, so no blank is needed). The edited block's own vacated
+/// range is not part of this result; the storage seam re-tiles it into a blank.
+/// Indices refer to positions in the `others` slice passed to `destructive_breath_span`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DestructiveBreathSpan {
     pub edited: (u32, u32),
-    pub truncated: Vec<(usize, (u32, u32))>,
+    /// Partially overlapped neighbors: (index, residual (start, length) span) that
+    /// becomes a blank block, content discarded.
+    pub blanked: Vec<(usize, (u32, u32))>,
+    /// Fully covered neighbors, removed outright.
     pub removed: Vec<usize>,
-    pub splits: Vec<(usize, u32)>,
 }
 
 /// Destructive resolution: the edited block takes its full requested span and every
-/// other block it covers yields. A shrink request overlaps nothing, so it behaves as a
-/// plain trim — destructiveness only shows when growing or sliding over neighbors.
+/// other block it covers yields into an empty cell type. A shrink request overlaps
+/// nothing, so it behaves as a plain trim — destructiveness only shows when growing
+/// or sliding over neighbors.
 pub fn destructive_breath_span(
     others: &[(u32, u32)],
     requested: (u32, u32),
@@ -130,14 +100,10 @@ pub fn destructive_breath_span(
         }
         if start >= edited.0 && end <= edited_end {
             result.removed.push(index);
-        } else if start < edited.0 && end > edited_end {
-            result.splits.push((index, edited.0));
         } else if start < edited.0 {
-            result.truncated.push((index, (start, edited.0 - start)));
+            result.blanked.push((index, (start, edited.0 - start)));
         } else {
-            result
-                .truncated
-                .push((index, (edited_end, end - edited_end)));
+            result.blanked.push((index, (edited_end, end - edited_end)));
         }
     }
     result
@@ -188,39 +154,6 @@ mod tests {
     }
 
     #[test]
-    fn clamped_breath_span_moves_freely_without_neighbors() {
-        assert_eq!(clamped_breath_span(&[], (8, 4), (100, 4)), (100, 4));
-    }
-
-    #[test]
-    fn clamped_breath_span_stops_at_the_neighboring_block() {
-        // Neighbors at 0..8 and 20..28; the block at 8..12 can only slide within the
-        // free window 8..20, its end stopping at the right neighbor's start.
-        let others = [(0, 8), (20, 8)];
-        assert_eq!(clamped_breath_span(&others, (8, 4), (40, 4)), (16, 4));
-        assert_eq!(clamped_breath_span(&others, (8, 4), (0, 4)), (8, 4));
-    }
-
-    #[test]
-    fn clamped_breath_span_shrinks_a_trim_that_would_cross_a_neighbor() {
-        let others = [(0, 8)];
-        // Growing the end of a block at 8..12 with no right neighbor stays free.
-        assert_eq!(clamped_breath_span(&others, (8, 4), (8, 40)), (8, 40));
-        // With a right neighbor the length cannot cross it.
-        let others = [(0, 8), (20, 8)];
-        assert_eq!(clamped_breath_span(&others, (8, 4), (8, 40)), (8, 12));
-    }
-
-    #[test]
-    fn clamped_breath_span_unwedges_previously_overlapping_data() {
-        // Broken stored data: two blocks share breaths. Moving either one folds the
-        // straddling twin to its nearer side, so the result is non-overlapping again.
-        let others = [(4, 8)];
-        let (start, length) = clamped_breath_span(&others, (6, 4), (6, 4));
-        assert!(!breath_in_span(start, 4, 8) && !breath_in_span(4, start, length));
-    }
-
-    #[test]
     fn pushed_breath_span_grows_over_the_right_neighbor_ripple_style() {
         // Block at 8..12 grows right to 8..20: the neighbor at 20..28 shifts right by
         // the growth amount, relative spacing beyond it is untouched.
@@ -262,15 +195,14 @@ mod tests {
     }
 
     #[test]
-    fn destructive_breath_span_truncates_removes_and_splits_neighbors() {
-        // Edited block takes 8..28 outright: the 4..12 neighbor truncates to 4..8, the
-        // 20..24 block vanishes, and the straddling 0..48 block splits around it.
-        let others = [(4, 8), (20, 4), (0, 48), (40, 4)];
+    fn destructive_breath_span_blanks_and_removes_covered_neighbors() {
+        // Edited block takes 8..28 outright: the 4..12 neighbor keeps only 4..8 and
+        // turns empty, and the 20..24 block is fully covered so it is removed outright.
+        let others = [(4, 8), (20, 4), (40, 4)];
         let destructive = destructive_breath_span(&others, (8, 20));
         assert_eq!(destructive.edited, (8, 20));
-        assert_eq!(destructive.truncated, vec![(0, (4, 4))]);
+        assert_eq!(destructive.blanked, vec![(0, (4, 4))]);
         assert_eq!(destructive.removed, vec![1]);
-        assert_eq!(destructive.splits, vec![(2, 8)]);
     }
 
     #[test]
@@ -278,8 +210,7 @@ mod tests {
         let others = [(0, 8), (20, 8)];
         let destructive = destructive_breath_span(&others, (8, 2));
         assert_eq!(destructive.edited, (8, 2));
-        assert!(destructive.truncated.is_empty());
+        assert!(destructive.blanked.is_empty());
         assert!(destructive.removed.is_empty());
-        assert!(destructive.splits.is_empty());
     }
 }

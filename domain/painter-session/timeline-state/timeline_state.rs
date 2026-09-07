@@ -1,4 +1,4 @@
-use crate::manifest::PropertyBlock;
+use crate::file_schema::PropertyBlock;
 use crate::properties::block_covering_breath;
 
 /// Live, unsaved playhead and auto-key state for the painter session, plus

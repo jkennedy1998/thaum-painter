@@ -45,4 +45,4 @@ Own painter app rendering semantics that prepare and route app state into `thaum
 
 ## notes
 - the current concrete renderer-handoff reference is `domain/rendering/render-space/example-render-space-v1.json`.
-- rendering seams should keep consuming saved truth from `domain/file/manifest/` rather than inventing parallel persisted render-state ownership.
+- rendering seams should keep consuming saved truth from `domain/file/file-schema/` rather than inventing parallel persisted render-state ownership.

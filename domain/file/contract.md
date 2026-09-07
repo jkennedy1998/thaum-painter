@@ -1,10 +1,10 @@
 # thaum-painter/domain/file
 
 ## purpose
-Own the canonical thaum-painter saved file shape, including the manifest and every piece of authoring state the renderer does not own.
+Own the canonical thaum-painter saved file shape, including the file schema and every piece of authoring state the renderer does not own.
 
 ## owns
-- the app-owned file manifest and versioning
+- the app-owned file schema and versioning
 - saved asset structure for painter-to-painter and painter-to-game transfer
 - authoring metadata, naming, tags, and workflow state not directly consumed by `thaum-renderer`
 - storage rules for timing, layer/group organization, import bookkeeping, and other painter-only state
@@ -16,7 +16,7 @@ Own the canonical thaum-painter saved file shape, including the manifest and eve
 - live editing session policy
 
 ## children-encapsulations
-- `manifest/`
+- `file-schema/`
   - default
 - `storage/`
   - default
@@ -44,11 +44,11 @@ via: contract
 - future importer/exporter seams
 
 ## artifacts
-- `thaum-painter/domain/file/manifest/example-thaum-painter-file-v1.json`
+- `thaum-painter/domain/file/file-schema/example-thaum-painter-file-v1.json`
   - first concrete saved file example for downstream seams
 
 ## tests
-- future file-shape validation and normalization tests anchored to `domain/file/manifest/example-thaum-painter-file-v1.json`
+- future file-shape validation and normalization tests anchored to `domain/file/file-schema/example-thaum-painter-file-v1.json`
 
 ## data
 - none
@@ -58,4 +58,4 @@ via: contract
 - if a field exists only because humans author, revise, transfer, or catalog work, it likely belongs here.
 - this seam should stay more encapsulated than the old broad painter-document design.
 - sub-boundaries should separate file shape, persistence surfaces, import/export wrappers, ect.
-- the current concrete saved-truth reference is `domain/file/manifest/example-thaum-painter-file-v1.json`.
+- the current concrete saved-truth reference is `domain/file/file-schema/example-thaum-painter-file-v1.json`.

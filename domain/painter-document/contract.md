@@ -42,10 +42,10 @@ via: contract
 - `domain/painter-session/session_document.rs` and `orchestration/entrypoint/` via `layers_runtime`
 
 ## artifacts
-- future document-view fixtures derived from `domain/file/manifest/example-thaum-painter-file-v1.json`
+- future document-view fixtures derived from `domain/file/file-schema/example-thaum-painter-file-v1.json`
 
 ## tests
-- future document-view tests derived from `domain/file/manifest/example-thaum-painter-file-v1.json`
+- future document-view tests derived from `domain/file/file-schema/example-thaum-painter-file-v1.json`
 
 ## data
 - none
@@ -54,6 +54,6 @@ via: contract
 - `domain/file/` should own the saved manifest and painter-only stored state.
 - `domain/rendering/render-space/` should own how file or live state sends data to `thaum-renderer`.
 - painter-document should stay narrower: it is the editing-facing document view, not the save-file owner and not the renderer bridge owner.
-- the current saved-truth input reference for this seam is `domain/file/manifest/example-thaum-painter-file-v1.json`.
+- the current saved-truth input reference for this seam is `domain/file/file-schema/example-thaum-painter-file-v1.json`.
 - layer lookup, property lookup, and timing lookup should likely land as child seams rather than one monolithic document file.
 - an intermediate `modules/` child seam was added and later removed; see `context/module-concept-audit.md`'s "superseded" section. `layers/` is the sole top-level authored-unit seam and maps directly one-to-one to a renderer `CellGroup`.

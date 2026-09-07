@@ -5,9 +5,9 @@ use thaum_renderer_domain::{
 };
 
 use crate::interpolation::{resolve_gap_fill, GapFill};
-use crate::manifest::{parse_grid_point, GridPoint, Group, Manifest, RasterSegment, Rgb};
+use crate::file_schema::{parse_grid_point, GridPoint, Group, FileSchema, RasterSegment, Rgb};
 
-/// The transient renderer handoff assembled from one manifest at one active breath.
+/// The transient renderer handoff assembled from one file schema at one active breath.
 ///
 /// `camera` is a fully resolved `thaum-renderer` camera, expected to come from
 /// `domain/rendering/camera/` (app camera intent + saved defaults), not from this seam.
@@ -122,10 +122,10 @@ fn build_group_cell_group(group: &Group, active_breath: u32) -> Result<CellGroup
 /// One renderer cell-group per authored group, in `document.group_order` — direct
 /// 1:1, no intermediate compositing step (see `context/module-concept-audit.md`'s
 /// "superseded" section for why the earlier module-wrapped shape was reversed).
-pub fn build_composition(manifest: &Manifest, active_breath: u32) -> Result<Composition> {
+pub fn build_composition(schema: &FileSchema, active_breath: u32) -> Result<Composition> {
     let mut groups = Vec::new();
-    for group_id in &manifest.document.group_order {
-        let group = manifest
+    for group_id in &schema.document.group_order {
+        let group = schema
             .document
             .groups
             .iter()
@@ -144,18 +144,18 @@ pub fn build_data_lanes(active_breath: u32) -> DataLanes {
     DataLanes::with_breath(active_breath as i32)
 }
 
-/// Assembles the render-space handoff for one manifest at one active breath.
+/// Assembles the render-space handoff for one file schema at one active breath.
 ///
 /// `camera` should already be resolved (saved defaults + live overrides) by
 /// `domain/rendering/camera/`; this seam only normalizes it into the handoff shape.
 pub fn build_render_space(
-    manifest: &Manifest,
+    schema: &FileSchema,
     active_breath: u32,
     camera: Camera,
 ) -> Result<RenderSpace> {
     Ok(RenderSpace {
         camera,
-        composition: build_composition(manifest, active_breath)?,
+        composition: build_composition(schema, active_breath)?,
         data_lanes: build_data_lanes(active_breath),
     })
 }
@@ -163,19 +163,23 @@ pub fn build_render_space(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::parse_manifest_from_str;
+    use crate::file_schema::parse_file_schema_from_str;
+    use crate::{PaintColor, PaintedCell};
+    use thaum_renderer_domain::{CellGraphic, CellMaterialId};
 
-    const EXAMPLE_MANIFEST_JSON: &str =
-        include_str!("../../file/manifest/example-thaum-painter-file-v1.json");
+    use crate::storage::{SharedCellPatch, SharedDocumentFile};
 
-    fn example_manifest() -> Manifest {
-        parse_manifest_from_str(EXAMPLE_MANIFEST_JSON).unwrap()
+    const EXAMPLE_FILE_SCHEMA_JSON: &str =
+        include_str!("../../file/file-schema/example-thaum-painter-file-v1.json");
+
+    fn example_file_schema() -> FileSchema {
+        parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap()
     }
 
     #[test]
     fn one_cell_group_is_emitted_per_group_in_group_order() {
-        let manifest = example_manifest();
-        let composition = build_composition(&manifest, 4).unwrap();
+        let schema = example_file_schema();
+        let composition = build_composition(&schema, 4).unwrap();
 
         assert_eq!(composition.groups.len(), 4);
         assert_eq!(
@@ -198,8 +202,8 @@ mod tests {
 
     #[test]
     fn each_group_becomes_its_own_cell_group_with_locally_offset_voxels() {
-        let manifest = example_manifest();
-        let composition = build_composition(&manifest, 4).unwrap();
+        let schema = example_file_schema();
+        let composition = build_composition(&schema, 4).unwrap();
         let letters = &composition.groups[1];
 
         assert_eq!(
@@ -218,15 +222,15 @@ mod tests {
 
     #[test]
     fn breath_resolution_picks_the_segment_and_move_offset_active_at_the_chosen_breath() {
-        let manifest = example_manifest();
+        let schema = example_file_schema();
 
         // at breath 2: dim glow segment, zero move offset
-        let dim = build_composition(&manifest, 2).unwrap();
+        let dim = build_composition(&schema, 2).unwrap();
         let dim_cell = dim.groups[2].get(CellPoint { x: 0, y: 0, z: 0 }).unwrap();
         assert_eq!(dim_cell.graphic, CellGraphic::Glyph('░'));
 
         // at breath 4: bright glow segment, shifted by the active move block's +1 x offset
-        let bright = build_composition(&manifest, 4).unwrap();
+        let bright = build_composition(&schema, 4).unwrap();
         assert!(bright.groups[2]
             .get(CellPoint { x: 0, y: 0, z: 0 })
             .is_none());
@@ -239,8 +243,8 @@ mod tests {
 
     #[test]
     fn cell_color_maps_rgb_zero_to_two_fifty_five_into_a_flat_zero_to_one_color() {
-        let manifest = example_manifest();
-        let composition = build_composition(&manifest, 4).unwrap();
+        let schema = example_file_schema();
+        let composition = build_composition(&schema, 4).unwrap();
         let torch = &composition.groups[3];
 
         assert_eq!(
@@ -251,11 +255,11 @@ mod tests {
 
     #[test]
     fn invisible_groups_contribute_no_cells_without_affecting_their_siblings() {
-        let mut manifest = example_manifest();
-        manifest.document.groups[3].visible = false;
-        manifest.document.groups[1].visible = false;
+        let mut schema = example_file_schema();
+        schema.document.groups[3].visible = false;
+        schema.document.groups[1].visible = false;
 
-        let composition = build_composition(&manifest, 4).unwrap();
+        let composition = build_composition(&schema, 4).unwrap();
 
         assert!(composition.groups[3].bounds().is_none());
         assert!(composition.groups[1]
@@ -273,13 +277,53 @@ mod tests {
 
     #[test]
     fn build_render_space_bundles_camera_composition_and_data_lanes() {
-        let manifest = example_manifest();
+        let schema = example_file_schema();
         let camera = Camera::default();
-        let render_space = build_render_space(&manifest, 4, camera).unwrap();
+        let render_space = build_render_space(&schema, 4, camera).unwrap();
 
         assert_eq!(render_space.camera, camera);
         assert_eq!(render_space.composition.groups.len(), 4);
         assert_eq!(render_space.data_lanes.breath(), Some(4));
+    }
+
+    #[test]
+    fn document_layer_render_applies_the_active_move_offset() {
+        let document = SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
+        let mut runtime = SharedDocumentRuntime::new(document);
+        let block_id = runtime
+            .active_raster_block_id("layer-1", 0)
+            .expect("default raster block");
+        let painted = PaintedCell {
+            graphic: CellGraphic::Glyph('#'),
+            color: PaintColor::FlatRgb(255, 255, 255),
+            weight_index: 1,
+        };
+        runtime.stage_canvas_patches(
+            "layer-1",
+            &block_id,
+            &[SharedCellPatch::new(
+                CellPoint { x: 5, y: 5, z: 0 },
+                None,
+                Some(&painted),
+            )],
+        );
+        runtime.add_move_offset("layer-1", 0, WorldPoint { x: 2, y: 0, z: 3 });
+
+        let groups = build_document_layer_cell_groups(&runtime, 0, None);
+        assert_eq!(groups.len(), 1);
+        assert!(groups[0]
+            .iter_cells()
+            .any(|cell| cell.position == CellPoint { x: 7, y: 5, z: 3 }));
+
+        // An in-flight drag's pending delta stacks on the committed offset.
+        let groups = build_document_layer_cell_groups(
+            &runtime,
+            0,
+            Some(("layer-1", WorldPoint { x: 1, y: 1, z: 0 })),
+        );
+        assert!(groups[0]
+            .iter_cells()
+            .any(|cell| cell.position == CellPoint { x: 8, y: 6, z: 3 }));
     }
 }
 
@@ -290,12 +334,18 @@ use crate::Canvas;
 
 /// Renders `canvas`'s live-painted cells as one `CellGroup` in the renderer's
 /// real rotating 3D intake path, not as module chrome, so the painter canvas
-/// lives in scene space while the UI panels stay in the flat 2D layer.
-pub fn build_paint_canvas_cell_group(canvas: &Canvas) -> CellGroup {
+/// lives in scene space while the UI panels stay in the flat 2D layer. Every
+/// cell shifts by the layer's active move offset — the offset changes where
+/// the layer renders, never the raster data itself.
+pub fn build_paint_canvas_cell_group(canvas: &Canvas, move_offset: WorldPoint) -> CellGroup {
     let mut group = CellGroup::new(WorldPoint { x: 0, y: 0, z: 0 });
     for (position, painted) in canvas {
         group.insert(Cell {
-            position: *position,
+            position: CellPoint {
+                x: position.x + move_offset.x,
+                y: position.y + move_offset.y,
+                z: position.z + move_offset.z,
+            },
             graphic: painted.graphic.clone(),
             color: painted.color.to_cell_color(),
             weight: CellWeight::from_index_clamped(painted.weight_index as i32),
@@ -306,14 +356,30 @@ pub fn build_paint_canvas_cell_group(canvas: &Canvas) -> CellGroup {
 }
 
 /// One scene group per document layer, back-to-front in document order.
+/// Each layer renders shifted by its active move offset, plus one in-flight
+/// vector move drag's pending delta on `pending_layer` — the live WYSIWYG
+/// preview of the offset the drag will commit.
 pub fn build_document_layer_cell_groups(
     runtime: &SharedDocumentRuntime,
     current_breath: u32,
+    pending_move_offset: Option<(&str, WorldPoint)>,
 ) -> Vec<CellGroup> {
     runtime
         .layers()
         .iter()
-        .filter_map(|layer| runtime.canvas_for_layer(&layer.layer_id, current_breath))
-        .map(build_paint_canvas_cell_group)
+        .filter_map(|layer| {
+            let canvas = runtime.canvas_for_layer(&layer.layer_id, current_breath)?;
+            let mut offset = runtime.move_offset_for_layer(&layer.layer_id, current_breath);
+            if let Some((pending_layer, pending)) = pending_move_offset {
+                if pending_layer == layer.layer_id {
+                    offset = WorldPoint {
+                        x: offset.x + pending.x,
+                        y: offset.y + pending.y,
+                        z: offset.z + pending.z,
+                    };
+                }
+            }
+            Some(build_paint_canvas_cell_group(canvas, offset))
+        })
         .collect()
 }

@@ -1,4 +1,4 @@
-use crate::manifest::{PropertyBlock, RasterSegment};
+use crate::file_schema::{PropertyBlock, RasterSegment};
 
 /// What renders for a breath that no block or segment covers.
 ///

@@ -25,7 +25,7 @@ use thaum_painter_domain::{
     }, text_entry::{cursor_overlay_group, TextEntryKey, TextEntryOutcome, TextEntryState}, Canvas, DrawingSpaceWheelMode, LayerRow, LayersPanelState,
     PaintCanvasBoundsModule, PaintHand, PaintTool,
     PainterSelection, PainterUserSessionState, painter_default_camera, PersistedPainterUiState,
-    SelectionMode, SharedDocumentPaths,
+    SelectionMode, SharedDocumentPaths, UnsupportedFileError,
     SessionIdentity, SharedDocumentRuntime, TimelineState, apply_painter_selection_action,
     ToolState, CanvasBounds, DEFAULT_SELECTION_CHANNEL_ID,
 };
@@ -717,7 +717,23 @@ fn handle_command_bar_button(
         }
         "file:open" => {
             if let Some(next_root) = prompt_open_document_root(&file_root) {
-                let (next_paths, next_document) = load_document_from_root(&next_root)?;
+                let (next_paths, next_document) = match load_document_from_root(&next_root) {
+                    Ok(loaded) => loaded,
+                    Err(error) => {
+                        // Unsupported-file gate: a saved file whose kind or schema
+                        // version this build cannot read is rejected cleanly — the
+                        // file does not open, no in-memory state changes, the
+                        // session keeps running. Only this error class maps to a
+                        // soft rejection; every other failure still propagates.
+                        if error.downcast_ref::<UnsupportedFileError>().is_some() {
+                            let message = format!("document not opened: {error:#}");
+                            thaum_painter_domain::debug_log::error("file", &message);
+                            eprintln!("{message}");
+                            return Ok(());
+                        }
+                        return Err(error);
+                    }
+                };
                 *shared_document_paths = next_paths;
                 *shared_document = next_document;
                 *current_document_root = Some(next_root);
@@ -2553,6 +2569,13 @@ fn main() -> Result<()> {
                     pointer_strokes.fold_move_release(PaintHand::Right, position, view_orientation);
                 }
             }
+            // The breath reads into a binding first: a `timeline_state.borrow()`
+            // temporary in this call's argument list would live through the whole
+            // `finish_canvas_release` call, and the layers-panel drain inside it
+            // borrow_muts the same state for queued SetCurrentBreath/Toggle
+            // actions — the RefCell double-borrow behind the scrub-then-release
+            // timeline crash.
+            let current_breath = timeline_state.borrow().current_breath;
             finish_canvas_release(
                 &mut modules,
                 &mut pointer_strokes,
@@ -2569,7 +2592,7 @@ fn main() -> Result<()> {
                 &timeline_state,
                 screen,
                 view_orientation,
-                timeline_state.borrow().current_breath,
+                current_breath,
             );
         }
         left_pointer_was_down = frame.input.pointer_down;
@@ -2687,7 +2710,18 @@ fn main() -> Result<()> {
         };
         pointer_strokes.set_stamp_hover(stamp_hover);
 
-        let mut groups = build_document_layer_cell_groups(&shared_document, timeline_state.borrow().current_breath);
+        // The in-flight vector move previews through the render path itself:
+        // the active layer's cells shift by the drag's pending delta, live.
+        let pending_move_offset = pointer_strokes
+            .pending_move_offset()
+            .map(|delta| (active_layer_id.clone(), delta));
+        let mut groups = build_document_layer_cell_groups(
+            &shared_document,
+            timeline_state.borrow().current_breath,
+            pending_move_offset
+                .as_ref()
+                .map(|(layer_id, delta)| (layer_id.as_str(), *delta)),
+        );
         groups.extend(modules.iter().map(|module| module.draw()));
         // In-progress stroke overlays live on the seam: plane selection
         // preview, and any open lasso bound with its live interior preview.

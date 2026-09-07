@@ -17,7 +17,7 @@ Own live tool settings and active authoring-hand state for the painter session.
 - text-entry and paste option state that belongs to the live session
 
 ## does not own
-- persistent file manifest ownership
+- persistent file schema ownership
 - pure tool operations
 - history ownership
 

@@ -2,6 +2,9 @@
 **/target
 Cargo.lock
 
+# build-commands cargo cache + built binaries (never version these)
+orchestration/builds/
+
 # runtime user documents and session state (never version these)
 context/painter/painter-files/
 orchestration/artifacts/

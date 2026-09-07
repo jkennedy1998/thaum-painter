@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use anyhow::Result;
 
-use thaum_renderer_domain::{CameraViewOrientation, CellPoint};
+use thaum_renderer_domain::{CameraViewOrientation, CellPoint, WorldPoint};
 
 use crate::brush::{Canvas, PaintedCell};
 use crate::fill::CanvasBounds;
@@ -271,6 +271,25 @@ pub fn commit_selection_channel<I>(
             );
         }
     }
+}
+
+/// Writes one vector move commit: the drag's world delta added to the
+/// active layer's move block covering `current_breath` (auto-creating the
+/// move track and a block spanning the layer's timing window when missing),
+/// then the snapshot save. Property-offset edits persist like the other
+/// property-track metadata edits — through the document snapshot, not the
+/// per-cell undo log.
+pub fn commit_move_offset(
+    runtime: &mut SharedDocumentRuntime,
+    paths: &SharedDocumentPaths,
+    active_layer_id: &str,
+    delta: WorldPoint,
+    current_breath: u32,
+) -> Result<()> {
+    if runtime.add_move_offset(active_layer_id, current_breath, delta) {
+        save_shared_document_snapshot(paths, runtime)?;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)] // session-bridge seam: one fn carries the live session state; struct-izing touches the entrypoint

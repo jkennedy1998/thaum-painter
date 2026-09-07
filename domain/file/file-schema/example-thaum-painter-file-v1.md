@@ -1,13 +1,13 @@
 # thaum painter file v1 example
 
 ## intent
-This is the first implementation-ready saved file example for `domain/file/manifest/`.
+This is the first implementation-ready saved file example for `domain/file/file-schema/`.
 
 ## top-level sections
 - `kind`
   - file family marker
 - `version`
-  - manifest version
+  - schema version
 - `metadata`
   - title, tags, document identity, timestamps
 - `document`

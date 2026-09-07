@@ -1,8 +1,8 @@
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
-pub const MANIFEST_KIND: &str = "thaum-painter-file";
-pub const MANIFEST_VERSION: u32 = 1;
+pub const FILE_SCHEMA_KIND: &str = "thaum-painter-file";
+pub const FILE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GridPoint {
@@ -19,7 +19,7 @@ pub struct Rgb {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ManifestMetadata {
+pub struct FileSchemaMetadata {
     pub document_id: String,
     pub title: String,
     pub description: String,
@@ -155,9 +155,9 @@ pub struct ImportExportBookkeeping {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Manifest {
+pub struct FileSchema {
     pub version: u32,
-    pub metadata: ManifestMetadata,
+    pub metadata: FileSchemaMetadata,
     pub document: DocumentContent,
     pub time_assets: TimeAssets,
     pub saved_camera_defaults: SavedCameraDefaults,
@@ -431,8 +431,8 @@ fn parse_import_export_bookkeeping(value: &Value) -> Result<ImportExportBookkeep
     })
 }
 
-fn parse_metadata(value: &Value) -> Result<ManifestMetadata> {
-    Ok(ManifestMetadata {
+fn parse_metadata(value: &Value) -> Result<FileSchemaMetadata> {
+    Ok(FileSchemaMetadata {
         document_id: require_str(value, "document_id")?.to_owned(),
         title: require_str(value, "title")?.to_owned(),
         description: require_str(value, "description")?.to_owned(),
@@ -443,20 +443,20 @@ fn parse_metadata(value: &Value) -> Result<ManifestMetadata> {
     })
 }
 
-/// Parses one saved thaum-painter file manifest from an already-decoded JSON value.
+/// Parses one saved thaum-painter file schema from an already-decoded JSON value.
 ///
 /// This owns shape validation only: file I/O is `domain/file/storage/`'s job, not this seam's.
-pub fn parse_manifest(value: &Value) -> Result<Manifest> {
+pub fn parse_file_schema(value: &Value) -> Result<FileSchema> {
     let kind = require_str(value, "kind")?;
-    if kind != MANIFEST_KIND {
-        bail!("manifest kind must be '{MANIFEST_KIND}', got '{kind}'");
+    if kind != FILE_SCHEMA_KIND {
+        bail!("file-schema kind must be '{FILE_SCHEMA_KIND}', got '{kind}'");
     }
     let version = require_u32(value, "version")?;
-    if version != MANIFEST_VERSION {
-        bail!("manifest version must be {MANIFEST_VERSION}, got {version}");
+    if version != FILE_SCHEMA_VERSION {
+        bail!("file schema version must be {FILE_SCHEMA_VERSION}, got {version}");
     }
 
-    Ok(Manifest {
+    Ok(FileSchema {
         version,
         metadata: parse_metadata(field(value, "metadata")?).context("invalid metadata")?,
         document: parse_document(field(value, "document")?).context("invalid document")?,
@@ -472,30 +472,30 @@ pub fn parse_manifest(value: &Value) -> Result<Manifest> {
     })
 }
 
-/// Parses one saved thaum-painter file manifest directly from its raw JSON text.
-pub fn parse_manifest_from_str(text: &str) -> Result<Manifest> {
-    let value: Value = serde_json::from_str(text).context("manifest is not valid JSON")?;
-    parse_manifest(&value)
+/// Parses one saved thaum-painter file schema directly from its raw JSON text.
+pub fn parse_file_schema_from_str(text: &str) -> Result<FileSchema> {
+    let value: Value = serde_json::from_str(text).context("file schema is not valid JSON")?;
+    parse_file_schema(&value)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const EXAMPLE_MANIFEST_JSON: &str = include_str!("example-thaum-painter-file-v1.json");
+    const EXAMPLE_FILE_SCHEMA_JSON: &str = include_str!("example-thaum-painter-file-v1.json");
 
     #[test]
-    fn parses_the_pinned_example_manifest_without_error() {
-        let manifest = parse_manifest_from_str(EXAMPLE_MANIFEST_JSON).unwrap();
-        assert_eq!(manifest.version, 1);
-        assert_eq!(manifest.metadata.document_id, "doc_cavern_sign_001");
+    fn parses_the_pinned_example_file_schema_without_error() {
+        let schema = parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap();
+        assert_eq!(schema.version, 1);
+        assert_eq!(schema.metadata.document_id, "doc_cavern_sign_001");
     }
 
     #[test]
     fn parses_four_flat_groups_each_with_their_own_placement() {
-        let manifest = parse_manifest_from_str(EXAMPLE_MANIFEST_JSON).unwrap();
+        let schema = parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap();
         assert_eq!(
-            manifest.document.group_order,
+            schema.document.group_order,
             vec![
                 "group_background",
                 "group_letters",
@@ -503,21 +503,21 @@ mod tests {
                 "group_torch_flame"
             ]
         );
-        assert_eq!(manifest.document.groups.len(), 4);
+        assert_eq!(schema.document.groups.len(), 4);
 
-        let background = &manifest.document.groups[0];
+        let background = &schema.document.groups[0];
         assert_eq!(background.id, "group_background");
         assert_eq!(background.placement, GridPoint { x: 0, y: 0, z: 0 });
 
-        let torch = &manifest.document.groups[3];
+        let torch = &schema.document.groups[3];
         assert_eq!(torch.id, "group_torch_flame");
         assert_eq!(torch.placement, GridPoint { x: 18, y: 0, z: 0 });
     }
 
     #[test]
     fn each_group_carries_its_own_directly_authored_placement() {
-        let manifest = parse_manifest_from_str(EXAMPLE_MANIFEST_JSON).unwrap();
-        let glow = manifest
+        let schema = parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap();
+        let glow = schema
             .document
             .groups
             .iter()
@@ -528,8 +528,8 @@ mod tests {
 
     #[test]
     fn parses_raster_segment_voxels_with_color_and_weight() {
-        let manifest = parse_manifest_from_str(EXAMPLE_MANIFEST_JSON).unwrap();
-        let letters = &manifest.document.groups[1];
+        let schema = parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap();
+        let letters = &schema.document.groups[1];
         assert_eq!(letters.id, "group_letters");
         let segment = &letters.raster_segments[0];
         assert_eq!(segment.voxels.len(), 3);
@@ -547,8 +547,8 @@ mod tests {
 
     #[test]
     fn parses_property_blocks_with_arbitrary_json_value_shapes() {
-        let manifest = parse_manifest_from_str(EXAMPLE_MANIFEST_JSON).unwrap();
-        let glow = &manifest.document.groups[2];
+        let schema = parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap();
+        let glow = &schema.document.groups[2];
         let move_property = glow
             .properties
             .iter()
@@ -563,39 +563,39 @@ mod tests {
 
     #[test]
     fn parses_time_assets_and_saved_camera_defaults() {
-        let manifest = parse_manifest_from_str(EXAMPLE_MANIFEST_JSON).unwrap();
-        assert_eq!(manifest.time_assets.particle_effects.len(), 1);
-        assert_eq!(manifest.time_assets.particle_effects[0].visual.char, '*');
-        assert_eq!(manifest.saved_camera_defaults.orientation, "xy");
-        assert_eq!(manifest.saved_camera_defaults.pan_x, 0.0);
+        let schema = parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap();
+        assert_eq!(schema.time_assets.particle_effects.len(), 1);
+        assert_eq!(schema.time_assets.particle_effects[0].visual.char, '*');
+        assert_eq!(schema.saved_camera_defaults.orientation, "xy");
+        assert_eq!(schema.saved_camera_defaults.pan_x, 0.0);
     }
 
     #[test]
     fn parses_import_export_bookkeeping_with_null_source_import() {
-        let manifest = parse_manifest_from_str(EXAMPLE_MANIFEST_JSON).unwrap();
-        assert!(manifest.import_export_bookkeeping.source_import.is_none());
-        let last_export = manifest.import_export_bookkeeping.last_export.unwrap();
+        let schema = parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap();
+        assert!(schema.import_export_bookkeeping.source_import.is_none());
+        let last_export = schema.import_export_bookkeeping.last_export.unwrap();
         assert_eq!(last_export.profile, "renderer-scene-preview");
     }
 
     #[test]
-    fn rejects_a_manifest_with_the_wrong_kind() {
+    fn rejects_a_file_schema_with_the_wrong_kind() {
         let value = serde_json::json!({ "kind": "not-thaum-painter-file", "version": 1 });
-        let error = parse_manifest(&value).unwrap_err();
+        let error = parse_file_schema(&value).unwrap_err();
         assert!(error.to_string().contains("kind"));
     }
 
     #[test]
-    fn rejects_a_manifest_with_an_unsupported_version() {
-        let value = serde_json::json!({ "kind": MANIFEST_KIND, "version": 2 });
-        let error = parse_manifest(&value).unwrap_err();
+    fn rejects_a_file_schema_with_an_unsupported_version() {
+        let value = serde_json::json!({ "kind": FILE_SCHEMA_KIND, "version": 2 });
+        let error = parse_file_schema(&value).unwrap_err();
         assert!(error.to_string().contains("version"));
     }
 
     #[test]
-    fn rejects_a_manifest_missing_a_required_field() {
-        let value = serde_json::json!({ "kind": MANIFEST_KIND, "version": 1 });
-        let error = parse_manifest(&value).unwrap_err();
+    fn rejects_a_file_schema_missing_a_required_field() {
+        let value = serde_json::json!({ "kind": FILE_SCHEMA_KIND, "version": 1 });
+        let error = parse_file_schema(&value).unwrap_err();
         assert!(error.to_string().contains("metadata"));
     }
 

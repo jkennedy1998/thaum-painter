@@ -27,6 +27,8 @@ Own the painter-specific semantic boundaries for authoring ASCII scenes without 
   - default
 - `modules/`
   - default
+- `user-state/`
+  - machine-local user session state: per-user prefs + persisted UI session, not profile saves
 - `tai/`
   - painter tool-assisted input test seam consuming the renderer's TAI runner
 

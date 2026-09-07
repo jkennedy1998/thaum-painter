@@ -41,5 +41,5 @@ Own editing-facing timing and breath playback views over saved painter file stat
 - none
 
 ## notes
-- keep this seam editing-facing: saved time asset structure belongs in `domain/file/manifest/`, while render-facing timing/data-lane mapping belongs in `domain/rendering/render-space/`.
+- keep this seam editing-facing: saved time asset structure belongs in `domain/file/file-schema/`, while render-facing timing/data-lane mapping belongs in `domain/rendering/render-space/`.
 - if timing grows, split only after timeline editing and authored time-asset views prove they have different consumers or test surfaces.

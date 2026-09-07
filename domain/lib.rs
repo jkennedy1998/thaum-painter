@@ -13,7 +13,7 @@ pub mod identity;
 /// Debug logging moved into the renderer domain so renderer and host share one
 /// sink; the painter keeps the same call path through this re-export.
 pub use thaum_renderer_domain::debug_log;
-#[path = "file/document_locations.rs"]
+#[path = "file/storage/document_locations.rs"]
 pub mod document_locations;
 #[path = "painter-session/sync/document_sync.rs"]
 pub mod document_sync;
@@ -35,8 +35,8 @@ pub mod layers_panel_module;
 pub mod layers_runtime;
 #[path = "modules/shared/legacy_indexed_palette.rs"]
 pub mod legacy_indexed_palette;
-#[path = "file/manifest/manifest.rs"]
-pub mod manifest;
+#[path = "file/file-schema/file_schema.rs"]
+pub mod file_schema;
 #[path = "modules/individuals/material-picker/material_picker_module.rs"]
 pub mod material_picker_module;
 #[path = "modules/individuals/paint-canvas-bounds/paint_canvas_bounds_module.rs"]
@@ -49,6 +49,8 @@ pub mod paint_color_block_module;
 pub mod paint_color_picker_module;
 #[path = "painter-tools/painter_tools.rs"]
 pub mod painter_tools;
+#[path = "painter-document/properties/pieces/pieces.rs"]
+pub mod pieces;
 #[path = "painter-document/properties/properties.rs"]
 pub mod properties;
 #[path = "rendering/render-space/render_space.rs"]
@@ -77,7 +79,7 @@ pub mod tool_state;
 pub mod toolbar_module;
 #[path = "modules/individuals/toolbox/toolbox_module.rs"]
 pub mod toolbox_module;
-#[path = "persistence/user-session-state/user_session_state.rs"]
+#[path = "user-state/user-session-state/user_session_state.rs"]
 pub mod user_session_state;
 
 pub use brush::{apply_brush, brush_points, erase, Canvas, PaintedCell};
@@ -91,21 +93,22 @@ pub use hand_settings_module::HandSettingsModule;
 pub use interpolation::{resolve_gap_fill, surrounding_items, BreathRanged, GapFill};
 pub use layers_panel_module::{
     LayerPropertyKind, LayerRow, LayersPanelAction, LayersPanelModule, LayersPanelState,
-    MergeDirection, PropertyTrackBlock, PropertyTrackRow,
+    PropertyTrackBlock, PropertyTrackRow,
 };
 pub use legacy_indexed_palette::legacy_indexed_palette;
-pub use manifest::{
-    parse_manifest, parse_manifest_from_str, BreathWindow, DocumentBounds, DocumentContent,
-    GridPoint, Group, GroupProperty, ImportExportBookkeeping, LastExport, Manifest,
-    ManifestMetadata, ParticleEffect, ParticleEffectVisual, PlaybackWindow, PropertyBlock,
-    RasterSegment, Rgb, SavedCameraDefaults, TimeAssets, Voxel,
+pub use file_schema::{
+    parse_file_schema, parse_file_schema_from_str, BreathWindow, DocumentBounds, DocumentContent,
+    FileSchema, FileSchemaMetadata, GridPoint, Group, GroupProperty, ImportExportBookkeeping,
+    LastExport, ParticleEffect, ParticleEffectVisual, PlaybackWindow, PropertyBlock, RasterSegment,
+    Rgb, SavedCameraDefaults, TimeAssets, Voxel,
 };
 pub use material_picker_module::MaterialPickerModule;
 pub use paint_canvas_bounds_module::{DrawingSpaceWheelMode, PaintCanvasBoundsModule};
 pub use paint_color::PaintColor;
 pub use paint_color_block_module::PaintColorBlockModule;
 pub use paint_color_picker_module::PaintColorPickerModule;
-pub use properties::{block_covering_breath, breath_in_span, clamped_breath_span, span_end_breath};
+pub use pieces::{classify_bar_piece, covering_bar_cell, BarCell, BarPiece, BreathBar, CellType};
+pub use properties::{block_covering_breath, breath_in_span, span_end_breath};
 pub use render_space::{build_composition, build_data_lanes, build_render_space, RenderSpace};
 pub use selection_actions::apply_painter_selection_action;
 pub use selection_state::{
@@ -114,12 +117,13 @@ pub use selection_state::{
 pub use storage::{
     append_action_record, load_or_create_shared_document, save_shared_document_snapshot,
     write_action_records_atomic, PersistedCellPoint, PersistedSharedGraphic,
-    PersistedSharedPaintColor, PersistedSharedPaintedCell, PropertyBlockMergeDirection,
+    PersistedSharedPaintColor, PersistedSharedPaintedCell,
     SharedCellPatch, SharedDocumentAction, SharedDocumentActionRecord, SharedDocumentFile,
     SharedDocumentLayer, SharedDocumentPaths, SharedDocumentPropertyBlock,
     SharedDocumentPropertyTrack, SharedDocumentRuntime, SharedDocumentSelection,
-    SharedDocumentSelectionChannel, SharedSelectionWriteMode, DEFAULT_SELECTION_CHANNEL_ID,
-    SHARED_DOCUMENT_KIND, SHARED_DOCUMENT_SCHEMA_VERSION, UNDO_HISTORY_DEPTH,
+    SharedDocumentSelectionChannel, SharedSelectionWriteMode, UnsupportedFileError,
+    UnsupportedFileReason, DEFAULT_SELECTION_CHANNEL_ID, SHARED_DOCUMENT_KIND,
+    SHARED_DOCUMENT_SCHEMA_VERSION, UNDO_HISTORY_DEPTH,
 };
 pub use timeline_state::TimelineState;
 pub use tool_state::{

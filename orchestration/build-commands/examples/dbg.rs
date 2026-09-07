@@ -53,7 +53,7 @@ fn main() {
         "doc-1", "Doc", "layer-1", "Layer 1",
     ));
     runtime.split_property_block("layer-1", "raster", "block-1", 8);
-    runtime.set_property_block_timing("layer-1", "raster", "block-2", 16, 8);
+    runtime.set_property_block_timing_destructive("layer-1", "raster", "block-2", 16, 8);
     paint(&mut runtime, "a1", "block-2", 'B');
     assert!(runtime.set_property_block_timing_destructive(
         "layer-1", "raster", "block-1", 18, 4

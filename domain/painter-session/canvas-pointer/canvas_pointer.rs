@@ -49,8 +49,8 @@ use crate::{
     selection_state::{PainterSelection, SelectionMode},
     selection_stroke::{build_plane_selection_cell_groups, interpolate_cell_path, SelectionStroke},
     session_document::{
-        commit_selection_channel, commit_staged_paint_stroke, stage_image_edit_chunk,
-        stage_painted_cells_chunk,
+        commit_move_offset, commit_selection_channel, commit_staged_paint_stroke,
+        stage_image_edit_chunk, stage_painted_cells_chunk,
     },
     storage::{SharedDocumentPaths, SharedDocumentRuntime},
     text_entry::TextEntryState,
@@ -72,45 +72,24 @@ pub struct StampHover {
     pub data: WorldCopyData,
 }
 
-/// One in-progress selection move: the acting hand, the press cell, the
-/// plane-selection points captured at press, and the non-blank content
-/// under them. The drag offset accumulates in view space and rebases
-/// whenever a drag frame reports a changed camera orientation, so a
-/// mid-drag swing/roll re-aims the displacement with the view and a
-/// mid-drag focus-depth scroll lands the content at the new depth.
-/// Release commits the whole move — clear the origin area, paste the
-/// content at its translated position, re-anchor the selection there — as
-/// one bounded undoable op.
+/// Accumulated view-space drag displacement that rebases when a drag frame
+/// reports a changed camera orientation — the shared drag machinery behind
+/// both move behaviors. With an unchanged orientation each frame's world
+/// delta is exact cursor motion, depth included, so a focus-depth scroll
+/// mid-drag carries the landing plane with it. When the orientation changed,
+/// the offset rebases into the new view basis (the displacement the user saw
+/// survives, rotated) and the anchor resets, because the world point under a
+/// still cursor jumps on re-basing — that jump is noise, not motion.
 #[derive(Debug, Clone)]
-pub struct MoveStroke {
-    pub hand: PaintHand,
-    pub origin: CellPoint,
-    pub origin_points: Vec<CellPoint>,
-    pub content: Vec<(CellPoint, PaintedCell)>,
-    /// World point of the last drag frame; each frame's delta reads
-    /// against it.
+pub struct DragOffset {
     anchor: CellPoint,
-    /// Camera orientation the anchor and accumulated offset are expressed
-    /// in — kept in lockstep so the commit always unprojects through the
-    /// basis the offset was accumulated in.
     orientation: CameraViewOrientation,
-    /// Accumulated drag displacement in the current view basis.
     offset: ViewRelativePoint,
 }
 
-impl MoveStroke {
-    pub fn new(
-        hand: PaintHand,
-        origin: CellPoint,
-        origin_points: Vec<CellPoint>,
-        content: Vec<(CellPoint, PaintedCell)>,
-        orientation: CameraViewOrientation,
-    ) -> Self {
+impl DragOffset {
+    pub fn new(origin: CellPoint, orientation: CameraViewOrientation) -> Self {
         Self {
-            hand,
-            origin,
-            origin_points,
-            content,
             anchor: origin,
             orientation,
             offset: ViewRelativePoint {
@@ -121,13 +100,6 @@ impl MoveStroke {
         }
     }
 
-    /// Folds one drag frame into the accumulated view-space offset. With an
-    /// unchanged orientation the world delta is exact cursor motion — depth
-    /// included, so a focus-depth scroll mid-drag carries the landing plane
-    /// with it. When the orientation changed, the offset rebases into the
-    /// new view basis (the displacement the user saw survives, rotated) and
-    /// the anchor resets, because the world point under a still cursor
-    /// jumps on re-basing — that jump is noise, not motion.
     pub fn drag_to(&mut self, position: CellPoint, orientation: CameraViewOrientation) {
         if orientation != self.orientation {
             let world = unproject_view_relative_to_world(
@@ -162,7 +134,81 @@ impl MoveStroke {
             unproject_view_relative_to_world(self.orientation, WorldPoint::origin(), self.offset);
         (world.x, world.y, world.z)
     }
+}
 
+/// One in-progress selection move: the acting hand, the press cell, the
+/// plane-selection points captured at press, and the non-blank content
+/// under them. The drag offset accumulates in view space and rebases
+/// whenever a drag frame reports a changed camera orientation, so a
+/// mid-drag swing/roll re-aims the displacement with the view and a
+/// mid-drag focus-depth scroll lands the content at the new depth.
+/// Release commits the whole move — clear the origin area, paste the
+/// content at its translated position, re-anchor the selection there — as
+/// one bounded undoable op.
+#[derive(Debug, Clone)]
+pub struct MoveStroke {
+    pub hand: PaintHand,
+    pub origin: CellPoint,
+    pub origin_points: Vec<CellPoint>,
+    pub content: Vec<(CellPoint, PaintedCell)>,
+    offset: DragOffset,
+}
+
+impl MoveStroke {
+    pub fn new(
+        hand: PaintHand,
+        origin: CellPoint,
+        origin_points: Vec<CellPoint>,
+        content: Vec<(CellPoint, PaintedCell)>,
+        orientation: CameraViewOrientation,
+    ) -> Self {
+        Self {
+            hand,
+            origin,
+            origin_points,
+            content,
+            offset: DragOffset::new(origin, orientation),
+        }
+    }
+
+    pub fn drag_to(&mut self, position: CellPoint, orientation: CameraViewOrientation) {
+        self.offset.drag_to(position, orientation);
+    }
+
+    pub fn world_offset(&self) -> (i32, i32, i32) {
+        self.offset.world_offset()
+    }
+}
+
+/// One in-progress vector move: a no-selection move drag that offsets
+/// the active layer's render position (its `move` property block)
+/// without touching raster data. Same drag machinery as the raster
+/// selection move; release commits the whole delta as one move-offset
+/// edit.
+#[derive(Debug, Clone)]
+pub struct VectorMoveStroke {
+    pub hand: PaintHand,
+    offset: DragOffset,
+}
+
+impl VectorMoveStroke {
+    pub fn new(hand: PaintHand, origin: CellPoint, orientation: CameraViewOrientation) -> Self {
+        Self {
+            hand,
+            offset: DragOffset::new(origin, orientation),
+        }
+    }
+
+    pub fn drag_to(&mut self, position: CellPoint, orientation: CameraViewOrientation) {
+        self.offset.drag_to(position, orientation);
+    }
+
+    pub fn world_offset(&self) -> (i32, i32, i32) {
+        self.offset.world_offset()
+    }
+}
+
+impl MoveStroke {
     /// The release commit's cell changes: clear every captured origin point,
     /// then paste the captured content at its translated position. Clearing
     /// runs first so a move that overlaps its own origin lands correctly.
@@ -253,6 +299,7 @@ pub struct CanvasPointerStrokes {
     right_drag_position: Option<CellPoint>,
     stamp_hover: Option<StampHover>,
     move_stroke: Option<MoveStroke>,
+    vector_move: Option<VectorMoveStroke>,
 }
 
 impl CanvasPointerStrokes {
@@ -266,6 +313,7 @@ impl CanvasPointerStrokes {
             right_drag_position: None,
             stamp_hover: None,
             move_stroke: None,
+            vector_move: None,
         }
     }
 
@@ -297,6 +345,7 @@ impl CanvasPointerStrokes {
         self.lasso = None;
         self.selection = None;
         self.move_stroke = None;
+        self.vector_move = None;
         *self.drag_position_mut(hand) = None;
     }
 
@@ -396,6 +445,11 @@ impl CanvasPointerStrokes {
                         content,
                         orientation,
                     ));
+                } else {
+                    // No selection: the vector move. The drag offsets the
+                    // active layer's render position through its move
+                    // property block — raster data stays untouched.
+                    self.vector_move = Some(VectorMoveStroke::new(hand, position, orientation));
                 }
             }
             return None;
@@ -539,8 +593,32 @@ impl CanvasPointerStrokes {
         if let Some(stroke) = self.move_stroke.as_mut() {
             if stroke.hand == hand {
                 stroke.drag_to(position, orientation);
+                return;
             }
         }
+        if let Some(stroke) = self.vector_move.as_mut() {
+            if stroke.hand == hand {
+                stroke.drag_to(position, orientation);
+            }
+        }
+    }
+
+    /// The pending render shift of the in-flight vector move(s): the live
+    /// WYSIWYG preview the entrypoint folds into the layer render path. The
+    /// raster selection move previews through its own flash overlay instead.
+    pub fn pending_move_offset(&self) -> Option<WorldPoint> {
+        let mut total = WorldPoint::origin();
+        let mut any = false;
+        for stroke in self.vector_move.iter() {
+            let (dx, dy, dz) = stroke.world_offset();
+            total = WorldPoint {
+                x: total.x + dx,
+                y: total.y + dy,
+                z: total.z + dz,
+            };
+            any = true;
+        }
+        any.then_some(total)
     }
 
     /// Continues the in-progress stroke for `hand` with a canvas drag.
@@ -558,10 +636,15 @@ impl CanvasPointerStrokes {
         if drag_behavior(ctx.tool_state.borrow().tool_for_hand(hand).id())
             == DragBehavior::MoveSelection
         {
-            // The move stroke folds each frame into its view-space offset;
-            // the overlay previews the placement and release commits the
-            // whole move.
+            // The move strokes fold each frame into their view-space
+            // offsets; the raster overlay previews the placement while the
+            // vector one previews through the live render shift, and release
+            // commits the whole move.
             if let Some(stroke) = self.move_stroke.as_mut() {
+                if stroke.hand == hand {
+                    stroke.drag_to(position, orientation);
+                }
+            } else if let Some(stroke) = self.vector_move.as_mut() {
                 if stroke.hand == hand {
                     stroke.drag_to(position, orientation);
                 }
@@ -672,6 +755,22 @@ impl CanvasPointerStrokes {
         current_breath: u32,
     ) -> Vec<Error> {
         let mut errors = Vec::new();
+        if let Some(stroke) = self.vector_move.take() {
+            let (dx, dy, dz) = stroke.world_offset();
+            if let Err(error) = commit_move_offset(
+                ctx.document,
+                ctx.document_paths,
+                ctx.active_layer_id,
+                WorldPoint {
+                    x: dx,
+                    y: dy,
+                    z: dz,
+                },
+                current_breath,
+            ) {
+                errors.push(error);
+            }
+        }
         if let Some(stroke) = self.move_stroke.take() {
             if let Some(block_id) = ctx
                 .document
@@ -1461,7 +1560,7 @@ mod tests {
     }
 
     #[test]
-    fn move_without_a_selection_is_a_no_op_stub() {
+    fn move_without_a_selection_offsets_the_layer_through_its_move_block() {
         let mut session = Session::new();
         session
             .tool_state
@@ -1486,14 +1585,61 @@ mod tests {
             bounds,
             flat_view(),
         );
+        // The pending offset previews through the render path before commit.
+        assert_eq!(
+            strokes.pending_move_offset(),
+            Some(WorldPoint { x: 3, y: 0, z: 0 })
+        );
         let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
         assert!(errors.is_empty());
-        // The layer-offset behavior is future work: nothing moves, nothing commits.
+
+        // Raster data is untouched; the offset landed on the active layer's
+        // move block covering the current breath.
         assert_eq!(
             session.canvas.get(&point(1, 1)).unwrap().graphic,
             CellGraphic::Glyph('#')
         );
         assert_eq!(session.action_counter, 0);
+        let offset = session.document.move_offset_for_layer(&session.layer_id, 0);
+        assert_eq!(offset, WorldPoint { x: 3, y: 0, z: 0 });
+        // The preview clears once the offset is committed.
+        assert_eq!(strokes.pending_move_offset(), None);
+    }
+
+    #[test]
+    fn cancel_drops_an_in_flight_vector_move_without_committing() {
+        let mut session = Session::new();
+        session
+            .tool_state
+            .get_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Move);
+        apply_brush(&mut session.canvas, point(1, 1), brush_cell('#'));
+
+        let mut strokes = CanvasPointerStrokes::new();
+        let bounds = canvas_bounds();
+        strokes.begin_press(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(1, 1),
+            bounds,
+            flat_view(),
+            0,
+        );
+        strokes.continue_drag(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(4, 1),
+            bounds,
+            flat_view(),
+        );
+        strokes.cancel(PaintHand::Left);
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
+        assert!(errors.is_empty());
+
+        assert_eq!(
+            session.document.move_offset_for_layer(&session.layer_id, 0),
+            WorldPoint::origin()
+        );
     }
 
     #[test]
