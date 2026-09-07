@@ -907,11 +907,12 @@ impl LayersPanelModule {
             (CellType::Solid, BarPiece::RightHead, ModulePointerButton::Left) => {
                 self.queue_content_head_merge(&hit, true, &trace);
             }
-            // Empty bars: double-right merges the empty into the adjacent content
-            // block — one seam, left-preferred with right fallback, rejecting on a
-            // fully-empty track (J 2026-09-07). Right heads mirror to prefer the right.
-            // Double-left on empties and double-right on solid heads are unused.
-            (CellType::Empty, _, ModulePointerButton::Right) => {
+            // Empty bars: double-left merges the empty into the adjacent content
+            // block — same direction as the content-head merge so both ends read
+            // one way (J 2026-09-07). One seam, left-preferred with right fallback,
+            // rejecting on a fully-empty track; right heads mirror to prefer the
+            // right. Double-right on empties is unused everywhere.
+            (CellType::Empty, _, ModulePointerButton::Left) => {
                 let prefer_left = hit.piece != BarPiece::RightHead;
                 trace(
                     self,
@@ -2575,7 +2576,68 @@ mod tests {
     }
 
     #[test]
-    fn right_double_clicking_an_empty_center_merges_it_into_the_left_content_block() {
+    fn left_double_clicking_an_empty_center_merges_it_into_the_left_content_block() {
+        let state = state_with_a_blank_between_two_content_blocks();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(5);
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 5,
+            y,
+            button: ModulePointerButton::Left,
+        });
+        state.borrow_mut().take_pending_action();
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 5,
+            y,
+            button: ModulePointerButton::Left,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::MergeEmptyPropertyBlock(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-2".to_string(),
+                true,
+            ))
+        );
+    }
+
+    #[test]
+    fn left_double_clicking_an_empty_right_head_prefers_the_right_side() {
+        let state = state_with_content_then_trailing_blank();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(5);
+
+        // The mirror: a right-head empty merges into the block on its right first.
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 9,
+            y,
+            button: ModulePointerButton::Left,
+        });
+        state.borrow_mut().take_pending_action();
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 9,
+            y,
+            button: ModulePointerButton::Left,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::MergeEmptyPropertyBlock(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-2".to_string(),
+                false,
+            ))
+        );
+    }
+
+    #[test]
+    fn right_double_clicking_an_empty_is_unused_everywhere() {
         let state = state_with_a_blank_between_two_content_blocks();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
@@ -2593,46 +2655,7 @@ mod tests {
             button: ModulePointerButton::Right,
         });
 
-        assert_eq!(
-            state.borrow_mut().take_pending_action(),
-            Some(LayersPanelAction::MergeEmptyPropertyBlock(
-                "layer-1".to_string(),
-                "raster".to_string(),
-                "block-2".to_string(),
-                true,
-            ))
-        );
-    }
-
-    #[test]
-    fn right_double_clicking_an_empty_right_head_prefers_the_right_side() {
-        let state = state_with_content_then_trailing_blank();
-        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
-        let (timeline_start, _) = panel.timeline_bounds();
-        let y = panel.row_y(5);
-
-        // The mirror: a right-head empty merges into the block on its right first.
-        panel.on_pointer_event(ModulePointerEvent::Click {
-            x: timeline_start + 9,
-            y,
-            button: ModulePointerButton::Right,
-        });
-        state.borrow_mut().take_pending_action();
-        panel.on_pointer_event(ModulePointerEvent::Click {
-            x: timeline_start + 9,
-            y,
-            button: ModulePointerButton::Right,
-        });
-
-        assert_eq!(
-            state.borrow_mut().take_pending_action(),
-            Some(LayersPanelAction::MergeEmptyPropertyBlock(
-                "layer-1".to_string(),
-                "raster".to_string(),
-                "block-2".to_string(),
-                false,
-            ))
-        );
+        assert!(state.borrow_mut().take_pending_action().is_none());
     }
 
     #[test]
@@ -2671,7 +2694,7 @@ mod tests {
     }
 
     #[test]
-    fn right_double_clicking_an_empty_single_merges_into_the_left_content_block() {
+    fn left_double_clicking_an_empty_single_merges_into_the_left_content_block() {
         let state = state_with_solid_and_empty_singles();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
@@ -2680,13 +2703,13 @@ mod tests {
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 6,
             y,
-            button: ModulePointerButton::Right,
+            button: ModulePointerButton::Left,
         });
         state.borrow_mut().take_pending_action();
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 6,
             y,
-            button: ModulePointerButton::Right,
+            button: ModulePointerButton::Left,
         });
 
         assert_eq!(

@@ -34,6 +34,16 @@ Bar-size mapping: 1 breath = single head only; 2 breaths = left + right heads; 3
 - Interim behavior: a playhead over an **empty displays nothing** (stub). Real interpolation is a later pass.
 - Future interpolation shape: each property row has its **own custom interpolation** (you cannot interpolate raster like you interpolate move). Empties fire in **one standard way**; the per-row difference lives in how a row's content resolves. The user will eventually set the interpolative mode of empty bars — that UX is not worked out yet.
 
+## infinity truth (J 2026-09-07, after the operator's out_mode proposal was rejected)
+- The track extends to **infinity on the right** (positive breaths). Left/negative is deferred on purpose — build asymmetrically right-first, but keep the architecture from kicking us later.
+- **No track-level out_mode field.** J rejected that shape: it conflicts with interpretable keyframes. The interpretation lives on the **end blanks** — the trailing blank is the keyframe whose interpretation is what happens at infinity (Hold / Loop Out, per channel). The leading blank is the mirror (Loop In, when negative time arrives). Only the first/last blanks carry interpretation modes.
+- This is analogous to After Effects easing, but the available interpretation modes differ **per property channel** (raster vs move resolve differently).
+- The infinite region **is a blank**: it must look like a blank, hit-test like a blank, and interact like a blank. No ghosted/dimmed rendering, no fake infinite block in storage — the region past the last finite block resolves as the trailing blank.
+- The trailing blank visually extends all the way to the right edge of the layers panel. Loop Out set on it makes the authored region repeat through that blank; the left end blank analog goes down to breath 0.
+- **Viewport ≠ editing space.** The viewport (ruler / layer span) is what plays on animation and what exports. The user can edit outside the viewport — navigation there happens when not animating. Viewport growth must never be coupled to editing behavior.
+- Timeline **scrolling is coming** — do not hardcode panel widths or span-derived pixel math in the infinite-region work.
+- Setting the interpretation mode has **no UX yet**; the goal now is architecture that makes the behavior reachable without rework.
+
 ## file break truth
 - New file schema, **no migration pass**, no importer. Migration bloat stays out of the system on purpose.
 - Attempting to open an old file should recognize it is unsupported and not fail hard when the system realizes it — clean recognition, not a crash. Exact mechanism deferred; bar behavior comes first.
@@ -69,23 +79,25 @@ Bar-size mapping: 1 breath = single head only; 2 breaths = left + right heads; 3
 ### blank bar (empty / 0 / null of the binary system)
 - Global invariant: empties are **never adjacent to other empties** — they merge into one.
 - **empty single**
-  - L-click / R-click / L-drag / L-dblclick: unused (but every interaction still selects the layer first — see selection rule)
+  - L-click / R-click: unused (but every interaction still selects the layer first — see selection rule)
+  - L-drag: positional drag resizing this empty the same time-preserving (pushed) way as a solid left head — same code
   - R-drag: resize, overwrites whatever it expands over (destructive, victims become empty)
-  - R-dblclick: merge this empty into the adjacent content block — same seam as empty center: prefer the left side, fall back to the right, reject when the track has no content at all
+  - L-dblclick: merge this empty into the adjacent content block — same seam as empty center: prefer the left side, fall back to the right, reject when the track has no content at all (J-flip 2026-09-07: L-dblclick, matching the content-head merge direction)
 - **left empty head**
-  - L-click / R-click / L-dblclick: unused (J-confirmed) — but every interaction still selects the layer first
+  - R-click / R-dblclick: unused (J-flip 2026-09-07: R-dblclick unassigned on both empty end cells)
   - L-drag: positional drag resizing this empty the same time-preserving (pushed) way as a solid left head — same code
   - R-drag: same destructive way as a solid left head
-  - R-dblclick: merge this empty into the block on the left, keeping that block's content (content survives instead of the empty — the inverse of the solid left-head merge)
-- **right empty head**: exact mirror of left empty head
+  - L-dblclick: merge this empty into the adjacent content block (content survives instead of the empty — the inverse of the solid left-head merge). Prefer/fallback: left-preferred, right fallback, reject on fully-empty track (J 2026-09-07)
+- **right empty head**: exact mirror of left empty head (L-dblclick merges, R-dblclick unused)
 - **empty center**
-  - L-click / R-click / R-drag / L-dblclick: unused (but every interaction still selects the layer first)
+  - L-click / R-click: unused (but every interaction still selects the layer first)
   - L-drag: swaps keyframe content exactly like solid center (predictability)
-  - R-dblclick: merge this empty into the adjacent content block — **J-corrected 2026-09-07: used, not unused**. One seam shared with empty single: find a side with content preferring the left, fall back right, reject when there is no content on either side (fully-empty track).
+  - R-drag: resize, overwrites whatever it expands over (destructive, victims become empty)
+  - L-dblclick: merge this empty into the adjacent content block — **J-flip 2026-09-07: L-dblclick, not R-dblclick**, so content ends and empty ends merge with the same button. One seam shared with empty single: find a side with content preferring the left, fall back right, reject when there is no content on either side (fully-empty track).
 
 ## rulings from J (2026-09-07, answering the inconsistency list)
-1. Empty center R-dblclick = **merge** (dictation slip; it is used).
-2. Left empty head L-dblclick = **unused**.
+1. Empty center merge = **L-dblclick** (J-flip 2026-09-07: was R-dblclick; empty ends and content ends now merge with the same button, and R-dblclick is unassigned on all empty pieces).
+2. Left empty head R-dblclick = **unused**.
 3. Empty merges (single + center, both heads mirrored) are **one seam**: find a side with content, prefer left, fall back right, **reject when there is no content on either side**.
 4. Content single L-dblclick duplicate = **same as center duplicate**: non-destructive push, fewer distinct outcomes for the user to expect.
 5. Duplicate at the span end: **place the new block next to it, on the right** — duplicates always land on the right. Span growth is bounded (exactly the duplicate's length, one interaction at a time — never fills to infinity). Timeline length is per-layer `length_breaths` (default 24); the document window is separate.
