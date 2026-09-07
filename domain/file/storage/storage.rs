@@ -12,6 +12,7 @@ use serde_json::Value;
 use thaum_renderer_domain::{CellGraphic, CellMaterialId, CellPoint, SpriteGraphic, WorldPoint};
 
 use crate::properties::{breath_in_span, destructive_breath_span, pushed_breath_span};
+use crate::interp_mode;
 use crate::{Canvas, PaintColor, PaintedCell};
 
 pub const SHARED_DOCUMENT_KIND: &str = "thaum-painter-shared-document";
@@ -28,6 +29,13 @@ pub const DEFAULT_SELECTION_CHANNEL_ID: &str = "selection";
 /// the depth must be stable across sessions and machines.
 pub const UNDO_HISTORY_DEPTH: usize = 20;
 
+/// Which ease end a cycle targets — the left end eases out, the right end in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EaseEnd {
+    Out,
+    In,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SharedDocumentPropertyBlock {
     pub id: String,
@@ -43,12 +51,20 @@ pub struct SharedDocumentPropertyBlock {
     pub value: Option<Value>,
     /// Interpretation-mode slot for the END blank keyframes (J 2026-09-07): the
     /// trailing blank's mode is what happens at infinity (e.g. loop out), the
-    /// leading blank's is the mirror for negative time. Unset means the default
-    /// (hold). The available vocabulary differs per property channel; no UX sets
-    /// this yet — the slot is the architectural seam. `serde(default)` keeps
-    /// existing files loading unchanged.
+    /// leading blank's is the mirror for negative time. Vocabulary and cycling
+    /// live in `properties/interp_mode.rs` (interpolate / hold / loop_out /
+    /// loop_in). `serde(default)` keeps existing files loading unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interpretation: Option<String>,
+    /// Ease-out strength on the empty's left end (J 2026-09-07), percent of the
+    /// `interp_mode::EASE_STRENGTHS` steps (unset = 0% linear). Only meaningful
+    /// while the mode is ease-adjustable; cycling onto hold / loop modes clears
+    /// it. `serde(default)` keeps existing files loading unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ease_out_percent: Option<u8>,
+    /// Ease-in strength on the empty's right end — mirror of `ease_out_percent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ease_in_percent: Option<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,6 +176,8 @@ fn retiled_property_track(
                     is_blank: true,
                     value: None,
                     interpretation: None,
+                    ease_out_percent: None,
+                    ease_in_percent: None,
                 },
             );
         } else {
@@ -181,6 +199,8 @@ fn retiled_property_track(
                 is_blank: true,
                 value: None,
                 interpretation: None,
+                ease_out_percent: None,
+                ease_in_percent: None,
             },
         );
     }
@@ -211,10 +231,36 @@ fn retiled_property_track(
                 is_blank: true,
                 value: None,
                 interpretation: None,
+                ease_out_percent: None,
+                ease_in_percent: None,
             });
         }
     }
+    enforce_loop_mode_edges(&mut tiled);
     tiled
+}
+
+/// Loop-mode edge enforcement (J 2026-09-07): `loop_out` only survives on the
+/// track's LAST blank — the trailing blank, the right edge of time — and
+/// `loop_in` only on the FIRST blank — the leading blank, the left edge. Any
+/// loop mode stranded elsewhere by a swap, drag, split, duplicate, or track
+/// growth drops back to the default interpolate mode with cleared ease ends.
+/// Interpretation data on a solid block is dead (solids hold their value
+/// outright) and is stripped for hygiene.
+fn enforce_loop_mode_edges(blocks: &mut [SharedDocumentPropertyBlock]) {
+    let last_index = blocks.len().saturating_sub(1);
+    for (index, block) in blocks.iter_mut().enumerate() {
+        let stranded = match interp_mode::resolve_mode(block.interpretation.as_deref()) {
+            "loop_out" => !(block.is_blank && index == last_index),
+            "loop_in" => !(block.is_blank && index == 0),
+            _ => false,
+        };
+        if stranded || !block.is_blank {
+            block.interpretation = None;
+            block.ease_out_percent = None;
+            block.ease_in_percent = None;
+        }
+    }
 }
 
 fn default_property_track(
@@ -235,6 +281,8 @@ fn default_property_track(
                 is_blank: false,
                 value: None,
                 interpretation: None,
+                ease_out_percent: None,
+                ease_in_percent: None,
             }],
             start_breath,
             length_breaths,
@@ -244,7 +292,7 @@ fn default_property_track(
 
 /// Parses a move block's `{x,y,z}` offset value — the same shape the old
 /// system's move properties carried and the file-schema import path parses.
-fn parse_move_offset(value: &Value) -> Option<[i32; 3]> {
+pub(crate) fn parse_move_offset(value: &Value) -> Option<[i32; 3]> {
     let object = value.as_object()?;
     let axis = |key: &str| object.get(key).and_then(Value::as_i64).map(|v| v as i32);
     Some([axis("x")?, axis("y")?, axis("z")?])
@@ -681,6 +729,21 @@ pub struct SharedDocumentRuntime {
 impl SharedDocumentRuntime {
     pub fn new(document: SharedDocumentFile) -> Self {
         let revision = document.revision;
+        // Normalize every property track into the current binary tiling on the
+        // way in (J 2026-09-07): documents saved before the binary-bars work (or
+        // by an older build) load with solid+tail tiling, merged blanks, and
+        // loop modes re-locked to their edges — the new-layer rows show their
+        // empties. In-memory normalization, not a file migration pass.
+        let mut document = document;
+        for layer in &mut document.layers {
+            for track in &mut layer.property_tracks {
+                track.blocks = retiled_property_track(
+                    std::mem::take(&mut track.blocks),
+                    layer.start_breath,
+                    layer.length_breaths,
+                );
+            }
+        }
         let mut block_canvases = BTreeMap::new();
         let mut applied_action_ids_by_layer = BTreeMap::new();
         let mut undone_action_ids_by_layer = BTreeMap::new();
@@ -882,25 +945,16 @@ impl SharedDocumentRuntime {
         &self.document.layers
     }
 
-    /// The active move property block's `{x,y,z}` render offset at `breath`,
-    /// or the zero offset when the layer has no move track, no block covers
-    /// the breath, or the value is missing/malformed. Move offsets are
-    /// optional metadata: absence renders the layer unshifted.
+    /// The layer's move offset at `breath`, resolved through the move channel's
+    /// own interpolation (`interp_move`): solids hold their offset, empties
+    /// resolve per their authored mode (hold / interpolate with eases /
+    /// edge-locked loop repeats). Zero offset when the layer has no move track
+    /// or nothing resolves — move offsets are optional metadata.
     pub fn move_offset_for_layer(&self, layer_id: &str, breath: u32) -> WorldPoint {
         let Some(track) = self.property_track(layer_id, "move") else {
             return WorldPoint::origin();
         };
-        let Some(block) = track
-            .blocks
-            .iter()
-            .find(|block| breath_in_span(breath, block.start_breath, block.length_breaths))
-        else {
-            return WorldPoint::origin();
-        };
-        block
-            .value
-            .as_ref()
-            .and_then(parse_move_offset)
+        crate::interp_move::resolve_move_offset(&track.blocks, breath)
             .map(|offset| WorldPoint {
                 x: offset[0],
                 y: offset[1],
@@ -944,6 +998,8 @@ impl SharedDocumentRuntime {
                 is_blank: false,
                 value: None,
                 interpretation: None,
+                ease_out_percent: None,
+                ease_in_percent: None,
             });
             track.blocks.last_mut().expect("just pushed")
         };
@@ -960,6 +1016,14 @@ impl SharedDocumentRuntime {
             }),
         );
         block.is_blank = false;
+        // Re-tile like every other mutating seam: painting into a blank can
+        // consume the trailing blank (or strand a loop mode's edge), and the
+        // normalization runs here too (J 2026-09-07).
+        track.blocks = retiled_property_track(
+            std::mem::take(&mut track.blocks),
+            start_breath,
+            length_breaths,
+        );
         true
     }
 
@@ -1332,6 +1396,8 @@ impl SharedDocumentRuntime {
                     is_blank: victim.is_blank,
                     value: victim.value.clone(),
                     interpretation: None,
+                    ease_out_percent: None,
+                    ease_in_percent: None,
                 };
                 let insert_at = track
                     .blocks
@@ -1448,6 +1514,8 @@ impl SharedDocumentRuntime {
                 is_blank: block.is_blank,
                 value: block.value.clone(),
                 interpretation: None,
+                ease_out_percent: None,
+                ease_in_percent: None,
             },
         );
         // The new right half starts with its own (empty) canvas; the caller propagates
@@ -1590,6 +1658,103 @@ impl SharedDocumentRuntime {
         true
     }
 
+    /// Cycles an empty (blank) block's interpolation mode through the
+    /// `interp_mode::INTERP_MODES` order (J 2026-09-07). The loop modes are
+    /// edge-locked: `loop_out` is only reachable on the track's last blank (the
+    /// trailing blank — the right edge of time) and `loop_in` only on the first
+    /// blank (the leading blank — the left edge); the cycle SKIPS a locked mode
+    /// the empty is not allowed to carry rather than rejecting, so a middle
+    /// empty just toggles interpolate ↔ hold. Cycling onto a mode that does not
+    /// use the ease ends clears both stored ease strengths — the ends are not
+    /// utilizable there. Returns `false` when the block is missing or not blank.
+    pub fn cycle_property_block_interp_mode(
+        &mut self,
+        layer_id: &str,
+        property_id: &str,
+        block_id: &str,
+    ) -> bool {
+        let Some(track) = self.ensure_property_track_mut(layer_id, property_id) else {
+            return false;
+        };
+        let Some(index) = track.blocks.iter().position(|block| block.id == block_id) else {
+            return false;
+        };
+        let block = &track.blocks[index];
+        if !block.is_blank {
+            return false;
+        }
+        let is_first = index == 0;
+        let is_last = index + 1 == track.blocks.len();
+        let mut next = interp_mode::next_mode(block.interpretation.as_deref());
+        for _ in 0..interp_mode::INTERP_MODES.len() {
+            if interp_mode::mode_allowed_at(next, is_first, is_last) {
+                break;
+            }
+            next = interp_mode::next_mode(Some(next));
+        }
+        let block = &mut track.blocks[index];
+        block.interpretation = Some(next.to_string());
+        if !interp_mode::mode_is_ease_adjustable(next) {
+            block.ease_out_percent = None;
+            block.ease_in_percent = None;
+        }
+        true
+    }
+
+    /// Cycles an empty block's ease-out strength (left end) through the
+    /// `interp_mode::EASE_STRENGTHS` steps. Rejected when the block is missing,
+    /// not blank, or its mode does not use the ease ends. Returns `false` on any
+    /// rejection.
+    pub fn cycle_property_block_ease_out(
+        &mut self,
+        layer_id: &str,
+        property_id: &str,
+        block_id: &str,
+    ) -> bool {
+        self.cycle_property_block_ease(layer_id, property_id, block_id, EaseEnd::Out)
+    }
+
+    /// Cycles an empty block's ease-in strength (right end) — the ease-out mirror.
+    pub fn cycle_property_block_ease_in(
+        &mut self,
+        layer_id: &str,
+        property_id: &str,
+        block_id: &str,
+    ) -> bool {
+        self.cycle_property_block_ease(layer_id, property_id, block_id, EaseEnd::In)
+    }
+
+    fn cycle_property_block_ease(
+        &mut self,
+        layer_id: &str,
+        property_id: &str,
+        block_id: &str,
+        end: EaseEnd,
+    ) -> bool {
+        let Some(track) = self.ensure_property_track_mut(layer_id, property_id) else {
+            return false;
+        };
+        let Some(block) = track.blocks.iter_mut().find(|block| block.id == block_id) else {
+            return false;
+        };
+        if !block.is_blank {
+            return false;
+        }
+        let mode = interp_mode::resolve_mode(block.interpretation.as_deref());
+        if !interp_mode::mode_is_ease_adjustable(mode) {
+            return false;
+        }
+        let next = interp_mode::next_ease_percent(match end {
+            EaseEnd::Out => block.ease_out_percent,
+            EaseEnd::In => block.ease_in_percent,
+        });
+        match end {
+            EaseEnd::Out => block.ease_out_percent = Some(next),
+            EaseEnd::In => block.ease_in_percent = Some(next),
+        }
+        true
+    }
+
     /// Swaps the breath range of two blocks in the same property track. Returns `false` if
     /// either block is missing or they are the same block.
     pub fn swap_property_blocks(
@@ -1704,6 +1869,8 @@ impl SharedDocumentRuntime {
                 is_blank: source.is_blank,
                 value: source.value.clone(),
                 interpretation: None,
+                ease_out_percent: None,
+                ease_in_percent: None,
             },
         );
         self.block_canvases
@@ -4213,5 +4380,296 @@ mod tests {
                 "t".to_string(),
             )
             .is_none());
+    }
+
+    fn interp_test_layer_track(
+        runtime: &SharedDocumentRuntime,
+        property_id: &str,
+    ) -> Vec<(String, u32, u32, bool, Option<String>)> {
+        runtime
+            .property_track("layer-1", property_id)
+            .unwrap()
+            .blocks
+            .iter()
+            .map(|b| {
+                (
+                    b.id.clone(),
+                    b.start_breath,
+                    b.start_breath + b.length_breaths,
+                    b.is_blank,
+                    b.interpretation.clone(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn cycling_a_middle_empty_skips_the_edge_locked_loop_modes() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        runtime.split_property_block("layer-1", "raster", "block-1", 8);
+        // Track: block-1 (0..8 solid), block-2 (8..24 solid), tail (24..25 blank).
+        // Make a MIDDLE empty by swapping: destructive-drag block-1 to 12..16, then
+        // the vacated gap blank (0..12) is first — instead build the middle empty
+        // directly: split block-1 into 0..4 / 4..8 and swap 4..8 with 8..16? Simpler:
+        // split twice and swap so a blank sits between two solids.
+        runtime.split_property_block("layer-1", "raster", "block-1", 4);
+        // blocks: block-1 (0..4), block-3 (4..8), block-2 (8..24), tail.
+        // Swap block-3 (4..8) with a middle slice of block-2 via destructive drag:
+        // move block-3 to 12..16 leaves a 4..12 gap blank (middle empty).
+        assert!(runtime.set_property_block_timing_destructive(
+            "layer-1", "raster", "block-3", 12, 4,
+        ));
+        let shape = interp_test_layer_track(&runtime, "raster");
+        let middle_blank_id = shape
+            .iter()
+            .find(|(_, start, end, is_blank, _)| *is_blank && *start > 0)
+            .map(|(id, ..)| id.clone())
+            .expect("a middle empty should exist");
+        let middle_index = shape
+            .iter()
+            .position(|(id, ..)| *id == middle_blank_id)
+            .unwrap();
+        assert!(middle_index > 0 && middle_index + 1 < shape.len());
+
+        // The cycle skips both loop modes: interpolate -> hold -> interpolate -> ...
+        for expected in ["hold", "interpolate", "hold", "interpolate"] {
+            assert!(runtime.cycle_property_block_interp_mode(
+                "layer-1", "raster", &middle_blank_id,
+            ));
+            let mode = runtime
+                .property_track("layer-1", "raster")
+                .unwrap()
+                .blocks
+                .iter()
+                .find(|b| b.id == middle_blank_id)
+                .unwrap()
+                .interpretation
+                .clone();
+            assert_eq!(mode.as_deref(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn the_trailing_blank_cycles_onto_loop_out_and_the_leading_blank_onto_loop_in() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        // The default track's tail is the right edge: interpolate -> hold -> loop_out.
+        let tail_id = runtime
+            .property_track("layer-1", "raster")
+            .unwrap()
+            .blocks
+            .last()
+            .unwrap()
+            .id
+            .clone();
+        runtime.cycle_property_block_interp_mode("layer-1", "raster", &tail_id);
+        runtime.cycle_property_block_interp_mode("layer-1", "raster", &tail_id);
+        assert_eq!(
+            runtime
+                .property_track("layer-1", "raster")
+                .unwrap()
+                .blocks
+                .last()
+                .unwrap()
+                .interpretation
+                .as_deref(),
+            Some("loop_out")
+        );
+
+        // Build a leading blank: destructive-drag block-1 (0..8) right to 8..12,
+        // cropping block-2's front — the vacated 0..8 becomes the first block.
+        assert!(runtime.set_property_block_timing_destructive(
+            "layer-1", "raster", "block-1", 8, 4,
+        ));
+        let shape = interp_test_layer_track(&runtime, "raster");
+        let leading_blank_id = shape[0]
+            .3
+            .then(|| shape[0].0.clone())
+            .expect("first block should be a blank");
+        runtime.cycle_property_block_interp_mode("layer-1", "raster", &leading_blank_id);
+        runtime.cycle_property_block_interp_mode("layer-1", "raster", &leading_blank_id);
+        assert_eq!(
+            runtime
+                .property_track("layer-1", "raster")
+                .unwrap()
+                .blocks
+                .first()
+                .unwrap()
+                .interpretation
+                .as_deref(),
+            Some("loop_in")
+        );
+    }
+
+    #[test]
+    fn swapping_strands_loop_modes_back_to_the_default_interpolate() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        runtime.split_property_block("layer-1", "raster", "block-1", 8);
+        // Track: block-1 (0..8), block-2 (8..24), tail (24..25).
+        let tail_id = runtime
+            .property_track("layer-1", "raster")
+            .unwrap()
+            .blocks
+            .last()
+            .unwrap()
+            .id
+            .clone();
+        runtime.cycle_property_block_interp_mode("layer-1", "raster", &tail_id);
+        runtime.cycle_property_block_interp_mode("layer-1", "raster", &tail_id);
+        assert_eq!(
+            runtime.property_track("layer-1", "raster").unwrap().blocks.last().unwrap().interpretation.as_deref(),
+            Some("loop_out")
+        );
+
+        // Swap the loop_out tail with block-1: the tail's span (24..25) now sits in
+        // the middle of the track — the loop mode must not survive there.
+        assert!(runtime.swap_property_blocks("layer-1", "raster", "block-1", &tail_id));
+        let blocks = &runtime.property_track("layer-1", "raster").unwrap().blocks;
+        assert!(blocks
+            .iter()
+            .all(|b| b.interpretation.is_none()),
+            "no stranded loop modes: {:?}",
+            blocks.iter().map(|b| (b.id.as_str(), b.interpretation.clone())).collect::<Vec<_>>()
+        );
+        // And the track still ends blank with a fresh trailing representative.
+        assert!(blocks.last().unwrap().is_blank);
+    }
+
+    #[test]
+    fn loading_a_document_normalizes_tracks_into_the_binary_tiling() {
+        // A pre-binary document: one solid move block, no trailing blank, and a
+        // loop_out stranded on a middle blank. Loading must re-tile.
+        let mut document = SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
+        document.layers[0].property_tracks[1].blocks = vec![SharedDocumentPropertyBlock {
+            id: "block-1".to_string(),
+            start_breath: 0,
+            length_breaths: 8,
+            is_blank: false,
+            value: Some(serde_json::json!({"x": 5, "y": 0, "z": 0})),
+            interpretation: None,
+            ease_out_percent: None,
+            ease_in_percent: None,
+        }];
+        let runtime = SharedDocumentRuntime::new(document);
+        let blocks = &runtime.property_track("layer-1", "move").unwrap().blocks;
+        assert_eq!(blocks.len(), 2, "solid + trailing blank after load");
+        assert!(!blocks[0].is_blank);
+        assert!(blocks[1].is_blank);
+    }
+
+    #[test]
+    fn move_playback_interpolates_holds_and_loops_through_the_empty_modes() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        // Build: solid (0..4, +0x), empty (4..8), solid (8..12, +8x), tail.
+        // Default track is block-1 (0..24 solid) + tail (24..25); split block-1
+        // at 4, then drag block-2's span to 8..12 — the 4..8 gap becomes the
+        // empty and 12..24 merges into the tail blank on re-tile.
+        runtime.split_property_block("layer-1", "move", "block-1", 4);
+        {
+            let track = runtime.ensure_property_track_mut("layer-1", "move").unwrap();
+            track.blocks[0].value = Some(serde_json::json!({"x": 0, "y": 0, "z": 0}));
+            track.blocks[1].start_breath = 8;
+            track.blocks[1].length_breaths = 4;
+            track.blocks[1].value = Some(serde_json::json!({"x": 8, "y": 0, "z": 0}));
+            track.blocks = retiled_property_track(
+                std::mem::take(&mut track.blocks),
+                0,
+                default_layer_length_breaths(),
+            );
+        }
+        let spans: Vec<(u32, u32, bool)> = runtime
+            .property_track("layer-1", "move")
+            .unwrap()
+            .blocks
+            .iter()
+            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .collect();
+        assert_eq!(
+            spans,
+            vec![(0, 4, false), (4, 8, true), (8, 12, false), (12, 25, true)]
+        );
+        // Solid at 0..4 is +0, solid at 8..12 is +8, empty 4..8 interpolates.
+        assert_eq!(runtime.move_offset_for_layer("layer-1", 0).x, 0);
+        assert_eq!(runtime.move_offset_for_layer("layer-1", 2).x, 0);
+        assert_eq!(runtime.move_offset_for_layer("layer-1", 4).x, 2);
+        assert_eq!(runtime.move_offset_for_layer("layer-1", 7).x, 6);
+        assert_eq!(runtime.move_offset_for_layer("layer-1", 8).x, 8);
+
+        // Cycle the 4..8 empty to hold: it carries the previous keyframe's +0.
+        let empty_id = runtime
+            .property_track("layer-1", "move")
+            .unwrap()
+            .blocks
+            .iter()
+            .find(|b| b.is_blank && b.start_breath == 4)
+            .unwrap()
+            .id
+            .clone();
+        runtime.cycle_property_block_interp_mode("layer-1", "move", &empty_id);
+        assert_eq!(
+            runtime
+                .property_track("layer-1", "move")
+                .unwrap()
+                .blocks
+                .iter()
+                .find(|b| b.id == empty_id)
+                .unwrap()
+                .interpretation
+                .as_deref(),
+            Some("hold")
+        );
+        assert_eq!(runtime.move_offset_for_layer("layer-1", 6).x, 0);
+
+        // Loop out on the tail: the authored region (0..12) repeats through it,
+        // including past the tail's stored extent.
+        let tail_id = runtime
+            .property_track("layer-1", "move")
+            .unwrap()
+            .blocks
+            .last()
+            .unwrap()
+            .id
+            .clone();
+        runtime.cycle_property_block_interp_mode("layer-1", "move", &tail_id);
+        runtime.cycle_property_block_interp_mode("layer-1", "move", &tail_id);
+        assert_eq!(
+            runtime
+                .property_track("layer-1", "move")
+                .unwrap()
+                .blocks
+                .last()
+                .unwrap()
+                .interpretation
+                .as_deref(),
+            Some("loop_out")
+        );
+        assert_eq!(
+            runtime.move_offset_for_layer("layer-1", 12).x,
+            0,
+            "loop wraps to region start"
+        );
+        assert_eq!(
+            runtime.move_offset_for_layer("layer-1", 20).x,
+            8,
+            "loop maps into the +8 keyframe"
+        );
+        assert_eq!(runtime.move_offset_for_layer("layer-1", 23).x, 8);
+        assert_eq!(
+            runtime.move_offset_for_layer("layer-1", 24).x,
+            0,
+            "loop wraps again"
+        );
+        assert_eq!(
+            runtime.move_offset_for_layer("layer-1", 36).x,
+            0,
+            "far past the stored extent the loop keeps playing"
+        );
     }
 }

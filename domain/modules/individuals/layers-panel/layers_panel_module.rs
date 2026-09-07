@@ -19,12 +19,18 @@ pub enum LayerPropertyKind {
 }
 
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PropertyTrackBlock {
     pub id: String,
     pub start_breath: u32,
     pub length_breaths: u32,
     pub is_blank: bool,
+    /// The empty's interpolation mode, mirrored raw from the document's
+    /// interpretation slot; resolve through `interp_mode::resolve_mode`.
+    pub interp_mode: Option<String>,
+    /// Ease strengths for the empty's ends (percent steps; unset = 0% linear).
+    pub ease_out_percent: Option<u8>,
+    pub ease_in_percent: Option<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +87,19 @@ pub enum LayersPanelAction {
     /// double-right, matching the content-head merge and the right-click delete
     /// family; double-left on empties is reserved for keyframing).
     MergeEmptyPropertyBlock(String, String, String, bool),
+    /// Double-left on an empty center/single: cycles the empty's interpolation
+    /// mode (interpolate → hold → loop out → loop in → interpolate, J
+    /// 2026-09-07). Cycling onto a mode that doesn't use the ease ends clears
+    /// both stored ease strengths. First pass is UX-only — playback routes
+    /// everything to hold.
+    CycleEmptyInterpMode(String, String, String),
+    /// Double-left on an empty left head: cycles ease-out strength
+    /// 0 → 33 → 66 → 100 → 0 (J 2026-09-07). Rejected at the storage seam when
+    /// the mode doesn't use the ease ends.
+    CycleEmptyEaseOut(String, String, String),
+    /// Double-left on an empty right head: cycles ease-in strength — the
+    /// ease-out mirror (J 2026-09-07).
+    CycleEmptyEaseIn(String, String, String),
     /// Commits a dragged loop-window bar: the document's active timeline span.
     /// The bar itself cannot be split or deleted, so this is the only edit it
     /// supports beyond hover styling.
@@ -711,9 +730,10 @@ impl LayersPanelModule {
             LayerPropertyKind::Raster => self.palette.get(UiColorRole::Bright),
             LayerPropertyKind::Move => self.palette.get(UiColorRole::Medium),
         };
-        // Bars rest at weight one; any highlight (hover or active drag) steps the
-        // whole bar up to weight two. A swap drag's target lights at Medium so the
-        // dragged bar and its target read as two distinct things, not one object.
+        // Weight bands (J 2026-09-07): blank bars live at weights 0–1 (rest 0,
+        // highlight 1) and content bars at 2–3 (rest 2, highlight 3), so the
+        // empty keyframe glyphs only ever render inside the blank band.
+        let (base_weight, highlight_weight) = if block.is_blank { (0, 1) } else { (2, 3) };
         if drag_matches_block {
             let is_swap_target = self
                 .property_block_drag
@@ -730,24 +750,24 @@ impl LayersPanelModule {
             };
             return (
                 highlight,
-                thaum_renderer_domain::CellWeight::from_index_clamped(2),
+                thaum_renderer_domain::CellWeight::from_index_clamped(highlight_weight),
             );
         }
         if hover_matches_breath {
             return (
                 self.palette.get(UiColorRole::Vivid),
-                thaum_renderer_domain::CellWeight::from_index_clamped(2),
+                thaum_renderer_domain::CellWeight::from_index_clamped(highlight_weight),
             );
         }
         if hover_matches_block {
             return (
                 self.palette.get(UiColorRole::Vivid),
-                thaum_renderer_domain::CellWeight::from_index_clamped(2),
+                thaum_renderer_domain::CellWeight::from_index_clamped(highlight_weight),
             );
         }
         (
             base_color,
-            thaum_renderer_domain::CellWeight::from_index_clamped(1),
+            thaum_renderer_domain::CellWeight::from_index_clamped(base_weight),
         )
     }
 
@@ -950,6 +970,40 @@ impl LayersPanelModule {
                         prefer_left,
                     ));
             }
+            // Empty bars, left button: the keyframing surface (J 2026-09-07).
+            // Center/single cycles the empty's interpolation mode; the left end
+            // cycles ease-out strength, the right end ease-in strength. The
+            // right-dblclick merge above stays the destructive family.
+            (CellType::Empty, BarPiece::Center | BarPiece::Single, ModulePointerButton::Left) => {
+                trace(self, "CycleEmptyInterpMode".into());
+                self.state
+                    .borrow_mut()
+                    .queue_action(LayersPanelAction::CycleEmptyInterpMode(
+                        hit.layer_id,
+                        hit.property_id,
+                        hit.block_id,
+                    ));
+            }
+            (CellType::Empty, BarPiece::LeftHead, ModulePointerButton::Left) => {
+                trace(self, "CycleEmptyEaseOut".into());
+                self.state
+                    .borrow_mut()
+                    .queue_action(LayersPanelAction::CycleEmptyEaseOut(
+                        hit.layer_id,
+                        hit.property_id,
+                        hit.block_id,
+                    ));
+            }
+            (CellType::Empty, BarPiece::RightHead, ModulePointerButton::Left) => {
+                trace(self, "CycleEmptyEaseIn".into());
+                self.state
+                    .borrow_mut()
+                    .queue_action(LayersPanelAction::CycleEmptyEaseIn(
+                        hit.layer_id,
+                        hit.property_id,
+                        hit.block_id,
+                    ));
+            }
             _ => {
                 trace(self, "unused".into());
             }
@@ -1075,6 +1129,37 @@ fn property_track_cell_graphic(
         return '╸';
     }
     '╌'
+}
+
+/// The blank-bar keyframe graphics (J 2026-09-07): centers/singles show the
+/// interpolation mode, the ends show the ease strengths (or the fixed
+/// non-adjustable ◧/◨ when the mode doesn't use the ease ends). Only used on
+/// property-track blanks — blank bars never render above weight 1, and these
+/// glyphs have no weight-2/3 art yet.
+fn property_blank_cell_graphic(
+    interp_mode: Option<&str>,
+    ease_out_percent: Option<u8>,
+    ease_in_percent: Option<u8>,
+    graphic_length: u32,
+    local_index: u32,
+) -> char {
+    let mode = crate::interp_mode::resolve_mode(interp_mode);
+    let is_single = graphic_length <= 1;
+    let is_first = local_index == 0;
+    let is_last = local_index + 1 >= graphic_length;
+    if is_single || !(is_first || is_last) {
+        return crate::interp_mode::mode_center_glyph(mode);
+    }
+    if !crate::interp_mode::mode_is_ease_adjustable(mode) {
+        // A single empty never reaches here (handled above); a 2+ bar's ends
+        // render the fixed non-adjustable glyphs.
+        return if is_first { '◧' } else { '◨' };
+    }
+    if is_first {
+        crate::interp_mode::ease_out_glyph(ease_out_percent)
+    } else {
+        crate::interp_mode::ease_in_glyph(ease_in_percent)
+    }
 }
 
 impl Module for LayersPanelModule {
@@ -1511,14 +1596,25 @@ impl Module for LayersPanelModule {
                             }
                             let (color, weight) =
                                 self.property_block_interaction_style(property, block, breath);
-                            cells.push(Cell {
-                                position: CellPoint { x, y, z: 0 },
-                                graphic: CellGraphic::Glyph(property_track_cell_graphic(
+                            let graphic = if block.is_blank {
+                                property_blank_cell_graphic(
+                                    block.interp_mode.as_deref(),
+                                    block.ease_out_percent,
+                                    block.ease_in_percent,
+                                    graphic_length,
+                                    local_index,
+                                )
+                            } else {
+                                property_track_cell_graphic(
                                     block.is_blank,
                                     is_visible,
                                     graphic_length,
                                     local_index,
-                                )),
+                                )
+                            };
+                            cells.push(Cell {
+                                position: CellPoint { x, y, z: 0 },
+                                graphic: CellGraphic::Glyph(graphic),
                                 color,
                                 weight,
                                 ..Cell::default()
@@ -1535,14 +1631,25 @@ impl Module for LayersPanelModule {
                             }
                             let (color, weight) =
                                 self.property_block_interaction_style(property, block, breath);
-                            cells.push(Cell {
-                                position: CellPoint { x, y, z: 0 },
-                                graphic: CellGraphic::Glyph(property_track_cell_graphic(
+                            let graphic = if block.is_blank {
+                                property_blank_cell_graphic(
+                                    block.interp_mode.as_deref(),
+                                    block.ease_out_percent,
+                                    block.ease_in_percent,
+                                    draw_length,
+                                    local_index,
+                                )
+                            } else {
+                                property_track_cell_graphic(
                                     block.is_blank,
                                     is_visible,
                                     draw_length,
                                     local_index,
-                                )),
+                                )
+                            };
+                            cells.push(Cell {
+                                position: CellPoint { x, y, z: 0 },
+                                graphic: CellGraphic::Glyph(graphic),
                                 color,
                                 weight,
                                 ..Cell::default()
@@ -2029,6 +2136,9 @@ mod tests {
                         start_breath: 0,
                         length_breaths: 5,
                         is_blank: false,
+                        interp_mode: None,
+                        ease_out_percent: None,
+                        ease_in_percent: None,
                     }],
                 ),
                 property("layer-1", "move", "MOVE", LayerPropertyKind::Move, vec![]),
@@ -2158,7 +2268,7 @@ mod tests {
         assert_eq!(cell.color, UiPalette::default().get(UiColorRole::Vivid));
         assert_eq!(
             cell.weight,
-            thaum_renderer_domain::CellWeight::from_index_clamped(2)
+            thaum_renderer_domain::CellWeight::from_index_clamped(3)
         );
     }
 
@@ -2223,12 +2333,18 @@ mod tests {
                         start_breath: 0,
                         length_breaths: 5,
                         is_blank: false,
+                        interp_mode: None,
+                        ease_out_percent: None,
+                        ease_in_percent: None,
                     },
                     PropertyTrackBlock {
                         id: "block-2".to_string(),
                         start_breath: 10,
                         length_breaths: 5,
                         is_blank: false,
+                        interp_mode: None,
+                        ease_out_percent: None,
+                        ease_in_percent: None,
                     },
                 ],
             )],
@@ -2500,18 +2616,27 @@ mod tests {
                         start_breath: 0,
                         length_breaths: 3,
                         is_blank: false,
+                        interp_mode: None,
+                        ease_out_percent: None,
+                        ease_in_percent: None,
                     },
                     PropertyTrackBlock {
                         id: "block-2".to_string(),
                         start_breath: 3,
                         length_breaths: 5,
                         is_blank: true,
+                        interp_mode: None,
+                        ease_out_percent: None,
+                        ease_in_percent: None,
                     },
                     PropertyTrackBlock {
                         id: "block-3".to_string(),
                         start_breath: 8,
                         length_breaths: 3,
                         is_blank: false,
+                        interp_mode: None,
+                        ease_out_percent: None,
+                        ease_in_percent: None,
                     },
                 ],
             )],
@@ -2632,7 +2757,7 @@ mod tests {
                     z: 0,
                 })
                 .unwrap();
-            assert_eq!(cell.graphic, CellGraphic::Glyph('▪'), "breath {breath}");
+            assert_eq!(cell.graphic, CellGraphic::Glyph('▣'), "breath {breath}");
         }
     }
 
@@ -2735,14 +2860,15 @@ mod tests {
     }
 
     #[test]
-    fn left_double_clicking_an_empty_is_unused_everywhere() {
+    fn left_double_clicking_an_empty_center_cycles_its_interpolation_mode() {
         let state = state_with_a_blank_between_two_content_blocks();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
         let y = panel.row_y(5);
 
-        // J-flip 2026-09-07: empty merges moved to double-right; double-left on
-        // empties is reserved for keyframing later.
+        // The keyframing surface (J 2026-09-07): double-left on an empty center
+        // queues the mode cycle — storage owns the interpolate → hold → loop
+        // order and clears the ease ends on non-adjustable modes.
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 5,
             y,
@@ -2755,7 +2881,74 @@ mod tests {
             button: ModulePointerButton::Left,
         });
 
-        assert!(state.borrow_mut().take_pending_action().is_none());
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::CycleEmptyInterpMode(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-2".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn left_double_clicking_an_empty_left_head_cycles_ease_out() {
+        let state = state_with_a_blank_between_two_content_blocks();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(5);
+
+        // The left end of an empty is the ease-out dial (J 2026-09-07).
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 3,
+            y,
+            button: ModulePointerButton::Left,
+        });
+        state.borrow_mut().take_pending_action();
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 3,
+            y,
+            button: ModulePointerButton::Left,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::CycleEmptyEaseOut(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-2".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn left_double_clicking_an_empty_right_head_cycles_ease_in() {
+        let state = state_with_content_then_trailing_blank();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(5);
+
+        // The mirror: the right end of an empty is the ease-in dial.
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 9,
+            y,
+            button: ModulePointerButton::Left,
+        });
+        state.borrow_mut().take_pending_action();
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 9,
+            y,
+            button: ModulePointerButton::Left,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::CycleEmptyEaseIn(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-2".to_string(),
+            ))
+        );
     }
 
     #[test]
@@ -2874,12 +3067,18 @@ mod tests {
                         start_breath: 3,
                         length_breaths: 1,
                         is_blank: false,
+                        interp_mode: None,
+                        ease_out_percent: None,
+                        ease_in_percent: None,
                     },
                     PropertyTrackBlock {
                         id: "block-2".to_string(),
                         start_breath: 6,
                         length_breaths: 1,
                         is_blank: true,
+                        interp_mode: None,
+                        ease_out_percent: None,
+                        ease_in_percent: None,
                     },
                 ],
             )],
@@ -2910,12 +3109,18 @@ mod tests {
                         start_breath: 0,
                         length_breaths: 5,
                         is_blank: false,
+                        interp_mode: None,
+                        ease_out_percent: None,
+                        ease_in_percent: None,
                     },
                     PropertyTrackBlock {
                         id: "block-2".to_string(),
                         start_breath: 5,
                         length_breaths: 5,
                         is_blank: true,
+                        interp_mode: None,
+                        ease_out_percent: None,
+                        ease_in_percent: None,
                     },
                 ],
             )],
@@ -2946,12 +3151,18 @@ mod tests {
                         start_breath: 0,
                         length_breaths: 5,
                         is_blank: false,
+                        interp_mode: None,
+                        ease_out_percent: None,
+                        ease_in_percent: None,
                     },
                     PropertyTrackBlock {
                         id: "block-2".to_string(),
                         start_breath: 5,
                         length_breaths: 5,
                         is_blank: false,
+                        interp_mode: None,
+                        ease_out_percent: None,
+                        ease_in_percent: None,
                     },
                 ],
             )],
@@ -3116,12 +3327,18 @@ mod tests {
                         start_breath: 3,
                         length_breaths: 1,
                         is_blank: false,
+                        interp_mode: None,
+                        ease_out_percent: None,
+                        ease_in_percent: None,
                     },
                     PropertyTrackBlock {
                         id: "block-2".to_string(),
                         start_breath: 6,
                         length_breaths: 1,
                         is_blank: false,
+                        interp_mode: None,
+                        ease_out_percent: None,
+                        ease_in_percent: None,
                     },
                 ],
             )],

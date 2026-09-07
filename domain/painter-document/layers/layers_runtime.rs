@@ -55,6 +55,36 @@ pub fn create_layer(runtime: &mut SharedDocumentRuntime) -> String {
     layer_id
 }
 
+/// The missing-track row fallback (old document, or track not created yet):
+/// the same binary default shape `default_property_track` births tracks with —
+/// one solid block over the layer span plus the trailing blank — so a user
+/// never sees an empty property row and new-layer rows show their empties
+/// (J 2026-09-07 bug fix).
+fn default_row_blocks(layer: &crate::storage::SharedDocumentLayer, property_id: &str) -> Vec<PropertyTrackBlock> {
+    let start = layer.start_breath;
+    let length = layer.length_breaths.max(1);
+    vec![
+        PropertyTrackBlock {
+            id: format!("{}:{property_id}:0", layer.layer_id),
+            start_breath: start,
+            length_breaths: length,
+            is_blank: false,
+            interp_mode: None,
+            ease_out_percent: None,
+            ease_in_percent: None,
+        },
+        PropertyTrackBlock {
+            id: "tail".to_string(),
+            start_breath: start + length,
+            length_breaths: 1,
+            is_blank: true,
+            interp_mode: None,
+            ease_out_percent: None,
+            ease_in_percent: None,
+        },
+    ]
+}
+
 pub fn build_selected_layer_property_rows(
     shared_document: &SharedDocumentRuntime,
     active_layer_id: &str,
@@ -77,17 +107,13 @@ pub fn build_selected_layer_property_rows(
                     start_breath: block.start_breath,
                     length_breaths: block.length_breaths,
                     is_blank: block.is_blank,
+                    interp_mode: block.interpretation.clone(),
+                    ease_out_percent: block.ease_out_percent,
+                    ease_in_percent: block.ease_in_percent,
                 })
                 .collect()
         })
-        .unwrap_or_else(|| {
-            vec![PropertyTrackBlock {
-                id: format!("{}:raster:0", layer.layer_id),
-                start_breath: layer.start_breath,
-                length_breaths: layer.length_breaths,
-                is_blank: false,
-            }]
-        });
+        .unwrap_or_else(|| default_row_blocks(layer, "raster"));
     let move_blocks = shared_document
         .property_track(active_layer_id, "move")
         .map(|track| {
@@ -99,20 +125,13 @@ pub fn build_selected_layer_property_rows(
                     start_breath: block.start_breath,
                     length_breaths: block.length_breaths,
                     is_blank: block.is_blank,
+                    interp_mode: block.interpretation.clone(),
+                    ease_out_percent: block.ease_out_percent,
+                    ease_in_percent: block.ease_in_percent,
                 })
                 .collect()
         })
-        .unwrap_or_else(|| {
-            // No stored track (old document, or track not created yet): fall back to
-            // the same full-span shape as raster — a user never sees an empty
-            // property row (J 2026-09-07).
-            vec![PropertyTrackBlock {
-                id: format!("{}:move:0", layer.layer_id),
-                start_breath: layer.start_breath,
-                length_breaths: layer.length_breaths,
-                is_blank: false,
-            }]
-        });
+        .unwrap_or_else(|| default_row_blocks(layer, "move"));
 
     vec![
         PropertyTrackRow {
@@ -381,6 +400,17 @@ pub fn apply_layers_panel_action(
                 prefer_left,
             );
             sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
+        }
+        // Empty keyframe axes (J 2026-09-07): mode + ease cycling. Pure UX data
+        // writes — no canvas or timing changes, first pass routes playback to hold.
+        LayersPanelAction::CycleEmptyInterpMode(layer_id, property_id, block_id) => {
+            shared_document.cycle_property_block_interp_mode(&layer_id, &property_id, &block_id);
+        }
+        LayersPanelAction::CycleEmptyEaseOut(layer_id, property_id, block_id) => {
+            shared_document.cycle_property_block_ease_out(&layer_id, &property_id, &block_id);
+        }
+        LayersPanelAction::CycleEmptyEaseIn(layer_id, property_id, block_id) => {
+            shared_document.cycle_property_block_ease_in(&layer_id, &property_id, &block_id);
         }
     }
     if document_mutated {

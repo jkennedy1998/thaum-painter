@@ -125,6 +125,8 @@ mod tests {
             is_blank,
             value: None,
             interpretation: None,
+            ease_out_percent: None,
+            ease_in_percent: None,
         }
     }
 

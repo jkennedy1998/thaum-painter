@@ -47,6 +47,10 @@ pub mod paint_color_block_module;
 pub mod paint_color_picker_module;
 #[path = "painter-tools/painter_tools.rs"]
 pub mod painter_tools;
+#[path = "painter-document/properties/interp_mode.rs"]
+pub mod interp_mode;
+#[path = "painter-document/properties/interp_move.rs"]
+pub mod interp_move;
 #[path = "painter-document/properties/pieces/pieces.rs"]
 pub mod pieces;
 #[path = "painter-document/properties/properties.rs"]
