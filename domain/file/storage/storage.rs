@@ -118,6 +118,18 @@ fn retiled_property_track(
         clipped.push(block);
     }
     clipped.sort_by_key(|block| block.start_breath);
+    // Gap and tail blanks must not reuse an id any clipped block still holds: ids are
+    // looked up across the whole track (highlight, swap, duplicate, merge), so a
+    // duplicate id makes two blocks light up as one and routes edits to the wrong bar.
+    let mut used_ids: Vec<String> = clipped.iter().map(|b| b.id.clone()).collect();
+    let mut next_free_block_id = |tiled: &[SharedDocumentPropertyBlock]| -> String {
+        let mut id = next_property_block_id(tiled);
+        while used_ids.iter().any(|used| *used == id) {
+            id = format!("{id}x");
+        }
+        used_ids.push(id.clone());
+        id
+    };
     let mut tiled: Vec<SharedDocumentPropertyBlock> = Vec::with_capacity(clipped.len() + 2);
     let mut cursor = span_start;
     for mut block in clipped {
@@ -127,7 +139,7 @@ fn retiled_property_track(
             continue;
         }
         if block.start_breath > cursor {
-            let gap_id = next_property_block_id(&tiled);
+            let gap_id = next_free_block_id(&tiled);
             push_tiled_block(
                 &mut tiled,
                 SharedDocumentPropertyBlock {
@@ -147,7 +159,7 @@ fn retiled_property_track(
         push_tiled_block(&mut tiled, block);
     }
     if cursor < span_end {
-        let tail_id = next_property_block_id(&tiled);
+        let tail_id = next_free_block_id(&tiled);
         push_tiled_block(
             &mut tiled,
             SharedDocumentPropertyBlock {
@@ -3717,6 +3729,27 @@ mod tests {
         assert_eq!(blocks.len(), 1);
         assert_eq!((blocks[0].start_breath, blocks[0].length_breaths), (0, 24));
         assert!(!blocks[0].is_blank);
+    }
+
+    #[test]
+    fn destructive_timing_gap_blanks_never_reuse_a_later_blocks_id() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        runtime.split_property_block("layer-1", "raster", "block-1", 8);
+        runtime.split_property_block("layer-1", "raster", "block-2", 16);
+
+        // block-1 (0..8) jumps destructively to 8..16, eating block-2's front half:
+        // the vacated 0..8 becomes a gap blank, and that blank must not reuse "block-1"
+        // or "block-2" — duplicate ids made highlight and id-keyed edits hit two bars.
+        assert!(
+            runtime.set_property_block_timing_destructive("layer-1", "raster", "block-1", 8, 8)
+        );
+        let blocks = &runtime.property_track("layer-1", "raster").unwrap().blocks;
+        let mut ids: Vec<&str> = blocks.iter().map(|b| b.id.as_str()).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), blocks.len(), "duplicate block ids: {ids:?}");
     }
 
     #[test]

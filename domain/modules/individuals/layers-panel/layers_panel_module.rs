@@ -1447,19 +1447,50 @@ impl Module for LayersPanelModule {
                                 && drag.property_id == property.property_id
                                 && drag.mode != PropertyDragMode::Swap
                         })
-                        .map(|drag| (drag.block_id.as_str(), drag.last_requested));
+                        .map(|drag| (drag.block_id.clone(), drag.last_requested));
+                    // Two passes so the dragged bar previews on top (J 2026-09-07):
+                    // victims draw at their stored spans first, then the dragged bar
+                    // overdraws its requested span, so a rightward destructive drag
+                    // shows the final state instead of the victim covering it.
+                    let mut preview_block: Option<(&PropertyTrackBlock, (u32, u32))> = None;
                     for block in &property.blocks {
                         // While a timing drag is in flight the document is untouched,
                         // so the dragged bar previews at its requested span instead of
                         // its stored one; victims stay intact until the release commit.
-                        let (draw_start, draw_length) = match drag_preview {
-                            Some((drag_block_id, Some((start, length))))
-                                if drag_block_id == block.id.as_str() =>
-                            {
-                                (start, length)
+                        let (draw_start, draw_length) = match (&drag_preview, block) {
+                            (
+                                Some((drag_block_id, Some((start, length)))),
+                                previewed,
+                            ) if drag_block_id == &previewed.id => {
+                                preview_block = Some((previewed, (*start, *length)));
+                                continue;
                             }
                             _ => (block.start_breath, block.length_breaths.max(1)),
                         };
+                        let block_start_x = self.x_for_breath(draw_start);
+                        for local_index in 0..draw_length {
+                            let breath = draw_start + local_index;
+                            let x = block_start_x + local_index as i32;
+                            if x > timeline_end {
+                                break;
+                            }
+                            let (color, weight) =
+                                self.property_block_interaction_style(property, block, breath);
+                            cells.push(Cell {
+                                position: CellPoint { x, y, z: 0 },
+                                graphic: CellGraphic::Glyph(property_track_cell_graphic(
+                                    block.is_blank,
+                                    is_visible,
+                                    draw_length,
+                                    local_index,
+                                )),
+                                color,
+                                weight,
+                                ..Cell::default()
+                            });
+                        }
+                    }
+                    if let Some((block, (draw_start, draw_length))) = preview_block {
                         let block_start_x = self.x_for_breath(draw_start);
                         for local_index in 0..draw_length {
                             let breath = draw_start + local_index;
