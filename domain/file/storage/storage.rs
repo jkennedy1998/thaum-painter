@@ -133,7 +133,7 @@ fn retiled_property_track(
     // looked up across the whole track (highlight, swap, duplicate, merge), so a
     // duplicate id makes two blocks light up as one and routes edits to the wrong bar.
     let mut used_ids: Vec<String> = clipped.iter().map(|b| b.id.clone()).collect();
-    let mut next_free_block_id = |tiled: &[SharedDocumentPropertyBlock]| -> String {
+    let mut next_free_block_id = |used_ids: &mut Vec<String>, tiled: &[SharedDocumentPropertyBlock]| -> String {
         let mut id = next_property_block_id(tiled);
         while used_ids.iter().any(|used| *used == id) {
             id = format!("{id}x");
@@ -150,7 +150,7 @@ fn retiled_property_track(
             continue;
         }
         if block.start_breath > cursor {
-            let gap_id = next_free_block_id(&tiled);
+            let gap_id = next_free_block_id(&mut used_ids, &tiled);
             push_tiled_block(
                 &mut tiled,
                 SharedDocumentPropertyBlock {
@@ -171,7 +171,7 @@ fn retiled_property_track(
         push_tiled_block(&mut tiled, block);
     }
     if cursor < span_end {
-        let tail_id = next_free_block_id(&tiled);
+        let tail_id = next_free_block_id(&mut used_ids, &tiled);
         push_tiled_block(
             &mut tiled,
             SharedDocumentPropertyBlock {
@@ -187,11 +187,18 @@ fn retiled_property_track(
     // The trailing blank: the last block must be blank so the infinite empty region
     // always has a stored representative to carry its interpretation and receive
     // its interactions. If the last block is solid (possibly past the viewport end),
-    // append the minimal representative right after it.
+    // append the minimal representative right after it. The representative carries
+    // the semantic id "tail" (dedup'd) — it is THE end-blank keyframe, and it must
+    // not consume numeric ids future content blocks expect to grow into.
     if let Some(last) = tiled.last() {
         if !last.is_blank {
             let tail_start = last.start_breath + last.length_breaths;
-            let tail_id = next_free_block_id(&tiled);
+            let tail_id = if used_ids.iter().any(|used| used == "tail") {
+                next_free_block_id(&mut used_ids, &tiled)
+            } else {
+                "tail".to_string()
+            };
+            used_ids.push(tail_id.clone());
             let tail_length = if tail_start < span_end {
                 span_end - tail_start
             } else {
@@ -210,20 +217,28 @@ fn retiled_property_track(
     tiled
 }
 
-fn default_raster_property_track(
+fn default_property_track(
+    property_id: &str,
     start_breath: u32,
     length_breaths: u32,
 ) -> SharedDocumentPropertyTrack {
+    // Every property kind is born on the same binary tiling as raster (J
+    // 2026-09-07): one solid block over the viewport plus the trailing blank
+    // representative — a user never sees an empty property row.
     SharedDocumentPropertyTrack {
-        property_id: "raster".to_string(),
-        blocks: vec![SharedDocumentPropertyBlock {
-            id: "block-1".to_string(),
+        property_id: property_id.to_string(),
+        blocks: retiled_property_track(
+            vec![SharedDocumentPropertyBlock {
+                id: "block-1".to_string(),
+                start_breath,
+                length_breaths: length_breaths.max(1),
+                is_blank: false,
+                value: None,
+                interpretation: None,
+            }],
             start_breath,
-            length_breaths: length_breaths.max(1),
-            is_blank: false,
-            value: None,
-            interpretation: None,
-        }],
+            length_breaths,
+        ),
     }
 }
 
@@ -316,10 +331,10 @@ impl SharedDocumentFile {
                 locked: false,
                 start_breath: 0,
                 length_breaths: default_layer_length_breaths(),
-                property_tracks: vec![default_raster_property_track(
-                    0,
-                    default_layer_length_breaths(),
-                )],
+                property_tracks: vec![
+                    default_property_track("raster", 0, default_layer_length_breaths()),
+                    default_property_track("move", 0, default_layer_length_breaths()),
+                ],
             }],
             selection: SharedDocumentSelection::default(),
             document_window: DocumentWindow::default(),
@@ -998,14 +1013,8 @@ impl SharedDocumentRuntime {
             .iter()
             .any(|track| track.property_id == property_id)
         {
-            let track = if property_id == "raster" {
-                default_raster_property_track(layer.start_breath, layer.length_breaths)
-            } else {
-                SharedDocumentPropertyTrack {
-                    property_id: property_id.to_string(),
-                    blocks: Vec::new(),
-                }
-            };
+            let track =
+                default_property_track(property_id, layer.start_breath, layer.length_breaths);
             layer.property_tracks.push(track);
         }
         layer
@@ -1035,10 +1044,10 @@ impl SharedDocumentRuntime {
             locked: false,
             start_breath: 0,
             length_breaths: default_layer_length_breaths(),
-            property_tracks: vec![default_raster_property_track(
-                0,
-                default_layer_length_breaths(),
-            )],
+            property_tracks: vec![
+                default_property_track("raster", 0, default_layer_length_breaths()),
+                default_property_track("move", 0, default_layer_length_breaths()),
+            ],
         });
         self.block_canvases
             .insert((layer_id.clone(), "block-1".to_string()), Canvas::new());
@@ -1593,6 +1602,13 @@ impl SharedDocumentRuntime {
         if source_block_id == target_block_id {
             return false;
         }
+        let (span_start, span_length) = self
+            .document
+            .layers
+            .iter()
+            .find(|layer| layer.layer_id == layer_id)
+            .map(|layer| (layer.start_breath, layer.length_breaths))
+            .unwrap_or((0, 1));
         let Some(track) = self.ensure_property_track_mut(layer_id, property_id) else {
             return false;
         };
@@ -1626,6 +1642,14 @@ impl SharedDocumentRuntime {
         // keyed to their own block ids while the breath spans exchange. Swapping the
         // canvases too would put each block's content back where it started — a
         // visual no-op — so only the timing moves here.
+        // Re-tile aggressively: a swap can butt two empties together, and the
+        // no-adjacent-empties invariant must hold after EVERY mutation (J
+        // 2026-09-07). It also restores the trailing blank representative.
+        track.blocks = retiled_property_track(
+            std::mem::take(&mut track.blocks),
+            span_start,
+            span_length,
+        );
         true
     }
 
@@ -2479,10 +2503,10 @@ mod tests {
                     locked: false,
                     start_breath: 0,
                     length_breaths: default_layer_length_breaths(),
-                    property_tracks: vec![default_raster_property_track(
-                        0,
-                        default_layer_length_breaths(),
-                    )],
+                    property_tracks: vec![
+                        default_property_track("raster", 0, default_layer_length_breaths()),
+                        default_property_track("move", 0, default_layer_length_breaths()),
+                    ],
                 },
                 SharedDocumentLayer {
                     layer_id: "layer-2".to_string(),
@@ -2491,10 +2515,10 @@ mod tests {
                     locked: false,
                     start_breath: 0,
                     length_breaths: default_layer_length_breaths(),
-                    property_tracks: vec![default_raster_property_track(
-                        0,
-                        default_layer_length_breaths(),
-                    )],
+                    property_tracks: vec![
+                        default_property_track("raster", 0, default_layer_length_breaths()),
+                        default_property_track("move", 0, default_layer_length_breaths()),
+                    ],
                 },
             ],
             revision: 0,
@@ -3470,12 +3494,14 @@ mod tests {
             .is_some());
         let blocks = &runtime.property_track("layer-1", "raster").unwrap().blocks;
 
-        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks.len(), 3);
         assert_eq!(blocks[0].id, "block-1");
         assert_eq!(blocks[0].start_breath, 0);
         assert_eq!(blocks[0].length_breaths, 8);
         assert_eq!(blocks[1].start_breath, 8);
         assert_eq!(blocks[1].length_breaths, 16);
+        assert_eq!(blocks[2].id, "tail");
+        assert!(blocks[2].is_blank);
     }
 
     #[test]
@@ -3511,7 +3537,8 @@ mod tests {
 
         // block-1 (0..24) is the only block, so a pushed shrink has nothing to
         // pull left: the vacated tail re-tiles into a blank block — a bare void
-        // would leave the channel with two kinds of no-content.
+        // would leave the channel with two kinds of no-content. The pushed ripple
+        // pulls the old tail blank left; the re-tile re-opens the infinite tail.
         assert!(
             runtime.set_property_block_timing_pushed("layer-1", "raster", "block-1", 0, 8)
         );
@@ -3565,7 +3592,8 @@ mod tests {
         let track = runtime.property_track("layer-1", "raster").unwrap();
         assert_eq!(track.blocks.len(), 1);
         assert!(track.blocks[0].is_blank);
-        assert_eq!((track.blocks[0].start_breath, track.blocks[0].length_breaths), (0, 24));
+        // The merged empty absorbs the trailing blank representative (infinite).
+        assert_eq!((track.blocks[0].start_breath, track.blocks[0].length_breaths), (0, 25));
     }
 
     #[test]
@@ -3794,7 +3822,8 @@ mod tests {
             "doc-1", "Doc", "layer-1", "Layer 1",
         ));
 
-        // block-1 (0..24) shrinks to 0..8: breaths 8..24 re-tile into blanks.
+        // block-1 (0..24) shrinks to 0..8: breaths 8..24 re-tile into blanks and
+        // merge with the trailing blank representative.
         assert!(
             runtime.set_property_block_timing_destructive("layer-1", "raster", "block-1", 0, 8)
         );
@@ -3804,7 +3833,7 @@ mod tests {
             .iter()
             .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
             .collect();
-        assert_eq!(covered, vec![(0, 8, false), (8, 24, true)]);
+        assert_eq!(covered, vec![(0, 8, false), (8, 25, true)]);
     }
 
     #[test]
@@ -3893,13 +3922,43 @@ mod tests {
 
         assert!(runtime.swap_property_blocks("layer-1", "raster", "block-1", "block-2"));
         let blocks = &runtime.property_track("layer-1", "raster").unwrap().blocks;
-        assert_eq!(blocks[0].start_breath, 8);
-        assert_eq!(blocks[0].length_breaths, 16);
-        assert_eq!(blocks[1].start_breath, 0);
-        assert_eq!(blocks[1].length_breaths, 8);
+        // Re-tile sorts by start: block-2's swapped span lands first.
+        assert_eq!(blocks[0].start_breath, 0);
+        assert_eq!(blocks[0].length_breaths, 8);
+        assert_eq!(blocks[1].start_breath, 8);
+        assert_eq!(blocks[1].length_breaths, 16);
 
         assert!(!runtime.swap_property_blocks("layer-1", "raster", "block-1", "block-1"));
         assert!(!runtime.swap_property_blocks("layer-1", "raster", "block-1", "missing"));
+    }
+
+    #[test]
+    fn swap_butting_two_empties_together_merges_them() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        runtime.split_property_block("layer-1", "raster", "block-1", 8);
+        runtime.split_property_block("layer-1", "raster", "block-2", 16);
+        // Track: block-1 (0..8), block-2 (8..16), block-3 (16..24), tail (24..25).
+        assert!(runtime.blank_property_block("layer-1", "raster", "block-1"));
+
+        // Track: empty (0..8), content (8..16), content (16..24), tail. Swapping
+        // the empty with the far content bar lands the empty right next to the
+        // tail — the aggressive re-tile must merge them (no-adjacent-empties,
+        // J 2026-09-07).
+        assert!(runtime.swap_property_blocks("layer-1", "raster", "block-1", "block-3"));
+        let track = runtime.property_track("layer-1", "raster").unwrap();
+        let covered: Vec<(u32, u32, bool)> = track
+            .blocks
+            .iter()
+            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .collect();
+        assert_eq!(
+            covered,
+            vec![(0, 8, false), (8, 16, false), (16, 25, true)]
+        );
+        let blanks: Vec<_> = track.blocks.iter().filter(|b| b.is_blank).collect();
+        assert_eq!(blanks.len(), 1, "adjacent empties must merge into one");
     }
 
     #[test]

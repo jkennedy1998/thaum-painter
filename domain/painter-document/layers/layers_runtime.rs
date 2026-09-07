@@ -102,7 +102,17 @@ pub fn build_selected_layer_property_rows(
                 })
                 .collect()
         })
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            // No stored track (old document, or track not created yet): fall back to
+            // the same full-span shape as raster — a user never sees an empty
+            // property row (J 2026-09-07).
+            vec![PropertyTrackBlock {
+                id: format!("{}:move:0", layer.layer_id),
+                start_breath: layer.start_breath,
+                length_breaths: layer.length_breaths,
+                is_blank: false,
+            }]
+        });
 
     vec![
         PropertyTrackRow {
