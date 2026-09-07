@@ -787,6 +787,47 @@ impl SharedDocumentRuntime {
             .get(&(layer_id.to_string(), block_id.to_string()))
     }
 
+    /// Ensures every block on the layer's raster track has a canvas entry (empty
+    /// for new blanks) and that blank blocks' canvases are actually empty. Only
+    /// raster blocks carry canvases; the move and other value channels live
+    /// entirely in block values. Re-tiles mint fresh ids for gap/tail blanks,
+    /// so every structural seam calls this instead of hand-inserting entries —
+    /// a missing entry would make a solid render nothing silently, and a stale
+    /// entry (removed blocks leave residue; id reuse can resurrect it onto a
+    /// fresh blank) would render ghost content through the edit-surface seam.
+    fn ensure_block_canvas_coverage(&mut self, layer_id: &str) {
+        let Some(track) = self
+            .document
+            .layers
+            .iter()
+            .find(|layer| layer.layer_id == layer_id)
+            .and_then(|layer| {
+                layer
+                    .property_tracks
+                    .iter()
+                    .find(|track| track.property_id == "raster")
+            })
+            .map(|track| {
+                track
+                    .blocks
+                    .iter()
+                    .map(|block| (block.id.clone(), block.is_blank))
+                    .collect::<Vec<_>>()
+            })
+        else {
+            return;
+        };
+        for (block_id, is_blank) in track {
+            let entry = self
+                .block_canvases
+                .entry((layer_id.to_string(), block_id))
+                .or_default();
+            if is_blank && !entry.is_empty() {
+                entry.clear();
+            }
+        }
+    }
+
     pub fn replay(document: SharedDocumentFile, actions: Vec<SharedDocumentActionRecord>) -> Self {
         let mut runtime = Self::new(document);
         for action in actions {
@@ -1160,6 +1201,7 @@ impl SharedDocumentRuntime {
             start_breath,
             length_breaths,
         );
+        self.ensure_block_canvas_coverage(layer_id);
         true
     }
 
@@ -1368,6 +1410,8 @@ impl SharedDocumentRuntime {
             track.blocks =
                 retiled_property_track(std::mem::take(&mut track.blocks), span_start, span_length);
         }
+        drop(layer);
+        self.ensure_block_canvas_coverage(layer_id);
         true
     }
 
@@ -1437,6 +1481,7 @@ impl SharedDocumentRuntime {
         // comment above — so this seam re-tiles like every other timing seam.
         track.blocks =
             retiled_property_track(std::mem::take(&mut track.blocks), span_start, span_length);
+        self.ensure_block_canvas_coverage(layer_id);
         true
     }
 
@@ -1578,6 +1623,7 @@ impl SharedDocumentRuntime {
             track.blocks =
                 retiled_property_track(std::mem::take(&mut track.blocks), span_start, span_length);
         }
+        self.ensure_block_canvas_coverage(layer_id);
         true
     }
 
@@ -1718,8 +1764,12 @@ impl SharedDocumentRuntime {
         block.is_blank = true;
         track.blocks =
             retiled_property_track(std::mem::take(&mut track.blocks), span_start, span_length);
+        // The block's painted content is discarded: a stale canvas would keep
+        // rendering through the raw edit-surface seam (which reads by block id,
+        // not by is_blank) as ghost content over a blank span.
         self.block_canvases
             .insert((layer_id.to_string(), block_id.to_string()), Canvas::new());
+        self.ensure_block_canvas_coverage(layer_id);
         true
     }
 
@@ -1802,6 +1852,7 @@ impl SharedDocumentRuntime {
             start_breath,
             length_breaths,
         );
+        self.ensure_block_canvas_coverage(layer_id);
         true
     }
 
@@ -1959,6 +2010,7 @@ impl SharedDocumentRuntime {
         // 2026-09-07). It also restores the trailing blank representative.
         track.blocks =
             retiled_property_track(std::mem::take(&mut track.blocks), span_start, span_length);
+        self.ensure_block_canvas_coverage(layer_id);
         true
     }
 
@@ -2038,6 +2090,7 @@ impl SharedDocumentRuntime {
             track.blocks =
                 retiled_property_track(std::mem::take(&mut track.blocks), span_start, span_length);
         }
+        self.ensure_block_canvas_coverage(layer_id);
         Some(new_id)
     }
 
@@ -2228,22 +2281,37 @@ impl SharedDocumentRuntime {
 
     fn unblank_raster_block(&mut self, layer_id: &str, block_id: &str) {
         // Painting into a blank block turns it back into content.
-        if let Some(layer) = self
+        let (span_start, span_length) = self
+            .document
+            .layers
+            .iter()
+            .find(|layer| layer.layer_id == layer_id)
+            .map(|layer| (layer.start_breath, layer.length_breaths))
+            .unwrap_or((0, 1));
+        if let Some(track) = self
             .document
             .layers
             .iter_mut()
             .find(|layer| layer.layer_id == layer_id)
+            .and_then(|layer| {
+                layer
+                    .property_tracks
+                    .iter_mut()
+                    .find(|track| track.property_id == "raster")
+            })
         {
-            if let Some(track) = layer
-                .property_tracks
-                .iter_mut()
-                .find(|track| track.property_id == "raster")
-            {
-                if let Some(block) = track.blocks.iter_mut().find(|block| block.id == block_id) {
-                    block.is_blank = false;
-                }
+            if let Some(block) = track.blocks.iter_mut().find(|block| block.id == block_id) {
+                block.is_blank = false;
             }
+            // Unblanking can consume the trailing blank (or strand a loop
+            // mode's edge) — the same re-tile the live paint path runs via
+            // `add_move_offset`, here on the replay/apply path (J 2026-09-07:
+            // the fuzzer caught painting into a past-extent blank leaving a
+            // track with no trailing blank representative).
+            track.blocks =
+                retiled_property_track(std::mem::take(&mut track.blocks), span_start, span_length);
         }
+        self.ensure_block_canvas_coverage(layer_id);
     }
 
     /// Pops the layer's last applied action and reverts it on the canvas, returning
@@ -4387,6 +4455,56 @@ mod tests {
     }
 
     #[test]
+    fn painting_into_a_past_extent_blank_keeps_the_trailing_blank_representative() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        // Push the sole block far past the window: gap blank 0..50, solid
+        // 50..56, minimal trailing blank 56..57.
+        assert!(
+            runtime.set_property_block_timing_destructive("layer-1", "raster", "block-1", 50, 6,)
+        );
+        let tail_id = runtime
+            .property_track("layer-1", "raster")
+            .unwrap()
+            .blocks
+            .last()
+            .unwrap()
+            .id
+            .clone();
+
+        // Paint into that past-extent trailing blank (the replay/apply path):
+        // unblanking must not consume the trailing-blank representative —
+        // before the fix the track ended solid and past-extent playback
+        // resolved nothing (found by the invariant fuzzer, J 2026-09-07).
+        runtime.apply_action_record(SharedDocumentActionRecord::cell_patch_set(
+            "a-past-extent-paint",
+            "doc-1",
+            "layer-1",
+            "u1",
+            "1",
+            vec![SharedCellPatch::new(point(1, 1), None, Some(&cell('#')))],
+            Some(tail_id),
+        ));
+        let blocks = &runtime.property_track("layer-1", "raster").unwrap().blocks;
+        assert!(
+            blocks.last().unwrap().is_blank,
+            "the track still ends with a blank representative"
+        );
+        // The painted keyframe keeps its content.
+        assert_eq!(
+            runtime
+                .resolved_canvas_for_layer("layer-1", 56)
+                .unwrap()
+                .len(),
+            1
+        );
+        // Far past the new edge, resolution stays sane (nothing or held, never
+        // a panic or a vaporized track).
+        let _ = runtime.resolved_canvas_for_layer("layer-1", 10_000);
+    }
+
+    #[test]
     fn an_interpolating_raster_empty_resolves_a_blend_between_its_keyframes() {
         let document = SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
         let mut runtime = SharedDocumentRuntime::new(document);
@@ -5009,6 +5127,100 @@ mod tests {
                 ),
                 _ => {}
             }
+            // Canvas-map coverage (raster only: value channels like move live
+            // entirely in block values and carry no canvases): every block must
+            // have a canvas entry, and a blank's canvas must be empty — a
+            // missing entry makes a solid render nothing silently (the same
+            // vaporize shape the tiling invariants guard against, one map over).
+            if property_id == "raster" {
+                let canvas = runtime
+                    .block_canvas(layer_id, &block.id)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "seed {seed} op {op}: block {} has no canvas entry",
+                            block.id
+                        )
+                    });
+                if block.is_blank {
+                    assert!(
+                        canvas.is_empty(),
+                        "seed {seed} op {op}: blank block {} carries content",
+                        block.id
+                    );
+                }
+            }
+        }
+    }
+
+    /// Resolution sanity over one fuzzed raster track: the resolver never
+    /// panics, a breath covered by a solid resolves exactly that block's
+    /// canvas, and any blend result only contains positions present in at
+    /// least one surrounding solid's canvas (blending invents nothing).
+    fn assert_raster_resolution_sane(
+        runtime: &SharedDocumentRuntime,
+        seed: u64,
+        op: usize,
+        breaths: &[u32],
+    ) {
+        let track = runtime.property_track("layer-1", "raster").unwrap();
+        for breath in breaths {
+            let resolved = runtime.resolved_canvas_for_layer("layer-1", *breath);
+            let covering = track
+                .blocks
+                .iter()
+                .find(|block| {
+                    crate::properties::breath_in_span(
+                        *breath,
+                        block.start_breath,
+                        block.length_breaths,
+                    )
+                })
+                .map(|block| (block.id.clone(), block.is_blank));
+            match (covering, resolved) {
+                (Some((id, false)), Some(resolved)) => {
+                    let canvas = runtime.block_canvas("layer-1", &id).unwrap();
+                    assert_eq!(
+                        &resolved, canvas,
+                        "seed {seed} op {op}: breath {breath} over solid {id} must resolve its own canvas"
+                    );
+                }
+                (Some((id, false)), None) => {
+                    panic!("seed {seed} op {op}: breath {breath} over solid {id} resolved nothing")
+                }
+                (Some((id, true)), Some(resolved)) => {
+                    // A blank resolves a blend: every position must exist in a
+                    // neighboring solid's canvas (blending invents nothing).
+                    let index = track
+                        .blocks
+                        .iter()
+                        .position(|block| block.id == id)
+                        .unwrap();
+                    let allowed: BTreeSet<CellPoint> = track.blocks[..index]
+                        .iter()
+                        .rev()
+                        .find(|block| !block.is_blank)
+                        .and_then(|block| runtime.block_canvas("layer-1", &block.id))
+                        .map(|canvas| canvas.keys().copied().collect::<Vec<_>>())
+                        .unwrap_or_default()
+                        .into_iter()
+                        .chain(
+                            track.blocks[index + 1..]
+                                .iter()
+                                .find(|block| !block.is_blank)
+                                .and_then(|block| runtime.block_canvas("layer-1", &block.id))
+                                .map(|canvas| canvas.keys().copied().collect::<Vec<_>>())
+                                .unwrap_or_default(),
+                        )
+                        .collect();
+                    for position in resolved.keys() {
+                        assert!(
+                            allowed.contains(position),
+                            "seed {seed} op {op}: blend at breath {breath} invented position {position:?}"
+                        );
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
@@ -5021,9 +5233,10 @@ mod tests {
                     "doc-1", "Doc", "layer-1", "Layer 1",
                 ));
                 let layer_window_end: u32 = 24;
+                let mut self_action_counter = 0usize;
                 for op in 0..300usize {
                     let track = runtime.property_track("layer-1", property).unwrap();
-                    let pick = rand.below(10);
+                    let pick = rand.below(11);
                     // Random breaths deliberately walk past the stored extent —
                     // the infinite region is where the vaporizing bug lived.
                     let breath = rand.below((layer_window_end as u64) * 2) as u32;
@@ -5095,6 +5308,48 @@ mod tests {
                             runtime.blank_property_block("layer-1", property, &block_id),
                             format!("blank {block_id}"),
                         ),
+                        9 => {
+                            // Paint (raster only): a random cell onto the block
+                            // covering the breath — the content the blends and
+                            // canvas-coverage invariants actually chew on.
+                            if property != "raster" {
+                                (false, "paint skipped on move".to_string())
+                            } else if let Some(target_block) =
+                                runtime.active_raster_block_id("layer-1", breath)
+                            {
+                                let painted = PaintedCell {
+                                    graphic: CellGraphic::Glyph(
+                                        ['a', 'b', 'c', '#'][rand.below(4) as usize],
+                                    ),
+                                    color: PaintColor::flat_rgb(
+                                        rand.below(256) as u8,
+                                        rand.below(256) as u8,
+                                        rand.below(256) as u8,
+                                    ),
+                                    weight_index: rand.below(4) as i64,
+                                };
+                                let point = CellPoint {
+                                    x: rand.below(6) as i32,
+                                    y: rand.below(6) as i32,
+                                    z: 0,
+                                };
+                                self_action_counter += 1;
+                                runtime.apply_action_record(
+                                    SharedDocumentActionRecord::cell_patch_set(
+                                        format!("fuzz-paint-{self_action_counter}"),
+                                        "doc-1",
+                                        "layer-1",
+                                        "u1",
+                                        "1",
+                                        vec![SharedCellPatch::new(point, None, Some(&painted))],
+                                        Some(target_block.clone()),
+                                    ),
+                                );
+                                (true, format!("paint {point:?} onto {target_block}"))
+                            } else {
+                                (false, "paint with no covering block".to_string())
+                            }
+                        }
                         _ => {
                             let other_id = track.blocks
                                 [rand.below(track.blocks.len() as u64) as usize]
@@ -5113,6 +5368,14 @@ mod tests {
                     let _ = changed;
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         assert_track_invariants(&runtime, "layer-1", property, seed, op);
+                        if property == "raster" {
+                            assert_raster_resolution_sane(
+                                &runtime,
+                                seed,
+                                op,
+                                &[0, 1, breath, layer_window_end, layer_window_end * 2],
+                            );
+                        }
                     }));
                     if result.is_err() {
                         eprintln!("failing op {op} on {property}: {trace}");

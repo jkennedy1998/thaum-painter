@@ -13,8 +13,11 @@
 //!     graphic, the second half the next one's. The eases still shape *when* the flip
 //!     happens, which reads as an intentional swap rather than a pop.
 //!   - a material color is discrete like a graphic and rides the same cutoff.
-//!   - a cell present in only one keyframe shows during the half its side is active
-//!     (hard appear / disappear, no weight fade in this first pass).
+//!   - a cell present in only one keyframe shows during the half its side is
+//!     active, with its weight fading toward Zero across that half (J
+//!     2026-09-07): the cell dissolves in/out through the lightest glyph
+//!     weight instead of popping at the halfway crossing. Weight Zero still
+//!     renders, so this is a fade approximation, not a true alpha fade.
 //! - **loop_out / loop_in** — edge-locked modes: replay the authored region through
 //!   the trailing / leading blank, resolving each mapped breath through this module.
 //!
@@ -173,10 +176,14 @@ pub fn blend_canvases(from: &Canvas, to: &Canvas, progress: f32) -> Canvas {
                 blended.insert(*position, blend_cells(a, b, progress, from_active));
             }
             (Some(a), None) if from_active => {
-                blended.insert(*position, a.clone());
+                let mut faded = a.clone();
+                faded.weight_index = fade_one_sided_weight(a.weight_index, progress);
+                blended.insert(*position, faded);
             }
             (None, Some(b)) if !from_active => {
-                blended.insert(*position, b.clone());
+                let mut grown = b.clone();
+                grown.weight_index = fade_one_sided_weight(b.weight_index, progress);
+                blended.insert(*position, grown);
             }
             _ => {}
         }
@@ -200,6 +207,16 @@ fn blend_cells(
         color: blend_colors(from.color, to.color, progress, from_active),
         weight_index: lerp_weight(from.weight_index, to.weight_index, progress),
     }
+}
+
+/// One-sided-cell weight fade: the cell exists in only one keyframe, so across
+/// its active half its weight runs from the authored value toward Zero (out)
+/// or from Zero toward the authored value (in). `(2*progress - 1).abs()` maps
+/// the active half onto 1..0..1 (full weight at the span edges, Zero at the
+/// halfway crossing); the fade never overshoots the authored magnitude.
+fn fade_one_sided_weight(authored: i64, progress: f32) -> i64 {
+    let scaled = authored as f32 * (2.0 * progress - 1.0).abs();
+    scaled.round().clamp(0.0, (authored.abs() as f32).max(0.0)) as i64 * authored.signum()
 }
 
 /// Flat RGB lerps channel-by-channel; anything else (material colors) is
@@ -317,26 +334,45 @@ mod tests {
     }
 
     #[test]
-    fn one_sided_cells_show_only_during_their_side_active_half() {
-        let from = canvas_with(&[(point(0, 0), cell('x', PaintColor::flat_rgb(1, 2, 3), 1))]);
-        let to = canvas_with(&[(point(2, 2), cell('y', PaintColor::flat_rgb(4, 5, 6), 2))]);
+    fn one_sided_cells_show_only_during_their_side_active_half_and_fade_toward_zero_weight() {
+        let from = canvas_with(&[(point(0, 0), cell('x', PaintColor::flat_rgb(1, 2, 3), 4))]);
+        let to = canvas_with(&[(point(2, 2), cell('y', PaintColor::flat_rgb(4, 5, 6), 4))]);
         let first_half = blend_canvases(&from, &to, 0.25);
+        let fading = first_half.get(&point(0, 0)).unwrap();
         assert!(
-            first_half.contains_key(&point(0, 0)),
-            "from-side cell shows early"
+            fading.weight_index < 4 && fading.weight_index > 0,
+            "from-side cell fades toward Zero early ({})",
+            fading.weight_index
         );
         assert!(
             !first_half.contains_key(&point(2, 2)),
             "to-side cell hidden early"
+        );
+        let near_midpoint = blend_canvases(&from, &to, 0.49);
+        assert_eq!(
+            near_midpoint.get(&point(0, 0)).unwrap().weight_index,
+            0,
+            "the from-side cell bottoms out at Zero right before vanishing"
         );
         let second_half = blend_canvases(&from, &to, 0.75);
         assert!(
             !second_half.contains_key(&point(0, 0)),
             "from-side cell hidden late"
         );
+        let growing = second_half.get(&point(2, 2)).unwrap();
         assert!(
-            second_half.contains_key(&point(2, 2)),
-            "to-side cell shows late"
+            growing.weight_index < 4 && growing.weight_index > 0,
+            "to-side cell grows in from Zero late ({})",
+            growing.weight_index
+        );
+        // The ends resolve exactly.
+        assert_eq!(
+            blend_canvases(&from, &to, 0.0).get(&point(0, 0)),
+            from.get(&point(0, 0))
+        );
+        assert_eq!(
+            blend_canvases(&from, &to, 1.0).get(&point(2, 2)),
+            to.get(&point(2, 2))
         );
     }
 
