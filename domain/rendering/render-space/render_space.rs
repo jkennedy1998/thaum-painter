@@ -164,7 +164,7 @@ mod tests {
     use super::*;
     use crate::file_schema::parse_file_schema_from_str;
     use crate::{PaintColor, PaintedCell};
-    use thaum_renderer_domain::{CellGraphic, CellMaterialId};
+    use thaum_renderer_domain::CellGraphic;
 
     use crate::storage::{SharedCellPatch, SharedDocumentFile};
 

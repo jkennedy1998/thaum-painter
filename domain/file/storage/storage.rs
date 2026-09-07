@@ -1070,7 +1070,11 @@ impl SharedDocumentRuntime {
 
     /// Reshapes one property block with a time-preserving ripple (`pushed_breath_span`):
     /// the blocks on the dragged side of the channel shift by the same delta, so
-    /// relative spacing is preserved and no gap or overlap can appear.
+    /// relative spacing is preserved. The seam then re-tiles the track: a ripple
+    /// shrink with nothing left to pull cannot fill the tail (bare void), and a
+    /// shift clamped at breath zero can strand an overlap — re-tiling turns any
+    /// uncovered window into a blank block and trims overlapped data, so the
+    /// track always leaves this seam fully tiled.
     pub fn set_property_block_timing_pushed(
         &mut self,
         layer_id: &str,
@@ -1079,6 +1083,17 @@ impl SharedDocumentRuntime {
         start_breath: u32,
         length_breaths: u32,
     ) -> bool {
+        let (span_start, span_length) = {
+            let Some(layer) = self
+                .document
+                .layers
+                .iter()
+                .find(|layer| layer.layer_id == layer_id)
+            else {
+                return false;
+            };
+            (layer.start_breath, layer.length_breaths)
+        };
         let Some((track, index)) = self.property_track_block_mut(layer_id, property_id, block_id)
         else {
             return false;
@@ -1115,6 +1130,13 @@ impl SharedDocumentRuntime {
             track.blocks[track_index].start_breath = start;
             track.blocks[track_index].length_breaths = length;
         }
+        // Binary tiling: the ripple alone cannot guarantee coverage — see the doc
+        // comment above — so this seam re-tiles like every other timing seam.
+        track.blocks = retiled_property_track(
+            std::mem::take(&mut track.blocks),
+            span_start,
+            span_length,
+        );
         true
     }
 
@@ -3151,6 +3173,53 @@ mod tests {
 
         // The edited block itself is never clobbered by a neighbor's shift.
         assert_eq!((blocks[0].start_breath, blocks[0].length_breaths), (0, 8));
+    }
+
+    #[test]
+    fn pushed_timing_shrink_of_the_last_block_fills_the_tail_blank() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+
+        // block-1 (0..24) is the only block, so a pushed shrink has nothing to
+        // pull left: the vacated tail re-tiles into a blank block — a bare void
+        // would leave the channel with two kinds of no-content.
+        assert!(
+            runtime.set_property_block_timing_pushed("layer-1", "raster", "block-1", 0, 8)
+        );
+        let track = runtime.property_track("layer-1", "raster").unwrap();
+        let covered: Vec<(u32, u32, bool)> = track
+            .blocks
+            .iter()
+            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .collect();
+        assert_eq!(covered, vec![(0, 8, false), (8, 24, true)]);
+    }
+
+    #[test]
+    fn pushed_timing_clamped_at_breath_zero_never_leaves_an_overlap() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        runtime.split_property_block("layer-1", "raster", "block-1", 8);
+
+        // Drag block-2's start edge (8..24) left to 2: block-1 must shift left
+        // but is already at breath zero, so the shift clamps. The seam re-tiles,
+        // trimming the overlapped range instead of leaving bars on both sides
+        // of the same breath.
+        assert!(
+            runtime.set_property_block_timing_pushed("layer-1", "raster", "block-2", 2, 16)
+        );
+        let track = runtime.property_track("layer-1", "raster").unwrap();
+        let covered: Vec<(u32, u32, bool)> = track
+            .blocks
+            .iter()
+            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .collect();
+        assert_eq!(
+            covered,
+            vec![(0, 8, false), (8, 18, false), (18, 24, true)]
+        );
     }
 
     #[test]

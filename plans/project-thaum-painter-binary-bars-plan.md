@@ -94,6 +94,7 @@ Property tracks currently have three states per channel breath: content bar, bla
 - artifacts: none
 - tests: layers-panel interaction tests rewritten per piece × cell type; merge-blank cases removed.
 - data: none
+- tooltip note (2026-09-07, J): bar pieces are interactable and will become highlightable per bar piece — tooltip hotspots keyed by piece (single / left head / center / right head) × cell type (empty / solid), "telling the user the UX to their face." Centers share one tooltip, each head and single their own. Route through the shared modules tooltip/hotspot seam (as `thaum-renderer`'s gizmo panels do); lands with the 48-branch routing pass.
 
 ## phases
 ### phase-1 — project alignment

@@ -10,8 +10,7 @@ fn flat_view() -> CameraViewOrientation {
 use thaum_painter_domain::{
     append_action_record, load_or_create_shared_document, Canvas, CanvasBounds, CanvasPlaneAxis,
     PaintHand, PaintTarget, PaintTool, PainterSelection, SharedCellPatch,
-    SharedDocumentActionRecord, SharedDocumentFile, SharedDocumentPaths, SharedDocumentRuntime,
-    ToolState,
+    SharedDocumentActionRecord, SharedDocumentFile, SharedDocumentPaths, ToolState,
 };
 
 fn collect_canvas_patches(before: &Canvas, after: &Canvas) -> Vec<SharedCellPatch> {
