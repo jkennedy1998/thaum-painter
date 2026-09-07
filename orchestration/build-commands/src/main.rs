@@ -2217,8 +2217,25 @@ fn main() -> Result<()> {
         let camera = state.camera;
         let view_orientation = camera_view_orientation_for_camera(camera.swing, camera.roll);
         let cell_clip_size = cell_clip_size_for_state(state, frame.surface_size);
+        // Drawing accounts for the active layer's move (J 2026-09-07): the
+        // cursor maps into DOCUMENT space — the active move offset is
+        // subtracted here, once, so every tool (strokes, lasso, selection,
+        // stamp, text, bounds eligibility) aims at the cell that renders back
+        // under the cursor once the render path re-applies the move shift.
+        // The offset is constant across a frame, so move-drag deltas are
+        // unaffected — only the aim point is corrected.
+        let active_move_offset = shared_document.move_offset_for_layer(
+            &active_layer_id,
+            timeline_state.borrow().current_breath,
+        );
         let to_world = move |surface_units: [f32; 2]| {
-            remap_surface_units_to_active_plane_world(camera, surface_units, cell_clip_size)
+            let world =
+                remap_surface_units_to_active_plane_world(camera, surface_units, cell_clip_size);
+            thaum_renderer_domain::WorldPoint {
+                x: world.x - active_move_offset.x,
+                y: world.y - active_move_offset.y,
+                z: world.z - active_move_offset.z,
+            }
         };
         // Screen-space (2D HUD layer) counterpart of `to_world`: modules and
         // their gizmos live on the roll/swing/pan-immune Flat2d layer, so
@@ -2778,6 +2795,13 @@ fn main() -> Result<()> {
                     cursor,
                     cell_clip_size_for_state(state, frame.surface_size),
                 );
+                // Same document-space correction as `to_world`: the stamp
+                // ghost must sit under the cursor on the moved layer.
+                let anchor_world = thaum_renderer_domain::WorldPoint {
+                    x: anchor_world.x - active_move_offset.x,
+                    y: anchor_world.y - active_move_offset.y,
+                    z: anchor_world.z - active_move_offset.z,
+                };
                 Some(StampHover {
                     hand,
                     anchor: CellPoint {
