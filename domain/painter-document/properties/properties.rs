@@ -63,26 +63,27 @@ pub fn pushed_breath_span(
 }
 
 /// Result of a destructive (overwrite) span edit: the edited block's new span plus how
-/// every overlapped neighbor resolves. Under binary tiling victims become blanks — a
-/// partially overlapped neighbor keeps only its un-covered remainder and turns empty
-/// (content discarded), and a fully covered neighbor is removed outright (the edited
-/// block covers its range, so no blank is needed). The edited block's own vacated
-/// range is not part of this result; the storage seam re-tiles it into a blank.
+/// every overlapped neighbor resolves. Under binary tiling a partially overlapped
+/// neighbor is CROPPED: it keeps its un-covered remainder span WITH its content — a
+/// destructive drag is a timing adjustment, not a content deletion (J 2026-09-07).
+/// Only a neighbor fully encapsulated by the edited span is removed outright, which
+/// is the one case that deletes content. The edited block's own vacated range is not
+/// part of this result; the storage seam re-tiles it into a blank.
 /// Indices refer to positions in the `others` slice passed to `destructive_breath_span`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DestructiveBreathSpan {
     pub edited: (u32, u32),
-    /// Partially overlapped neighbors: (index, residual (start, length) span) that
-    /// becomes a blank block, content discarded.
-    pub blanked: Vec<(usize, (u32, u32))>,
-    /// Fully covered neighbors, removed outright.
+    /// Partially overlapped neighbors: (index, residual (start, length) span) the
+    /// neighbor is cropped to, content preserved.
+    pub trimmed: Vec<(usize, (u32, u32))>,
+    /// Fully encapsulated neighbors, removed outright — content deleted.
     pub removed: Vec<usize>,
 }
 
-/// Destructive resolution: the edited block takes its full requested span and every
-/// other block it covers yields into an empty cell type. A shrink request overlaps
-/// nothing, so it behaves as a plain trim — destructiveness only shows when growing
-/// or sliding over neighbors.
+/// Destructive resolution: the edited block takes its full requested span, partially
+/// overlapped neighbors crop to their remainders, and fully encapsulated neighbors
+/// die. A shrink request overlaps nothing, so it behaves as a plain trim —
+/// destructiveness only shows when growing or sliding over neighbors.
 pub fn destructive_breath_span(
     others: &[(u32, u32)],
     requested: (u32, u32),
@@ -101,9 +102,15 @@ pub fn destructive_breath_span(
         if start >= edited.0 && end <= edited_end {
             result.removed.push(index);
         } else if start < edited.0 {
-            result.blanked.push((index, (start, edited.0 - start)));
+            result.trimmed.push((index, (start, edited.0 - start)));
+            // The edited span sits strictly inside this neighbor: it is cropped on
+            // BOTH sides, so the neighbor splits — two remainders, both keeping
+            // their content (J 2026-09-07: nothing not overwritten is deleted).
+            if end > edited_end {
+                result.trimmed.push((index, (edited_end, end - edited_end)));
+            }
         } else {
-            result.blanked.push((index, (edited_end, end - edited_end)));
+            result.trimmed.push((index, (edited_end, end - edited_end)));
         }
     }
     result
@@ -201,7 +208,7 @@ mod tests {
         let others = [(4, 8), (20, 4), (40, 4)];
         let destructive = destructive_breath_span(&others, (8, 20));
         assert_eq!(destructive.edited, (8, 20));
-        assert_eq!(destructive.blanked, vec![(0, (4, 4))]);
+        assert_eq!(destructive.trimmed, vec![(0, (4, 4))]);
         assert_eq!(destructive.removed, vec![1]);
     }
 
@@ -210,7 +217,7 @@ mod tests {
         let others = [(0, 8), (20, 8)];
         let destructive = destructive_breath_span(&others, (8, 2));
         assert_eq!(destructive.edited, (8, 2));
-        assert!(destructive.blanked.is_empty());
+        assert!(destructive.trimmed.is_empty());
         assert!(destructive.removed.is_empty());
     }
 }

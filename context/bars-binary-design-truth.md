@@ -52,6 +52,7 @@ Bar-size mapping: 1 breath = single head only; 2 breaths = left + right heads; 3
 - Duplicate no longer grows the layer span (viewport decoupled from editing).
 - `set_layer_timing` resizes the viewport only: growing extends the trailing representative, shrinking never clips content.
 - `SharedDocumentPropertyBlock.interpretation: Option<String>` is the end-blank interpretation slot (serde-default, unset everywhere, no UX).
+- **Destructive = crop, not erase (J 2026-09-07, bug fix):** a destructive drag that partially overlaps a solid victim CROPS it — the un-overwritten remainder keeps its span AND its content. Only a victim fully encapsulated by the moved bar is deleted outright. A victim the edit straddles (edit span strictly inside it) crops on both sides and splits into two blocks, both keeping content (the split-off half gets a fresh id and its own empty canvas — per-block canvases cannot be split pixel-accurately). Implemented as `DestructiveBreathSpan.trimmed`/`.removed` in `properties.rs`.
 
 ## file break truth
 - New file schema, **no migration pass**, no importer. Migration bloat stays out of the system on purpose.

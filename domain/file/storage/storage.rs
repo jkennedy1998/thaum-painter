@@ -1302,16 +1302,41 @@ impl SharedDocumentRuntime {
         };
         track.blocks[index].start_breath = destructive.edited.0;
         track.blocks[index].length_breaths = destructive.edited.1;
-        // Victims yield into empty cell types; their canvases are discarded with them.
+        // Partially overlapped neighbors are CROPPED to their remainder, keeping
+        // their content (a destructive drag is a timing adjustment — J 2026-09-07).
+        // Only fully encapsulated neighbors die, and that is the only content loss.
+        // A neighbor the edit straddles crops on BOTH sides: the first remainder
+        // stays in place, the second splits off as a new block (same is_blank/value,
+        // fresh id, own empty canvas — per-block canvases cannot be split).
         let mut dropped_canvas_keys = Vec::new();
-        for (other_index, (start, length)) in destructive.blanked {
+        let mut new_canvas_keys: Vec<(String, String)> = Vec::new();
+        let mut trimmed_once: Vec<usize> = Vec::new();
+        for (other_index, (start, length)) in destructive.trimmed {
             let track_index = other_track_indices[other_index];
+            if trimmed_once.contains(&track_index) {
+                let victim = &track.blocks[track_index];
+                let split_id = next_property_block_id(&track.blocks);
+                let split = SharedDocumentPropertyBlock {
+                    id: split_id.clone(),
+                    start_breath: start,
+                    length_breaths: length,
+                    is_blank: victim.is_blank,
+                    value: victim.value.clone(),
+                    interpretation: None,
+                };
+                let insert_at = track
+                    .blocks
+                    .iter()
+                    .position(|block| block.start_breath > start)
+                    .unwrap_or(track.blocks.len());
+                track.blocks.insert(insert_at, split);
+                new_canvas_keys.push((layer_id.to_string(), split_id));
+                continue;
+            }
+            trimmed_once.push(track_index);
             let victim = &mut track.blocks[track_index];
             victim.start_breath = start;
             victim.length_breaths = length;
-            victim.is_blank = true;
-            victim.value = None;
-            dropped_canvas_keys.push((layer_id.to_string(), victim.id.clone()));
         }
         // Removals shift indices, so apply them highest-index-first.
         let mut removed_track_indices: Vec<usize> = destructive
@@ -1327,6 +1352,9 @@ impl SharedDocumentRuntime {
         }
         for key in dropped_canvas_keys {
             self.block_canvases.remove(&key);
+        }
+        for key in new_canvas_keys {
+            self.block_canvases.insert(key, Canvas::new());
         }
         // Binary tiling: the edited block's vacated range becomes blank and the track
         // stays fully covered — no void ever appears.
@@ -3706,7 +3734,7 @@ mod tests {
     }
 
     #[test]
-    fn destructive_timing_victims_become_blanks_and_the_track_stays_tiled() {
+    fn destructive_timing_partial_overlap_crops_the_victim_keeping_its_content() {
         let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
             "doc-1", "Doc", "layer-1", "Layer 1",
         ));
@@ -3714,9 +3742,10 @@ mod tests {
         runtime.set_property_block_timing_destructive("layer-1", "raster", "block-2", 16, 8);
 
         // block-1 (0..8, empty) slides destructively into the middle of block-2
-        // (16..24): the victim keeps only its pre-edited remainder and turns blank,
-        // and every vacated window re-tiles into blank blocks — no void anywhere.
-        // The two adjacent victim blanks merge into one (no-adjacent-empties).
+        // (16..24): the victim is CROPPED to its un-covered remainder (8..18) and
+        // KEEPS its content — a destructive drag is a timing adjustment, not a
+        // deletion (J 2026-09-07). The vacated window re-tiles into a blank and
+        // the trailing blank representative is appended after the cropped solid.
         assert!(
             runtime.set_property_block_timing_destructive("layer-1", "raster", "block-1", 18, 4)
         );
@@ -3728,7 +3757,34 @@ mod tests {
             .collect();
         assert_eq!(
             covered,
-            vec![(0, 18, true), (18, 22, false), (22, 25, true)]
+            vec![(0, 16, true), (16, 18, false), (18, 22, false), (22, 24, false), (24, 25, true)]
+        );
+    }
+
+    #[test]
+    fn destructive_timing_fully_encapsulated_victim_is_the_only_content_deletion() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        runtime.split_property_block("layer-1", "raster", "block-1", 8);
+        runtime.split_property_block("layer-1", "raster", "block-2", 16);
+
+        // block-2 (8..16) slides destructively to 4..20: block-1 (0..8) is cropped
+        // to 0..4 and block-3 (16..24) is cropped to 20..24 — both keep their
+        // content. Only a victim fully encapsulated by the moved bar would be
+        // deleted outright; partial overlap never deletes (J 2026-09-07).
+        assert!(
+            runtime.set_property_block_timing_destructive("layer-1", "raster", "block-2", 4, 16)
+        );
+        let track = runtime.property_track("layer-1", "raster").unwrap();
+        let covered: Vec<(u32, u32, bool)> = track
+            .blocks
+            .iter()
+            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .collect();
+        assert_eq!(
+            covered,
+            vec![(0, 4, false), (4, 20, false), (20, 24, false), (24, 25, true)]
         );
     }
 
