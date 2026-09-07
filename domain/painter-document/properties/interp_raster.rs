@@ -1,0 +1,557 @@
+//! Raster-channel interpolation (J 2026-09-07): the second real per-property-channel
+//! resolver, beside `interp_move`. Each raster keyframe (a solid property block) owns
+//! a painted canvas; the empties between them resolve per the empty's authored mode:
+//!
+//! - **hold** — carries the previous keyframe's canvas through the empty.
+//! - **interpolate** — blends the previous keyframe's canvas into the next one across
+//!   the empty's span, with the empty's ease ends bending progress exactly like the
+//!   move channel's. Per cell, matched by grid position:
+//!   - **color** (flat RGB) lerps channel-by-channel — continuous, the easy part.
+//!   - **weight** lerps numerically — continuous, the other easy part.
+//!   - **graphic** (the character / sprite) is discrete: a hard cutoff at the halfway
+//!     crossing. The first half of the transition shows the previous keyframe's
+//!     graphic, the second half the next one's. The eases still shape *when* the flip
+//!     happens, which reads as an intentional swap rather than a pop.
+//!   - a material color is discrete like a graphic and rides the same cutoff.
+//!   - a cell present in only one keyframe shows during the half its side is active
+//!     (hard appear / disappear, no weight fade in this first pass).
+//! - **loop_out / loop_in** — edge-locked modes: replay the authored region through
+//!   the trailing / leading blank, resolving each mapped breath through this module.
+//!
+//! Scrubbing to a blank with no solvable content still resolves `None` — nothing
+//! renders there, matching the pre-interpolation behavior.
+
+use std::collections::BTreeSet;
+
+use crate::brush::{effective_cell, Canvas, PaintedCell};
+use crate::interp_move;
+use crate::paint_color::PaintColor;
+use crate::storage::SharedDocumentPropertyBlock;
+
+/// Resolves the painted canvas authored for `breath` across one raster property
+/// track's blocks, or `None` when nothing resolves. `canvas_of` supplies a
+/// block's own painted canvas (solids only ever need it). Breaths past the
+/// trailing blank's stored extent resolve AS the trailing blank, so a loop-out
+/// keeps playing in the infinite region instead of dropping to nothing.
+pub fn resolve_raster_canvas(
+    blocks: &[SharedDocumentPropertyBlock],
+    breath: u32,
+    canvas_of: impl Fn(&SharedDocumentPropertyBlock) -> Option<Canvas>,
+) -> Option<Canvas> {
+    let index = blocks
+        .iter()
+        .position(|block| {
+            crate::properties::breath_in_span(breath, block.start_breath, block.length_breaths)
+        })
+        .or_else(|| {
+            // Past the stored extent: the trailing blank covers to infinity.
+            blocks
+                .last()
+                .filter(|block| block.is_blank)
+                .map(|_| blocks.len() - 1)
+        })?;
+    resolve_block(blocks, index, breath, canvas_of)
+}
+
+/// Resolves one block at `breath` (the breath is always inside the block's span
+/// or mapped into it by the loop resolver, which cannot re-enter a loop blank).
+fn resolve_block(
+    blocks: &[SharedDocumentPropertyBlock],
+    index: usize,
+    breath: u32,
+    canvas_of: impl Fn(&SharedDocumentPropertyBlock) -> Option<Canvas>,
+) -> Option<Canvas> {
+    let block = &blocks[index];
+    if !block.is_blank {
+        return canvas_of(block);
+    }
+    match crate::interp_mode::resolve_mode(block.interpretation.as_deref()) {
+        "loop_out" => resolve_loop(blocks, index, breath, false, canvas_of),
+        "loop_in" => resolve_loop(blocks, index, breath, true, canvas_of),
+        "hold" => solid_canvas_before(blocks, index, &canvas_of)
+            .or_else(|| solid_canvas_after(blocks, index, &canvas_of)),
+        _ => resolve_interpolate(blocks, index, breath, canvas_of),
+    }
+}
+
+/// Hold: the nearest solid keyframe to the LEFT holds its canvas through the
+/// empty. With nothing behind (the empty starts the track) the nearest solid
+/// to the right holds instead; with no content at all nothing resolves.
+fn solid_canvas_before(
+    blocks: &[SharedDocumentPropertyBlock],
+    index: usize,
+    canvas_of: impl Fn(&SharedDocumentPropertyBlock) -> Option<Canvas>,
+) -> Option<Canvas> {
+    blocks[..index]
+        .iter()
+        .rev()
+        .find(|block| !block.is_blank)
+        .and_then(canvas_of)
+}
+
+/// The nearest solid keyframe entirely right of `index`, if any.
+fn solid_canvas_after(
+    blocks: &[SharedDocumentPropertyBlock],
+    index: usize,
+    canvas_of: impl Fn(&SharedDocumentPropertyBlock) -> Option<Canvas>,
+) -> Option<Canvas> {
+    blocks[index + 1..]
+        .iter()
+        .find(|block| !block.is_blank)
+        .and_then(canvas_of)
+}
+
+/// Interpolate: blend the previous keyframe's canvas into the next one across
+/// the empty's span, progress bent by the same ease model as the move channel.
+/// A missing side degrades to holding the existing side's canvas.
+fn resolve_interpolate(
+    blocks: &[SharedDocumentPropertyBlock],
+    index: usize,
+    breath: u32,
+    canvas_of: impl Fn(&SharedDocumentPropertyBlock) -> Option<Canvas>,
+) -> Option<Canvas> {
+    let previous = solid_canvas_before(blocks, index, &canvas_of);
+    let next = solid_canvas_after(blocks, index, &canvas_of);
+    match (previous, next) {
+        (Some(from), Some(to)) => {
+            let progress = interp_move::empty_progress(&blocks[index], breath);
+            Some(blend_canvases(&from, &to, progress))
+        }
+        (only, None) => only,
+        (None, only) => only,
+    }
+}
+
+/// Loop out / loop in: repeat the authored region (first keyframe start through
+/// last keyframe end) through the edge blank, mapping the breath back into the
+/// region and resolving it there (depth-one, identical to the move channel).
+fn resolve_loop(
+    blocks: &[SharedDocumentPropertyBlock],
+    index: usize,
+    breath: u32,
+    mirror: bool,
+    canvas_of: impl Fn(&SharedDocumentPropertyBlock) -> Option<Canvas>,
+) -> Option<Canvas> {
+    let blank = &blocks[index];
+    let first_solid = blocks.iter().position(|block| !block.is_blank)?;
+    let last_solid = blocks.iter().rposition(|block| !block.is_blank)?;
+    let region_start = blocks[first_solid].start_breath;
+    let region_end = blocks[last_solid].start_breath + blocks[last_solid].length_breaths;
+    let loop_len = region_end.saturating_sub(region_start);
+    if loop_len == 0 {
+        return None;
+    }
+    let mapped = if mirror {
+        let blank_end = blank.start_breath + blank.length_breaths;
+        let distance = blank_end.saturating_sub(1).saturating_sub(breath);
+        region_end - 1 - (distance % loop_len)
+    } else {
+        let distance = breath.saturating_sub(blank.start_breath);
+        region_start + (distance % loop_len)
+    };
+    let mapped_index = blocks.iter().position(|block| {
+        crate::properties::breath_in_span(mapped, block.start_breath, block.length_breaths)
+    })?;
+    resolve_block(blocks, mapped_index, mapped, canvas_of)
+}
+
+/// Blends two keyframe canvases at `progress` (0 = fully `from`, 1 = fully
+/// `to`). Cells match by grid position; authored blanks count as absent via
+/// the unified empty-cell read seam. See the module header for per-channel
+/// rules: continuous color/weight lerp, discrete graphic/material cutoff at
+/// the halfway crossing, and half-span appear/disappear for one-sided cells.
+pub fn blend_canvases(from: &Canvas, to: &Canvas, progress: f32) -> Canvas {
+    let progress = progress.clamp(0.0, 1.0);
+    let from_active = progress < 0.5;
+    let mut blended = Canvas::new();
+    let positions: BTreeSet<_> = from.keys().chain(to.keys()).collect();
+    for position in positions {
+        let from_cell = effective_cell(from.get(position));
+        let to_cell = effective_cell(to.get(position));
+        match (from_cell, to_cell) {
+            (Some(a), Some(b)) => {
+                blended.insert(*position, blend_cells(a, b, progress, from_active));
+            }
+            (Some(a), None) if from_active => {
+                blended.insert(*position, a.clone());
+            }
+            (None, Some(b)) if !from_active => {
+                blended.insert(*position, b.clone());
+            }
+            _ => {}
+        }
+    }
+    blended
+}
+
+fn blend_cells(
+    from: &PaintedCell,
+    to: &PaintedCell,
+    progress: f32,
+    from_active: bool,
+) -> PaintedCell {
+    PaintedCell {
+        // Discrete: hard cutoff at the halfway crossing, shaped by the eases.
+        graphic: if from_active {
+            from.graphic.clone()
+        } else {
+            to.graphic.clone()
+        },
+        color: blend_colors(from.color, to.color, progress, from_active),
+        weight_index: lerp_weight(from.weight_index, to.weight_index, progress),
+    }
+}
+
+/// Flat RGB lerps channel-by-channel; anything else (material colors) is
+/// discrete and rides the graphic's halfway cutoff.
+fn blend_colors(from: PaintColor, to: PaintColor, progress: f32, from_active: bool) -> PaintColor {
+    match (from, to) {
+        (PaintColor::FlatRgb(r1, g1, b1), PaintColor::FlatRgb(r2, g2, b2)) => PaintColor::FlatRgb(
+            lerp_channel(r1, r2, progress),
+            lerp_channel(g1, g2, progress),
+            lerp_channel(b1, b2, progress),
+        ),
+        (from, to) => {
+            if from_active {
+                from
+            } else {
+                to
+            }
+        }
+    }
+}
+
+fn lerp_channel(from: u8, to: u8, progress: f32) -> u8 {
+    (from as f32 + (to as f32 - from as f32) * progress)
+        .round()
+        .clamp(0.0, 255.0) as u8
+}
+
+fn lerp_weight(from: i64, to: i64, progress: f32) -> i64 {
+    (from as f32 + (to as f32 - from as f32) * progress).round() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::brush::write_cell;
+    use crate::paint_color::PaintColor;
+    use serde_json::json;
+    use thaum_renderer_domain::{CellGraphic, CellMaterialId, CellPoint};
+
+    fn point(x: i32, y: i32) -> CellPoint {
+        CellPoint { x, y, z: 0 }
+    }
+
+    fn cell(glyph: char, color: PaintColor, weight: i64) -> PaintedCell {
+        PaintedCell {
+            graphic: CellGraphic::Glyph(glyph),
+            color,
+            weight_index: weight,
+        }
+    }
+
+    fn canvas_with(entries: &[(CellPoint, PaintedCell)]) -> Canvas {
+        let mut canvas = Canvas::new();
+        for (position, painted) in entries {
+            write_cell(&mut canvas, *position, painted.clone());
+        }
+        canvas
+    }
+
+    fn solid(id: &str, start: u32, length: u32) -> SharedDocumentPropertyBlock {
+        SharedDocumentPropertyBlock {
+            id: id.to_string(),
+            start_breath: start,
+            length_breaths: length,
+            is_blank: false,
+            value: Some(json!({})),
+            interpretation: None,
+            ease_out_percent: None,
+            ease_in_percent: None,
+        }
+    }
+
+    fn blank(
+        id: &str,
+        start: u32,
+        length: u32,
+        interpretation: Option<&str>,
+        ease_out: Option<u8>,
+        ease_in: Option<u8>,
+    ) -> SharedDocumentPropertyBlock {
+        SharedDocumentPropertyBlock {
+            id: id.to_string(),
+            start_breath: start,
+            length_breaths: length,
+            is_blank: true,
+            value: None,
+            interpretation: interpretation.map(str::to_string),
+            ease_out_percent: ease_out,
+            ease_in_percent: ease_in,
+        }
+    }
+
+    #[test]
+    fn matched_cells_lerp_color_and_weight_but_cut_the_graphic_at_the_halfway_crossing() {
+        let from = canvas_with(&[(point(1, 1), cell('a', PaintColor::flat_rgb(0, 0, 0), 0))]);
+        let to = canvas_with(&[(
+            point(1, 1),
+            cell('b', PaintColor::flat_rgb(100, 200, 40), 4),
+        )]);
+        // First half: previous keyframe's graphic, color/weight already blending.
+        let first_half = blend_canvases(&from, &to, 0.25);
+        let blended = first_half.get(&point(1, 1)).unwrap();
+        assert_eq!(blended.graphic, CellGraphic::Glyph('a'));
+        assert_eq!(blended.color, PaintColor::flat_rgb(25, 50, 10));
+        assert_eq!(blended.weight_index, 1);
+        // Second half: next keyframe's graphic, blend continues.
+        let second_half = blend_canvases(&from, &to, 0.75);
+        let blended = second_half.get(&point(1, 1)).unwrap();
+        assert_eq!(blended.graphic, CellGraphic::Glyph('b'));
+        assert_eq!(blended.color, PaintColor::flat_rgb(75, 150, 30));
+        assert_eq!(blended.weight_index, 3);
+        // The ends resolve exactly.
+        assert_eq!(blend_canvases(&from, &to, 0.0), from);
+        assert_eq!(blend_canvases(&from, &to, 1.0), to);
+    }
+
+    #[test]
+    fn one_sided_cells_show_only_during_their_side_active_half() {
+        let from = canvas_with(&[(point(0, 0), cell('x', PaintColor::flat_rgb(1, 2, 3), 1))]);
+        let to = canvas_with(&[(point(2, 2), cell('y', PaintColor::flat_rgb(4, 5, 6), 2))]);
+        let first_half = blend_canvases(&from, &to, 0.25);
+        assert!(
+            first_half.contains_key(&point(0, 0)),
+            "from-side cell shows early"
+        );
+        assert!(
+            !first_half.contains_key(&point(2, 2)),
+            "to-side cell hidden early"
+        );
+        let second_half = blend_canvases(&from, &to, 0.75);
+        assert!(
+            !second_half.contains_key(&point(0, 0)),
+            "from-side cell hidden late"
+        );
+        assert!(
+            second_half.contains_key(&point(2, 2)),
+            "to-side cell shows late"
+        );
+    }
+
+    #[test]
+    fn authored_blanks_count_as_absent_when_matching() {
+        let from = canvas_with(&[(point(0, 0), cell('x', PaintColor::flat_rgb(1, 2, 3), 1))]);
+        let to = canvas_with(&[(point(0, 0), cell(' ', PaintColor::flat_rgb(9, 9, 9), 1))]);
+        // The `to` cell is an authored blank: the position resolves as from-only.
+        let blended = blend_canvases(&from, &to, 0.25);
+        assert_eq!(blended.get(&point(0, 0)), from.get(&point(0, 0)));
+        let blended = blend_canvases(&from, &to, 0.75);
+        assert!(blended.is_empty(), "authored blank erases the cell late");
+    }
+
+    #[test]
+    fn material_colors_ride_the_graphic_cutoff() {
+        let from = canvas_with(&[(
+            point(0, 0),
+            cell('a', PaintColor::material(CellMaterialId::GrayScale), 1),
+        )]);
+        let to = canvas_with(&[(point(0, 0), cell('b', PaintColor::flat_rgb(10, 20, 30), 1))]);
+        let first_half = blend_canvases(&from, &to, 0.25);
+        assert_eq!(
+            first_half.get(&point(0, 0)).unwrap().color,
+            PaintColor::material(CellMaterialId::GrayScale)
+        );
+        let second_half = blend_canvases(&from, &to, 0.75);
+        assert_eq!(
+            second_half.get(&point(0, 0)).unwrap().color,
+            PaintColor::flat_rgb(10, 20, 30)
+        );
+    }
+
+    #[test]
+    fn a_solid_block_resolves_its_own_canvas() {
+        let blocks = vec![solid("a", 0, 4), blank("tail", 4, 1, None, None, None)];
+        let canvas = canvas_with(&[(point(1, 1), cell('a', PaintColor::flat_rgb(1, 2, 3), 1))]);
+        let canvases = [("a", canvas.clone()), ("tail", Canvas::new())];
+        let resolve = |breath: u32| {
+            resolve_raster_canvas(&blocks, breath, |block| {
+                canvases
+                    .iter()
+                    .find(|(id, _)| *id == block.id)
+                    .map(|(_, canvas)| canvas.clone())
+            })
+        };
+        assert_eq!(resolve(0), Some(canvas));
+        assert_eq!(resolve(3).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn an_interpolating_empty_blends_across_its_span_with_eases() {
+        let blocks = vec![
+            solid("a", 0, 4),
+            blank("b", 4, 4, None, None, None),
+            solid("c", 8, 4),
+            blank("tail", 12, 1, None, None, None),
+        ];
+        let canvas_a = canvas_with(&[(point(1, 1), cell('a', PaintColor::flat_rgb(0, 0, 0), 0))]);
+        let canvas_c =
+            canvas_with(&[(point(1, 1), cell('b', PaintColor::flat_rgb(80, 80, 80), 8))]);
+        let canvases = [
+            ("a", canvas_a),
+            ("b", Canvas::new()),
+            ("c", canvas_c),
+            ("tail", Canvas::new()),
+        ];
+        let resolve = |breath: u32| {
+            resolve_raster_canvas(&blocks, breath, |block| {
+                canvases
+                    .iter()
+                    .find(|(id, _)| *id == block.id)
+                    .map(|(_, canvas)| canvas.clone())
+            })
+        };
+        // Same linear walk as the move channel: 4 empty breaths -> t = 1/5..4/5.
+        // Breath 4 (t=0.2, first half): graphic 'a', weight 8*0.2 = 1.6 -> 2.
+        let breath4 = resolve(4).unwrap();
+        let cell4 = breath4.get(&point(1, 1)).unwrap();
+        assert_eq!(cell4.graphic, CellGraphic::Glyph('a'));
+        assert_eq!(cell4.weight_index, 2);
+        assert_eq!(cell4.color, PaintColor::flat_rgb(16, 16, 16));
+        // Breath 5 (t=0.4): weight 8*0.4 = 3.2 -> 3.
+        assert_eq!(
+            resolve(5).unwrap().get(&point(1, 1)).unwrap().weight_index,
+            3
+        );
+        // Breath 7 (t=0.8, second half): graphic 'b', weight 8*0.8 = 6.4 -> 6.
+        let breath7 = resolve(7).unwrap();
+        let cell7 = breath7.get(&point(1, 1)).unwrap();
+        assert_eq!(cell7.graphic, CellGraphic::Glyph('b'));
+        assert_eq!(cell7.weight_index, 6);
+        // Breath 8 lands on the next keyframe exactly.
+        assert_eq!(
+            resolve(8).unwrap().get(&point(1, 1)).unwrap().weight_index,
+            8
+        );
+
+        // Full ease-out on the same empty: the first breath barely departs.
+        let blocks = vec![
+            solid("a", 0, 4),
+            blank("b", 4, 4, Some("interpolate"), Some(100), None),
+            solid("c", 8, 4),
+            blank("tail", 12, 1, None, None, None),
+        ];
+        let resolve = |breath: u32| {
+            resolve_raster_canvas(&blocks, breath, |block| {
+                canvases
+                    .iter()
+                    .find(|(id, _)| *id == block.id)
+                    .map(|(_, canvas)| canvas.clone())
+            })
+        };
+        let eased = resolve(4).unwrap().get(&point(1, 1)).unwrap().weight_index;
+        assert!(
+            eased < 2,
+            "ease-out must start slower than linear ({eased} < 2)"
+        );
+    }
+
+    #[test]
+    fn hold_and_one_sided_interpolates_hold_the_existing_side() {
+        // Hold carries the previous keyframe's canvas through the empty.
+        let blocks = vec![
+            solid("a", 0, 4),
+            blank("b", 4, 4, Some("hold"), None, None),
+            solid("c", 8, 4),
+            blank("tail", 12, 1, None, None, None),
+        ];
+        let canvas_a = canvas_with(&[(point(0, 0), cell('a', PaintColor::flat_rgb(1, 1, 1), 1))]);
+        let canvases = [
+            ("a", canvas_a.clone()),
+            ("b", Canvas::new()),
+            ("c", Canvas::new()),
+            ("tail", Canvas::new()),
+        ];
+        let resolve = |blocks: &[SharedDocumentPropertyBlock], breath: u32| {
+            resolve_raster_canvas(blocks, breath, |block| {
+                canvases
+                    .iter()
+                    .find(|(id, _)| *id == block.id)
+                    .map(|(_, canvas)| canvas.clone())
+            })
+        };
+        assert_eq!(resolve(&blocks, 6), Some(canvas_a.clone()));
+        // A leading empty with only a next solid holds it (nothing behind): the
+        // held side is solid "c"'s canvas (empty here), not a blend.
+        let blocks = vec![
+            blank("lead", 0, 2, None, None, None),
+            solid("c", 2, 4),
+            blank("tail", 6, 1, None, None, None),
+        ];
+        assert_eq!(resolve(&blocks, 0), Some(Canvas::new()));
+        assert_eq!(resolve(&blocks, 1), Some(Canvas::new()));
+    }
+
+    #[test]
+    fn an_interpolating_empty_with_only_a_previous_side_holds_it_through_the_tail() {
+        // Matching the move channel: a missing side degrades to holding the
+        // existing side, so the last keyframe persists through the trailing
+        // blank instead of the layer dropping to nothing after it.
+        let blocks = vec![solid("a", 0, 4), blank("tail", 4, 2, None, None, None)];
+        let canvas_a = canvas_with(&[(point(0, 0), cell('a', PaintColor::flat_rgb(1, 1, 1), 1))]);
+        let canvases = [("a", canvas_a.clone()), ("tail", Canvas::new())];
+        let resolve = |breath: u32| {
+            resolve_raster_canvas(&blocks, breath, |block| {
+                canvases
+                    .iter()
+                    .find(|(id, _)| *id == block.id)
+                    .map(|(_, canvas)| canvas.clone())
+            })
+        };
+        assert_eq!(resolve(4), Some(canvas_a.clone()));
+        assert_eq!(resolve(5), Some(canvas_a));
+    }
+
+    #[test]
+    fn loop_out_replays_the_authored_region_through_the_trailing_blank() {
+        let blocks = vec![
+            solid("a", 0, 4),
+            blank("b", 4, 4, Some("hold"), None, None),
+            solid("c", 8, 4),
+            blank("tail", 12, 4, Some("loop_out"), None, None),
+        ];
+        let canvas_a = canvas_with(&[(point(0, 0), cell('a', PaintColor::flat_rgb(1, 1, 1), 1))]);
+        let canvases = [
+            ("a", canvas_a.clone()),
+            ("b", Canvas::new()),
+            ("c", Canvas::new()),
+            ("tail", Canvas::new()),
+        ];
+        let resolve = |breath: u32| {
+            resolve_raster_canvas(&blocks, breath, |block| {
+                canvases
+                    .iter()
+                    .find(|(id, _)| *id == block.id)
+                    .map(|(_, canvas)| canvas.clone())
+            })
+        };
+        // Region 0..12: breath 12 wraps to 0 (solid a), 16 wraps into the hold
+        // blank (also a), 20 wraps to solid c.
+        assert_eq!(resolve(12), Some(canvas_a.clone()));
+        assert_eq!(resolve(16), Some(canvas_a.clone()));
+        assert_eq!(resolve(20).unwrap().len(), 0);
+        // Far past the stored extent the loop keeps playing.
+        assert_eq!(resolve(24), Some(canvas_a));
+    }
+
+    #[test]
+    fn a_track_with_no_solids_resolves_nothing() {
+        let blocks = vec![blank("tail", 0, 24, None, None, None)];
+        assert_eq!(
+            resolve_raster_canvas(&blocks, 5, |_| Some(Canvas::new())),
+            None
+        );
+        assert_eq!(resolve_raster_canvas(&[], 0, |_| Some(Canvas::new())), None);
+    }
+}

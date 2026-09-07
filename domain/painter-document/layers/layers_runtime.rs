@@ -15,10 +15,7 @@ use crate::session_document::{
     action_timestamp_string, append_and_apply_shared_action, next_action_id,
     recover_snapshot_conflict, sync_canvas_from_active_layer,
 };
-use crate::storage::{
-    save_shared_document_snapshot, SharedDocumentPaths,
-    SharedDocumentRuntime,
-};
+use crate::storage::{save_shared_document_snapshot, SharedDocumentPaths, SharedDocumentRuntime};
 use crate::timeline_state::TimelineState;
 
 pub fn resolved_active_layer_id(
@@ -60,7 +57,10 @@ pub fn create_layer(runtime: &mut SharedDocumentRuntime) -> String {
 /// one solid block over the layer span plus the trailing blank — so a user
 /// never sees an empty property row and new-layer rows show their empties
 /// (J 2026-09-07 bug fix).
-fn default_row_blocks(layer: &crate::storage::SharedDocumentLayer, property_id: &str) -> Vec<PropertyTrackBlock> {
+fn default_row_blocks(
+    layer: &crate::storage::SharedDocumentLayer,
+    property_id: &str,
+) -> Vec<PropertyTrackBlock> {
     let start = layer.start_breath;
     let length = layer.length_breaths.max(1);
     vec![
@@ -332,12 +332,7 @@ pub fn apply_layers_panel_action(
                 &target_block_id,
             );
         }
-        LayersPanelAction::SplitPropertyBlock(
-            layer_id,
-            property_id,
-            block_id,
-            split_breath,
-        ) => {
+        LayersPanelAction::SplitPropertyBlock(layer_id, property_id, block_id, split_breath) => {
             let Some(new_block_id) = shared_document.split_property_block(
                 &layer_id,
                 &property_id,
@@ -363,11 +358,9 @@ pub fn apply_layers_panel_action(
             sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
         }
         LayersPanelAction::DuplicatePropertyBlock(layer_id, property_id, block_id) => {
-            let Some(new_block_id) = shared_document.duplicate_property_block(
-                &layer_id,
-                &property_id,
-                &block_id,
-            ) else {
+            let Some(new_block_id) =
+                shared_document.duplicate_property_block(&layer_id, &property_id, &block_id)
+            else {
                 return;
             };
             *selected_property_id = Some(property_id.clone());

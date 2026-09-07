@@ -104,11 +104,7 @@ pub fn covering_bar_cell<B: BreathBar>(blocks: &[B], breath: u32) -> Option<BarC
         breath >= start && breath < start + bar.bar_length_breaths()
     })?;
     Some(BarCell {
-        piece: classify_bar_piece(
-            bar.bar_start_breath(),
-            bar.bar_length_breaths(),
-            breath,
-        ),
+        piece: classify_bar_piece(bar.bar_start_breath(), bar.bar_length_breaths(), breath),
         cell_type: cell_type_of(bar.bar_is_blank()),
     })
 }
@@ -161,19 +157,31 @@ mod tests {
         let blocks = vec![stored(0, 3, false), stored(3, 2, true)];
         assert_eq!(
             covering_bar_cell(&blocks, 0),
-            Some(BarCell { piece: BarPiece::LeftHead, cell_type: CellType::Solid })
+            Some(BarCell {
+                piece: BarPiece::LeftHead,
+                cell_type: CellType::Solid
+            })
         );
         assert_eq!(
             covering_bar_cell(&blocks, 2),
-            Some(BarCell { piece: BarPiece::RightHead, cell_type: CellType::Solid })
+            Some(BarCell {
+                piece: BarPiece::RightHead,
+                cell_type: CellType::Solid
+            })
         );
         assert_eq!(
             covering_bar_cell(&blocks, 3),
-            Some(BarCell { piece: BarPiece::LeftHead, cell_type: CellType::Empty })
+            Some(BarCell {
+                piece: BarPiece::LeftHead,
+                cell_type: CellType::Empty
+            })
         );
         assert_eq!(
             covering_bar_cell(&blocks, 4),
-            Some(BarCell { piece: BarPiece::RightHead, cell_type: CellType::Empty })
+            Some(BarCell {
+                piece: BarPiece::RightHead,
+                cell_type: CellType::Empty
+            })
         );
     }
 
@@ -187,7 +195,10 @@ mod tests {
         };
         assert_eq!(
             covering_bar_cell(&[schema], 6),
-            Some(BarCell { piece: BarPiece::RightHead, cell_type: CellType::Solid })
+            Some(BarCell {
+                piece: BarPiece::RightHead,
+                cell_type: CellType::Solid
+            })
         );
     }
 

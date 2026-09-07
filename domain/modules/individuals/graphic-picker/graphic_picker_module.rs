@@ -1,11 +1,10 @@
 use std::{cell::RefCell, rc::Rc};
 
 use thaum_renderer_domain::{
-    Hotspot,
     Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, CellWeight, GizmoBar,
-    GizmoClickOutcome, GizmoKind, GizmoState, Module, ModulePointerButton, ModulePointerEvent,
-    ModuleRect, PanelChrome, PersistedModuleUiState, ScrollState, SpriteGraphic, UiColorRole,
-    UiPalette, WorldPoint,
+    GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module, ModulePointerButton,
+    ModulePointerEvent, ModuleRect, PanelChrome, PersistedModuleUiState, ScrollState,
+    SpriteGraphic, UiColorRole, UiPalette, WorldPoint,
 };
 
 use crate::tool_state::{HandState, PaintHand, ToolState};

@@ -17,12 +17,20 @@ pub use thaum_renderer_domain::debug_log;
 pub mod document_locations;
 #[path = "painter-session/sync/document_sync.rs"]
 pub mod document_sync;
+#[path = "file/file-schema/file_schema.rs"]
+pub mod file_schema;
 #[path = "painter-operations/fill/fill.rs"]
 pub mod fill;
 #[path = "modules/individuals/graphic-picker/graphic_picker_module.rs"]
 pub mod graphic_picker_module;
 #[path = "modules/individuals/hand-settings/hand_settings_module.rs"]
 pub mod hand_settings_module;
+#[path = "painter-document/properties/interp_mode.rs"]
+pub mod interp_mode;
+#[path = "painter-document/properties/interp_move.rs"]
+pub mod interp_move;
+#[path = "painter-document/properties/interp_raster.rs"]
+pub mod interp_raster;
 #[path = "painter-operations/shapes/lasso.rs"]
 pub mod lasso;
 #[path = "painter-session/tool-state/lasso_stroke.rs"]
@@ -33,8 +41,6 @@ pub mod layers_panel_module;
 pub mod layers_runtime;
 #[path = "modules/shared/legacy_indexed_palette.rs"]
 pub mod legacy_indexed_palette;
-#[path = "file/file-schema/file_schema.rs"]
-pub mod file_schema;
 #[path = "modules/individuals/material-picker/material_picker_module.rs"]
 pub mod material_picker_module;
 #[path = "modules/individuals/paint-canvas-bounds/paint_canvas_bounds_module.rs"]
@@ -47,10 +53,6 @@ pub mod paint_color_block_module;
 pub mod paint_color_picker_module;
 #[path = "painter-tools/painter_tools.rs"]
 pub mod painter_tools;
-#[path = "painter-document/properties/interp_mode.rs"]
-pub mod interp_mode;
-#[path = "painter-document/properties/interp_move.rs"]
-pub mod interp_move;
 #[path = "painter-document/properties/pieces/pieces.rs"]
 pub mod pieces;
 #[path = "painter-document/properties/properties.rs"]
@@ -86,23 +88,23 @@ pub mod user_session_state;
 
 pub use brush::{apply_brush, brush_points, erase, Canvas, PaintedCell};
 pub use camera_actions::{apply_painter_camera_action, apply_painter_pan_action};
-pub use fill::{
-    flood_fill, flood_fill_with_connectivity, CanvasBounds, CanvasPlaneAxis, FillConnectivity,
-};
-pub use graphic_picker_module::GraphicPickerModule;
-pub use identity::{SessionIdentity, PRESENCE_CANDIDATE_COLORS};
-pub use hand_settings_module::HandSettingsModule;
-pub use layers_panel_module::{
-    LayerPropertyKind, LayerRow, LayersPanelAction, LayersPanelModule, LayersPanelState,
-    PropertyTrackBlock, PropertyTrackRow,
-};
-pub use legacy_indexed_palette::legacy_indexed_palette;
 pub use file_schema::{
     parse_file_schema, parse_file_schema_from_str, BreathWindow, DocumentBounds, DocumentContent,
     FileSchema, FileSchemaMetadata, GridPoint, Group, GroupProperty, ImportExportBookkeeping,
     LastExport, ParticleEffect, ParticleEffectVisual, PlaybackWindow, PropertyBlock, RasterSegment,
     Rgb, SavedCameraDefaults, TimeAssets, Voxel,
 };
+pub use fill::{
+    flood_fill, flood_fill_with_connectivity, CanvasBounds, CanvasPlaneAxis, FillConnectivity,
+};
+pub use graphic_picker_module::GraphicPickerModule;
+pub use hand_settings_module::HandSettingsModule;
+pub use identity::{SessionIdentity, PRESENCE_CANDIDATE_COLORS};
+pub use layers_panel_module::{
+    LayerPropertyKind, LayerRow, LayersPanelAction, LayersPanelModule, LayersPanelState,
+    PropertyTrackBlock, PropertyTrackRow,
+};
+pub use legacy_indexed_palette::legacy_indexed_palette;
 pub use material_picker_module::MaterialPickerModule;
 pub use paint_canvas_bounds_module::{DrawingSpaceWheelMode, PaintCanvasBoundsModule};
 pub use paint_color::PaintColor;
@@ -118,13 +120,12 @@ pub use selection_state::{
 pub use storage::{
     append_action_record, load_or_create_shared_document, save_shared_document_snapshot,
     write_action_records_atomic, PersistedCellPoint, PersistedSharedGraphic,
-    PersistedSharedPaintColor, PersistedSharedPaintedCell,
-    SharedCellPatch, SharedDocumentAction, SharedDocumentActionRecord, SharedDocumentFile,
-    SharedDocumentLayer, SharedDocumentPaths, SharedDocumentPropertyBlock,
-    SharedDocumentPropertyTrack, SharedDocumentRuntime, SharedDocumentSelection,
-    SharedDocumentSelectionChannel, SharedSelectionWriteMode, UnsupportedFileError,
-    UnsupportedFileReason, DEFAULT_SELECTION_CHANNEL_ID, SHARED_DOCUMENT_KIND,
-    SHARED_DOCUMENT_SCHEMA_VERSION, UNDO_HISTORY_DEPTH,
+    PersistedSharedPaintColor, PersistedSharedPaintedCell, SharedCellPatch, SharedDocumentAction,
+    SharedDocumentActionRecord, SharedDocumentFile, SharedDocumentLayer, SharedDocumentPaths,
+    SharedDocumentPropertyBlock, SharedDocumentPropertyTrack, SharedDocumentRuntime,
+    SharedDocumentSelection, SharedDocumentSelectionChannel, SharedSelectionWriteMode,
+    UnsupportedFileError, UnsupportedFileReason, DEFAULT_SELECTION_CHANNEL_ID,
+    SHARED_DOCUMENT_KIND, SHARED_DOCUMENT_SCHEMA_VERSION, UNDO_HISTORY_DEPTH,
 };
 pub use timeline_state::TimelineState;
 pub use tool_state::{
@@ -133,5 +134,5 @@ pub use tool_state::{
 pub use toolbar_module::{ToolbarButton, ToolbarModule};
 pub use toolbox_module::{ToolDef, ToolboxModule};
 pub use user_session_state::{
-    PainterUserSessionState, PersistedPainterUiState, painter_default_camera,
+    painter_default_camera, PainterUserSessionState, PersistedPainterUiState,
 };

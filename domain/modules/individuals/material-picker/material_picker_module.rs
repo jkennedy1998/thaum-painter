@@ -1,11 +1,10 @@
 use std::{cell::RefCell, rc::Rc};
 
 use thaum_renderer_domain::{
-    Hotspot,
     Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellMaterialId, CellPoint, CellWeight,
-    ColorBand, GizmoBar, GizmoClickOutcome, GizmoKind, GizmoState, Module, ModulePointerButton,
-    ModulePointerEvent, ModuleRect, PanelChrome, PersistedModuleUiState, UiColorRole, UiPalette,
-    WorldPoint,
+    ColorBand, GizmoBar, GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module,
+    ModulePointerButton, ModulePointerEvent, ModuleRect, PanelChrome, PersistedModuleUiState,
+    UiColorRole, UiPalette, WorldPoint,
 };
 
 use crate::{

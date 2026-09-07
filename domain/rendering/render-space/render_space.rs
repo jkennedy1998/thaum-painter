@@ -4,7 +4,7 @@ use thaum_renderer_domain::{
     CellWeight, Composition, DataLanes, WorldPoint,
 };
 
-use crate::file_schema::{parse_grid_point, GridPoint, Group, FileSchema, RasterSegment, Rgb};
+use crate::file_schema::{parse_grid_point, FileSchema, GridPoint, Group, RasterSegment, Rgb};
 
 /// The transient renderer handoff assembled from one file schema at one active breath.
 ///
@@ -367,7 +367,10 @@ pub fn build_document_layer_cell_groups(
         .layers()
         .iter()
         .filter_map(|layer| {
-            let canvas = runtime.canvas_for_layer(&layer.layer_id, current_breath)?;
+            // The render path resolves raster interpolation: an interpolating
+            // empty blends its surrounding keyframes' canvases instead of
+            // rendering nothing (the edit surface still sees the raw block).
+            let canvas = runtime.resolved_canvas_for_layer(&layer.layer_id, current_breath)?;
             let mut offset = runtime.move_offset_for_layer(&layer.layer_id, current_breath);
             if let Some((pending_layer, pending)) = pending_move_offset {
                 if pending_layer == layer.layer_id {
@@ -378,7 +381,7 @@ pub fn build_document_layer_cell_groups(
                     };
                 }
             }
-            Some(build_paint_canvas_cell_group(canvas, offset))
+            Some(build_paint_canvas_cell_group(&canvas, offset))
         })
         .collect()
 }

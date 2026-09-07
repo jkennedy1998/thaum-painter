@@ -13,7 +13,7 @@
 //!   authored region through the trailing blank / before the leading blank.
 //!
 //! First pass covers the move row only; raster resolves per its own channel
-//! rules (J 2026-09-07: playhead over a raster empty shows nothing).
+//! rules in `interp_raster` (J 2026-09-07).
 
 use crate::interp_mode;
 use crate::storage::{parse_move_offset, SharedDocumentPropertyBlock};
@@ -34,7 +34,10 @@ pub fn resolve_move_offset(
         })
         .or_else(|| {
             // Past the stored extent: the trailing blank covers to infinity.
-            blocks.last().filter(|block| block.is_blank).map(|_| blocks.len() - 1)
+            blocks
+                .last()
+                .filter(|block| block.is_blank)
+                .map(|_| blocks.len() - 1)
         })?;
     resolve_block(blocks, index, breath)
 }
@@ -77,19 +80,7 @@ fn resolve_interpolate(
     let next = solid_value_after(blocks, index);
     match (previous, next) {
         (Some(from), Some(to)) => {
-            let blank = &blocks[index];
-            let length = blank.length_breaths.max(1) as f32;
-            // Keyframes hold constant across their own spans, so the empty's
-            // span is the whole transition: its first breath has just left the
-            // previous keyframe, and the breath after the empty lands on the
-            // next one exactly.
-            let raw = (breath - blank.start_breath) as f32;
-            let t = ((raw + 1.0) / (length + 1.0)).clamp(0.0, 1.0);
-            let progress = eased_progress(
-                t,
-                blank.ease_out_percent,
-                blank.ease_in_percent,
-            );
+            let progress = empty_progress(&blocks[index], breath);
             Some(lerp_offset(from, to, progress))
         }
         (only, None) => only,
@@ -127,19 +118,14 @@ fn resolve_loop(
         let distance = breath.saturating_sub(blank.start_breath);
         region_start + (distance % loop_len)
     };
-    let mapped_index = blocks
-        .iter()
-        .position(|block| {
-            crate::properties::breath_in_span(mapped, block.start_breath, block.length_breaths)
-        })?;
+    let mapped_index = blocks.iter().position(|block| {
+        crate::properties::breath_in_span(mapped, block.start_breath, block.length_breaths)
+    })?;
     resolve_block(blocks, mapped_index, mapped)
 }
 
 /// The nearest solid keyframe entirely left of `index`, if any.
-fn solid_value_before(
-    blocks: &[SharedDocumentPropertyBlock],
-    index: usize,
-) -> Option<[i32; 3]> {
+fn solid_value_before(blocks: &[SharedDocumentPropertyBlock], index: usize) -> Option<[i32; 3]> {
     blocks[..index]
         .iter()
         .rev()
@@ -149,15 +135,24 @@ fn solid_value_before(
 }
 
 /// The nearest solid keyframe entirely right of `index`, if any.
-fn solid_value_after(
-    blocks: &[SharedDocumentPropertyBlock],
-    index: usize,
-) -> Option<[i32; 3]> {
+fn solid_value_after(blocks: &[SharedDocumentPropertyBlock], index: usize) -> Option<[i32; 3]> {
     blocks[index + 1..]
         .iter()
         .find(|block| !block.is_blank)
         .and_then(|block| block.value.as_ref())
         .and_then(parse_move_offset)
+}
+
+/// Eased progress across one empty's span at `breath` (0..=1). Keyframes hold
+/// constant across their own spans, so the empty's span is the whole
+/// transition: its first breath has just left the previous keyframe, and the
+/// breath after the empty lands on the next one exactly. Shared with the
+/// raster channel's interpolator so both channels bend identically.
+pub(crate) fn empty_progress(blank: &SharedDocumentPropertyBlock, breath: u32) -> f32 {
+    let length = blank.length_breaths.max(1) as f32;
+    let raw = (breath - blank.start_breath) as f32;
+    let t = ((raw + 1.0) / (length + 1.0)).clamp(0.0, 1.0);
+    eased_progress(t, blank.ease_out_percent, blank.ease_in_percent)
 }
 
 /// The ease model (J 2026-09-07, four authored strength steps 0/33/66/100%):
@@ -220,7 +215,10 @@ mod tests {
 
     #[test]
     fn a_solid_block_holds_its_offset_across_its_whole_span() {
-        let blocks = vec![solid("a", 0, 5, [3, 0, 0]), blank("tail", 5, 1, None, None, None)];
+        let blocks = vec![
+            solid("a", 0, 5, [3, 0, 0]),
+            blank("tail", 5, 1, None, None, None),
+        ];
         assert_eq!(resolve_move_offset(&blocks, 0), Some([3, 0, 0]));
         assert_eq!(resolve_move_offset(&blocks, 4), Some([3, 0, 0]));
     }
@@ -266,7 +264,10 @@ mod tests {
         ];
         let eased = resolve_move_offset(&blocks, 4).unwrap()[0];
         let linear = 2;
-        assert!(eased < linear, "ease-out must start slower than linear ({eased} < {linear})");
+        assert!(
+            eased < linear,
+            "ease-out must start slower than linear ({eased} < {linear})"
+        );
         // Full ease-in: the value hugs the target early and crawls the last bit
         // (velocity -> 0 at arrival), so the last empty breath is AHEAD of linear.
         let blocks = vec![
@@ -276,7 +277,10 @@ mod tests {
             blank("tail", 12, 1, None, None, None),
         ];
         let eased = resolve_move_offset(&blocks, 7).unwrap()[0];
-        assert!(eased > 6, "ease-in must decelerate into the target ({eased} > 6)");
+        assert!(
+            eased > 6,
+            "ease-in must decelerate into the target ({eased} > 6)"
+        );
     }
 
     #[test]

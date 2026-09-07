@@ -5,8 +5,8 @@
 //! holds the mode, `ease_out_percent` / `ease_in_percent` hold the ends. This
 //! module is the single vocabulary: cycle order, edge locking, adjustability,
 //! and glyphs. Resolution is per property channel — the move row resolves for
-//! real in `interp_move` (hold / interpolate with eases / edge-locked loops);
-//! raster still shows nothing over an empty until its own channel pass.
+//! real in `interp_move`; the raster channel in `interp_raster` (blend color
+//! and weight, hard-cutoff the discrete graphic at the halfway crossing).
 
 /// The interpolation modes an empty cycles through, in cycle order.
 pub const INTERP_MODES: [&str; 4] = ["interpolate", "hold", "loop_out", "loop_in"];

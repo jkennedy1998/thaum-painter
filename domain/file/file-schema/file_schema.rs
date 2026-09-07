@@ -590,7 +590,8 @@ mod tests {
 
     #[test]
     fn rejects_a_file_schema_with_the_wrong_kind() {
-        let value = serde_json::json!({ "kind": "not-thaum-painter-file", "version": FILE_SCHEMA_VERSION });
+        let value =
+            serde_json::json!({ "kind": "not-thaum-painter-file", "version": FILE_SCHEMA_VERSION });
         let error = parse_file_schema(&value).unwrap_err();
         assert!(error.to_string().contains("kind"));
     }
@@ -601,7 +602,8 @@ mod tests {
         let value = serde_json::json!({ "kind": FILE_SCHEMA_KIND, "version": 1 });
         let error = parse_file_schema(&value).unwrap_err();
         assert!(error.to_string().contains("version"));
-        let value = serde_json::json!({ "kind": FILE_SCHEMA_KIND, "version": FILE_SCHEMA_VERSION + 1 });
+        let value =
+            serde_json::json!({ "kind": FILE_SCHEMA_KIND, "version": FILE_SCHEMA_VERSION + 1 });
         let error = parse_file_schema(&value).unwrap_err();
         assert!(error.to_string().contains("version"));
     }

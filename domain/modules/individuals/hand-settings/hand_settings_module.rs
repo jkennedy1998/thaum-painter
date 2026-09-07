@@ -1,12 +1,10 @@
 use std::{cell::RefCell, rc::Rc};
 
 use thaum_renderer_domain::{
-    Hotspot,
     Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, CellWeight, GizmoBar,
-    GizmoClickOutcome, GizmoKind, GizmoState, Module, ModulePointerEvent, ModuleRect,
+    GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module, ModulePointerEvent, ModuleRect,
     NumberFieldEdit, PanelChrome, PersistedModuleUiState, PropertyHit, PropertyMatrixColumn,
-    PropertyMatrixSide, PropertyRow, PropertyRows, ScrollState, UiColorRole, UiPalette,
-    WorldPoint,
+    PropertyMatrixSide, PropertyRow, PropertyRows, ScrollState, UiColorRole, UiPalette, WorldPoint,
 };
 
 use crate::{
@@ -676,7 +674,6 @@ mod tests {
             },
         )))
     }
-
 
     #[test]
     fn clicking_a_weight_token_assigns_that_weight_to_the_matching_hand() {

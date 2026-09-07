@@ -444,9 +444,11 @@ mod tests {
         // Cursor after Home: origin plus the current line's view-relative
         // start offset (enter_step * line), through the same view-plane
         // mapping the cursor uses.
-        let offset = (entry.options.enter_step.0 * entry.line,
-                      entry.options.enter_step.1 * entry.line,
-                      entry.options.enter_step.2 * entry.line);
+        let offset = (
+            entry.options.enter_step.0 * entry.line,
+            entry.options.enter_step.1 * entry.line,
+            entry.options.enter_step.2 * entry.line,
+        );
         view_plane_point(entry.origin, entry.orientation, offset)
     }
 

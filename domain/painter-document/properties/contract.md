@@ -13,7 +13,7 @@ Own editing-facing property-block views over painter file state.
 - canonical stored property schema
 - mutation commands
 - renderer handoff
-- gap-fill/interpolation behavior (the old `interpolation/` child was deleted 2026-09-07 with the binary-bars redesign — voids stopped existing, and per-row interpolation is a future pass)
+- per-channel interpolation resolution itself (the move channel lives in `interp_move`, the raster channel in `interp_raster`; both consume this folder's span semantics and `interp_mode`'s mode/ease vocabulary)
 
 ## children-encapsulations
 - `pieces/`
@@ -24,6 +24,12 @@ Own editing-facing property-block views over painter file state.
   - properties contract
 - `properties.rs`
   - `block_covering_breath`, the lookup that finds the bar (if any) covering a given breath
+- `interp_mode.rs`
+  - the interpolation-mode vocabulary shared by every property channel: the four modes (interpolate / hold / loop_out / loop_in), the ease strength steps, edge locking, cycling, and center glyphs
+- `interp_move.rs`
+  - the move channel's real resolver: hold / interpolate (with ease-bent lerped offset) / edge-locked loops, plus the shared `empty_progress` ease model the raster channel reuses
+- `interp_raster.rs`
+  - the raster channel's real resolver: hold / interpolate / edge-locked loops over keyframe canvases. Blending matches cells by grid position; flat RGB and weight lerp continuously, the discrete graphic (and material colors) hard-cutoff at the halfway crossing, and one-sided cells show during the half their side is active
 - `pieces/`
   - bar-piece classification: `BarPiece` (single / left head / right head / center) × `CellType` (empty/solid) per breath, the `BreathBar` shape trait, and the covering `BarCell` lookup
 
@@ -55,6 +61,12 @@ via: `span_end_breath`, `breath_in_span`, `pushed_breath_span`, `destructive_bre
 - inline `#[cfg(test)]` in `properties.rs`
   - light
   - validates exact-boundary lookups, gap breaths, and an empty track all resolve correctly; span helper coverage/boundary truth; the ripple seam preserving relative spacing on both edges; the destructive seam blanking/removing covered victims and behaving as a plain trim on shrink
+- inline `#[cfg(test)]` in `interp_mode.rs` and `interp_move.rs`
+  - light
+  - validates mode/ease cycling, edge locking, glyphs, and the move resolver's hold/interpolate/loop behavior over authored tracks
+- inline `#[cfg(test)]` in `interp_raster.rs`
+  - light
+  - validates canvas blending (color/weight lerp, halfway graphic cutoff, half-span one-sided cells, authored blanks as absent), the per-mode resolution over authored tracks, and loop replay
 
 ## data
 - none

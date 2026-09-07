@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thaum_renderer_domain::{CellGraphic, CellMaterialId, CellPoint, SpriteGraphic, WorldPoint};
 
-use crate::properties::{breath_in_span, destructive_breath_span, pushed_breath_span};
 use crate::interp_mode;
+use crate::properties::{breath_in_span, destructive_breath_span, pushed_breath_span};
 use crate::{Canvas, PaintColor, PaintedCell};
 
 pub const SHARED_DOCUMENT_KIND: &str = "thaum-painter-shared-document";
@@ -149,14 +149,15 @@ fn retiled_property_track(
     // looked up across the whole track (highlight, swap, duplicate, merge), so a
     // duplicate id makes two blocks light up as one and routes edits to the wrong bar.
     let mut used_ids: Vec<String> = clipped.iter().map(|b| b.id.clone()).collect();
-    let next_free_block_id = |used_ids: &mut Vec<String>, tiled: &[SharedDocumentPropertyBlock]| -> String {
-        let mut id = next_property_block_id(tiled);
-        while used_ids.contains(&id) {
-            id = format!("{id}x");
-        }
-        used_ids.push(id.clone());
-        id
-    };
+    let next_free_block_id =
+        |used_ids: &mut Vec<String>, tiled: &[SharedDocumentPropertyBlock]| -> String {
+            let mut id = next_property_block_id(tiled);
+            while used_ids.contains(&id) {
+                id = format!("{id}x");
+            }
+            used_ids.push(id.clone());
+            id
+        };
     let mut tiled: Vec<SharedDocumentPropertyBlock> = Vec::with_capacity(clipped.len() + 2);
     let mut cursor = span_start;
     for mut block in clipped {
@@ -919,6 +920,29 @@ impl SharedDocumentRuntime {
         self.block_canvases.get(&(layer_id.to_string(), block_id))
     }
 
+    /// The layer's RESOLVED canvas at `current_breath`: a solid raster block
+    /// renders its own canvas, but an interpolating empty blends the surrounding
+    /// keyframes' canvases (color/weight lerp, discrete graphic cutoff — see
+    /// `interp_raster`). This is the render/compositing read seam; the raw block
+    /// canvas behind `canvas_for_layer` stays the edit-surface seam, so strokes
+    /// still author real keyframes instead of painting into a blend.
+    pub fn resolved_canvas_for_layer(&self, layer_id: &str, current_breath: u32) -> Option<Canvas> {
+        let track = self
+            .document
+            .layers
+            .iter()
+            .find(|layer| layer.layer_id == layer_id)?
+            .property_tracks
+            .iter()
+            .find(|track| track.property_id == "raster")?;
+        let canvases = &self.block_canvases;
+        crate::interp_raster::resolve_raster_canvas(&track.blocks, current_breath, |block| {
+            canvases
+                .get(&(layer_id.to_string(), block.id.clone()))
+                .cloned()
+        })
+    }
+
     /// The first breath the layer's raster track covers, preferring the earliest
     /// block with content. Boot seeks the playhead here so it never rests in a gap
     /// where the layer renders nothing and strokes are silently rejected.
@@ -1341,11 +1365,8 @@ impl SharedDocumentRuntime {
         // over the new span — uncovered windows become blank blocks.
         let (span_start, span_length) = (layer.start_breath, layer.length_breaths);
         for track in &mut layer.property_tracks {
-            track.blocks = retiled_property_track(
-                std::mem::take(&mut track.blocks),
-                span_start,
-                span_length,
-            );
+            track.blocks =
+                retiled_property_track(std::mem::take(&mut track.blocks), span_start, span_length);
         }
         true
     }
@@ -1414,11 +1435,8 @@ impl SharedDocumentRuntime {
         }
         // Binary tiling: the ripple alone cannot guarantee coverage — see the doc
         // comment above — so this seam re-tiles like every other timing seam.
-        track.blocks = retiled_property_track(
-            std::mem::take(&mut track.blocks),
-            span_start,
-            span_length,
-        );
+        track.blocks =
+            retiled_property_track(std::mem::take(&mut track.blocks), span_start, span_length);
         true
     }
 
@@ -1557,11 +1575,8 @@ impl SharedDocumentRuntime {
                     .find(|track| track.property_id == property_id)
             })
         {
-            track.blocks = retiled_property_track(
-                std::mem::take(&mut track.blocks),
-                span_start,
-                span_length,
-            );
+            track.blocks =
+                retiled_property_track(std::mem::take(&mut track.blocks), span_start, span_length);
         }
         true
     }
@@ -1701,11 +1716,8 @@ impl SharedDocumentRuntime {
             return false;
         };
         block.is_blank = true;
-        track.blocks = retiled_property_track(
-            std::mem::take(&mut track.blocks),
-            span_start,
-            span_length,
-        );
+        track.blocks =
+            retiled_property_track(std::mem::take(&mut track.blocks), span_start, span_length);
         self.block_canvases
             .insert((layer_id.to_string(), block_id.to_string()), Canvas::new());
         true
@@ -1746,7 +1758,8 @@ impl SharedDocumentRuntime {
             left.filter(|&i| !track.blocks[i].is_blank)
                 .or(right.filter(|&i| !track.blocks[i].is_blank))
         } else {
-            right.filter(|&i| !track.blocks[i].is_blank)
+            right
+                .filter(|&i| !track.blocks[i].is_blank)
                 .or(left.filter(|&i| !track.blocks[i].is_blank))
         };
         let Some(target_index) = target else {
@@ -1944,11 +1957,8 @@ impl SharedDocumentRuntime {
         // Re-tile aggressively: a swap can butt two empties together, and the
         // no-adjacent-empties invariant must hold after EVERY mutation (J
         // 2026-09-07). It also restores the trailing blank representative.
-        track.blocks = retiled_property_track(
-            std::mem::take(&mut track.blocks),
-            span_start,
-            span_length,
-        );
+        track.blocks =
+            retiled_property_track(std::mem::take(&mut track.blocks), span_start, span_length);
         true
     }
 
@@ -1968,10 +1978,7 @@ impl SharedDocumentRuntime {
     ) -> Option<String> {
         let source = {
             let track = self.property_track(layer_id, property_id)?;
-            let index = track
-                .blocks
-                .iter()
-                .position(|block| block.id == block_id)?;
+            let index = track.blocks.iter().position(|block| block.id == block_id)?;
             track.blocks[index].clone()
         };
         let new_start = source.start_breath + source.length_breaths;
@@ -1981,10 +1988,7 @@ impl SharedDocumentRuntime {
         let Some(track) = self.ensure_property_track_mut(layer_id, property_id) else {
             return None;
         };
-        let source_index = track
-            .blocks
-            .iter()
-            .position(|block| block.id == block_id)?;
+        let source_index = track.blocks.iter().position(|block| block.id == block_id)?;
         // Non-destructive push: every block starting at/after the source's end shifts
         // right by the duplicated length. In a tiled track nothing else overlaps the
         // source's span, so this is the complete ripple.
@@ -2031,11 +2035,8 @@ impl SharedDocumentRuntime {
                     .find(|track| track.property_id == property_id)
             })
         {
-            track.blocks = retiled_property_track(
-                std::mem::take(&mut track.blocks),
-                span_start,
-                span_length,
-            );
+            track.blocks =
+                retiled_property_track(std::mem::take(&mut track.blocks), span_start, span_length);
         }
         Some(new_id)
     }
@@ -2074,13 +2075,16 @@ impl SharedDocumentRuntime {
         ))
     }
 
-    /// Flattens every visible layer's canvas for the breath into one canvas, in document
-    /// layer order (later layers win on overlap).
+    /// Flattens every visible layer's RESOLVED canvas for the breath into one canvas, in document
+    /// layer order (later layers win on overlap). Interpolating raster empties resolve their
+    /// blend (see `resolved_canvas_for_layer`), not the raw block canvas.
     pub fn composited_canvas_in_layer_order(&self, current_breath: u32) -> Canvas {
         let mut canvas = Canvas::new();
         for layer in self.document.layers.iter().filter(|layer| layer.visible) {
-            if let Some(layer_canvas) = self.canvas_for_layer(&layer.layer_id, current_breath) {
-                for (position, painted_cell) in layer_canvas {
+            if let Some(layer_canvas) =
+                self.resolved_canvas_for_layer(&layer.layer_id, current_breath)
+            {
+                for (position, painted_cell) in &layer_canvas {
                     canvas.insert(*position, painted_cell.clone());
                 }
             }
@@ -2433,7 +2437,10 @@ impl fmt::Display for UnsupportedFileError {
             }
             UnsupportedFileReason::VersionMismatch { found, supported } => {
                 if *found == 0 {
-                    write!(f, "file carries no schema version; this app reads v{supported}")
+                    write!(
+                        f,
+                        "file carries no schema version; this app reads v{supported}"
+                    )
                 } else {
                     write!(f, "file is schema v{found}, this app reads v{supported}")
                 }
@@ -3619,9 +3626,11 @@ mod tests {
                 supported: SHARED_DOCUMENT_SCHEMA_VERSION,
             }
         );
-        assert!(error
-            .to_string()
-            .contains(&format!("file is schema v{}, this app reads v{}", SHARED_DOCUMENT_SCHEMA_VERSION + 1, SHARED_DOCUMENT_SCHEMA_VERSION)));
+        assert!(error.to_string().contains(&format!(
+            "file is schema v{}, this app reads v{}",
+            SHARED_DOCUMENT_SCHEMA_VERSION + 1,
+            SHARED_DOCUMENT_SCHEMA_VERSION
+        )));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -3840,14 +3849,18 @@ mod tests {
         // pull left: the vacated tail re-tiles into a blank block — a bare void
         // would leave the channel with two kinds of no-content. The pushed ripple
         // pulls the old tail blank left; the re-tile re-opens the infinite tail.
-        assert!(
-            runtime.set_property_block_timing_pushed("layer-1", "raster", "block-1", 0, 8)
-        );
+        assert!(runtime.set_property_block_timing_pushed("layer-1", "raster", "block-1", 0, 8));
         let track = runtime.property_track("layer-1", "raster").unwrap();
         let covered: Vec<(u32, u32, bool)> = track
             .blocks
             .iter()
-            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .map(|b| {
+                (
+                    b.start_breath,
+                    b.start_breath + b.length_breaths,
+                    b.is_blank,
+                )
+            })
             .collect();
         assert_eq!(covered, vec![(0, 8, false), (8, 24, true)]);
     }
@@ -3863,19 +3876,20 @@ mod tests {
         // but is already at breath zero, so the shift clamps. The seam re-tiles,
         // trimming the overlapped range instead of leaving bars on both sides
         // of the same breath.
-        assert!(
-            runtime.set_property_block_timing_pushed("layer-1", "raster", "block-2", 2, 16)
-        );
+        assert!(runtime.set_property_block_timing_pushed("layer-1", "raster", "block-2", 2, 16));
         let track = runtime.property_track("layer-1", "raster").unwrap();
         let covered: Vec<(u32, u32, bool)> = track
             .blocks
             .iter()
-            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .map(|b| {
+                (
+                    b.start_breath,
+                    b.start_breath + b.length_breaths,
+                    b.is_blank,
+                )
+            })
             .collect();
-        assert_eq!(
-            covered,
-            vec![(0, 8, false), (8, 18, false), (18, 24, true)]
-        );
+        assert_eq!(covered, vec![(0, 8, false), (8, 18, false), (18, 24, true)]);
     }
 
     #[test]
@@ -3894,7 +3908,10 @@ mod tests {
         assert_eq!(track.blocks.len(), 1);
         assert!(track.blocks[0].is_blank);
         // The merged empty absorbs the trailing blank representative (infinite).
-        assert_eq!((track.blocks[0].start_breath, track.blocks[0].length_breaths), (0, 25));
+        assert_eq!(
+            (track.blocks[0].start_breath, track.blocks[0].length_breaths),
+            (0, 25)
+        );
     }
 
     #[test]
@@ -3919,7 +3936,9 @@ mod tests {
         ));
         runtime.split_property_block("layer-1", "raster", "block-1", 8);
         assert!(runtime.blank_property_block("layer-1", "raster", "block-1"));
-        assert!(runtime.split_property_block("layer-1", "raster", "block-2", 16).is_some());
+        assert!(runtime
+            .split_property_block("layer-1", "raster", "block-2", 16)
+            .is_some());
 
         // Track: empty (0..8), content (8..16), content (16..24). Merging the empty
         // prefers the left... there is no content on the left, so it falls back to
@@ -3930,9 +3949,18 @@ mod tests {
         let covered: Vec<(u32, u32, bool)> = track
             .blocks
             .iter()
-            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .map(|b| {
+                (
+                    b.start_breath,
+                    b.start_breath + b.length_breaths,
+                    b.is_blank,
+                )
+            })
             .collect();
-        assert_eq!(covered, vec![(0, 16, false), (16, 24, false), (24, 25, true)]);
+        assert_eq!(
+            covered,
+            vec![(0, 16, false), (16, 24, false), (24, 25, true)]
+        );
     }
 
     #[test]
@@ -3952,9 +3980,18 @@ mod tests {
         let covered: Vec<(u32, u32, bool)> = track
             .blocks
             .iter()
-            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .map(|b| {
+                (
+                    b.start_breath,
+                    b.start_breath + b.length_breaths,
+                    b.is_blank,
+                )
+            })
             .collect();
-        assert_eq!(covered, vec![(0, 16, false), (16, 24, false), (24, 25, true)]);
+        assert_eq!(
+            covered,
+            vec![(0, 16, false), (16, 24, false), (24, 25, true)]
+        );
     }
 
     #[test]
@@ -3992,11 +4029,22 @@ mod tests {
         let covered: Vec<(u32, u32, bool)> = track
             .blocks
             .iter()
-            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .map(|b| {
+                (
+                    b.start_breath,
+                    b.start_breath + b.length_breaths,
+                    b.is_blank,
+                )
+            })
             .collect();
         assert_eq!(
             covered,
-            vec![(0, 8, false), (8, 16, false), (16, 32, false), (32, 33, true)]
+            vec![
+                (0, 8, false),
+                (8, 16, false),
+                (16, 32, false),
+                (32, 33, true)
+            ]
         );
         assert_ne!(new_id, "block-1");
     }
@@ -4023,9 +4071,18 @@ mod tests {
         let covered: Vec<(u32, u32, bool)> = track
             .blocks
             .iter()
-            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .map(|b| {
+                (
+                    b.start_breath,
+                    b.start_breath + b.length_breaths,
+                    b.is_blank,
+                )
+            })
             .collect();
-        assert_eq!(covered, vec![(0, 24, false), (24, 48, false), (48, 49, true)]);
+        assert_eq!(
+            covered,
+            vec![(0, 24, false), (24, 48, false), (48, 49, true)]
+        );
     }
 
     #[test]
@@ -4043,7 +4100,10 @@ mod tests {
         let track = runtime.property_track("layer-1", "raster").unwrap();
         let ids: Vec<&str> = track.blocks.iter().map(|b| b.id.as_str()).collect();
         assert_eq!(ids.len(), 5);
-        assert_eq!(&ids[..4], &["block-1", "block-2", new_id.as_str(), "block-3"]);
+        assert_eq!(
+            &ids[..4],
+            &["block-1", "block-2", new_id.as_str(), "block-3"]
+        );
         assert_eq!(track.blocks[0].start_breath, 0);
         assert_eq!(track.blocks[1].start_breath, 8);
         assert_eq!(track.blocks[2].start_breath, 16);
@@ -4059,7 +4119,9 @@ mod tests {
             "doc-1", "Doc", "layer-1", "Layer 1",
         ));
         assert!(runtime.blank_property_block("layer-1", "raster", "block-1"));
-        assert!(runtime.split_property_block("layer-1", "raster", "block-1", 8).is_none());
+        assert!(runtime
+            .split_property_block("layer-1", "raster", "block-1", 8)
+            .is_none());
     }
 
     #[test]
@@ -4082,11 +4144,23 @@ mod tests {
         let covered: Vec<(u32, u32, bool)> = track
             .blocks
             .iter()
-            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .map(|b| {
+                (
+                    b.start_breath,
+                    b.start_breath + b.length_breaths,
+                    b.is_blank,
+                )
+            })
             .collect();
         assert_eq!(
             covered,
-            vec![(0, 16, true), (16, 18, false), (18, 22, false), (22, 24, false), (24, 25, true)]
+            vec![
+                (0, 16, true),
+                (16, 18, false),
+                (18, 22, false),
+                (22, 24, false),
+                (24, 25, true)
+            ]
         );
     }
 
@@ -4109,11 +4183,22 @@ mod tests {
         let covered: Vec<(u32, u32, bool)> = track
             .blocks
             .iter()
-            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .map(|b| {
+                (
+                    b.start_breath,
+                    b.start_breath + b.length_breaths,
+                    b.is_blank,
+                )
+            })
             .collect();
         assert_eq!(
             covered,
-            vec![(0, 4, false), (4, 20, false), (20, 24, false), (24, 25, true)]
+            vec![
+                (0, 4, false),
+                (4, 20, false),
+                (20, 24, false),
+                (24, 25, true)
+            ]
         );
     }
 
@@ -4125,14 +4210,18 @@ mod tests {
 
         // block-1 (0..24) shrinks to 0..8: breaths 8..24 re-tile into blanks and
         // merge with the trailing blank representative.
-        assert!(
-            runtime.set_property_block_timing_destructive("layer-1", "raster", "block-1", 0, 8)
-        );
+        assert!(runtime.set_property_block_timing_destructive("layer-1", "raster", "block-1", 0, 8));
         let track = runtime.property_track("layer-1", "raster").unwrap();
         let covered: Vec<(u32, u32, bool)> = track
             .blocks
             .iter()
-            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .map(|b| {
+                (
+                    b.start_breath,
+                    b.start_breath + b.length_breaths,
+                    b.is_blank,
+                )
+            })
             .collect();
         assert_eq!(covered, vec![(0, 8, false), (8, 25, true)]);
     }
@@ -4168,9 +4257,7 @@ mod tests {
         // block-1 (0..8) jumps destructively to 8..16, eating block-2's front half:
         // the vacated 0..8 becomes a gap blank, and that blank must not reuse "block-1"
         // or "block-2" — duplicate ids made highlight and id-keyed edits hit two bars.
-        assert!(
-            runtime.set_property_block_timing_destructive("layer-1", "raster", "block-1", 8, 8)
-        );
+        assert!(runtime.set_property_block_timing_destructive("layer-1", "raster", "block-1", 8, 8));
         let blocks = &runtime.property_track("layer-1", "raster").unwrap().blocks;
         let mut ids: Vec<&str> = blocks.iter().map(|b| b.id.as_str()).collect();
         ids.sort();
@@ -4192,12 +4279,15 @@ mod tests {
         let covered: Vec<(u32, u32, bool)> = track
             .blocks
             .iter()
-            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .map(|b| {
+                (
+                    b.start_breath,
+                    b.start_breath + b.length_breaths,
+                    b.is_blank,
+                )
+            })
             .collect();
-        assert_eq!(
-            covered,
-            vec![(0, 8, false), (8, 24, false), (24, 32, true)]
-        );
+        assert_eq!(covered, vec![(0, 8, false), (8, 24, false), (24, 32, true)]);
 
         // Shrinking it never clips content — blocks past the viewport survive, and
         // the trailing blank's stored extent just stays (it is infinite either way).
@@ -4206,12 +4296,15 @@ mod tests {
         let covered: Vec<(u32, u32, bool)> = track
             .blocks
             .iter()
-            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .map(|b| {
+                (
+                    b.start_breath,
+                    b.start_breath + b.length_breaths,
+                    b.is_blank,
+                )
+            })
             .collect();
-        assert_eq!(
-            covered,
-            vec![(0, 8, false), (8, 24, false), (24, 32, true)]
-        );
+        assert_eq!(covered, vec![(0, 8, false), (8, 24, false), (24, 32, true)]);
     }
 
     #[test]
@@ -4252,12 +4345,15 @@ mod tests {
         let covered: Vec<(u32, u32, bool)> = track
             .blocks
             .iter()
-            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .map(|b| {
+                (
+                    b.start_breath,
+                    b.start_breath + b.length_breaths,
+                    b.is_blank,
+                )
+            })
             .collect();
-        assert_eq!(
-            covered,
-            vec![(0, 8, false), (8, 16, false), (16, 25, true)]
-        );
+        assert_eq!(covered, vec![(0, 8, false), (8, 16, false), (16, 25, true)]);
         let blanks: Vec<_> = track.blocks.iter().filter(|b| b.is_blank).collect();
         assert_eq!(blanks.len(), 1, "adjacent empties must merge into one");
     }
@@ -4288,6 +4384,114 @@ mod tests {
 
         // Unknown layers have no raster track to seek.
         assert_eq!(runtime.first_breath_with_raster_block("missing"), None);
+    }
+
+    #[test]
+    fn an_interpolating_raster_empty_resolves_a_blend_between_its_keyframes() {
+        let document = SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
+        let mut runtime = SharedDocumentRuntime::new(document);
+        runtime.split_property_block("layer-1", "raster", "block-1", 8);
+        runtime.split_property_block("layer-1", "raster", "block-2", 16);
+        // Move block-2 (8..16) onto block-3 (16..24): full encapsulation deletes
+        // the victim, the vacated 8..16 becomes a middle empty (default mode:
+        // interpolate), and re-tiling keeps a trailing blank representative.
+        assert!(
+            runtime.set_property_block_timing_destructive("layer-1", "raster", "block-2", 16, 8,)
+        );
+
+        // Keyframe A (0..8): 'A' red, weight 0. Keyframe B (16..24): 'B' blue,
+        // weight 8. The middle empty blends between them.
+        let keyframe_a = PaintedCell {
+            graphic: CellGraphic::Glyph('A'),
+            color: PaintColor::flat_rgb(255, 0, 0),
+            weight_index: 0,
+        };
+        let keyframe_b = PaintedCell {
+            graphic: CellGraphic::Glyph('B'),
+            color: PaintColor::flat_rgb(0, 0, 255),
+            weight_index: 8,
+        };
+        let solid_a_id = runtime
+            .property_track("layer-1", "raster")
+            .unwrap()
+            .blocks
+            .iter()
+            .find(|b| !b.is_blank && b.start_breath == 0)
+            .map(|b| b.id.clone())
+            .unwrap();
+        let solid_b_id = runtime
+            .property_track("layer-1", "raster")
+            .unwrap()
+            .blocks
+            .iter()
+            .find(|b| !b.is_blank && b.start_breath == 16)
+            .map(|b| b.id.clone())
+            .unwrap();
+        for (block_id, painted) in [(&solid_a_id, &keyframe_a), (&solid_b_id, &keyframe_b)] {
+            runtime.apply_action_record(SharedDocumentActionRecord::cell_patch_set(
+                "a-blend",
+                "doc-1",
+                "layer-1",
+                "u1",
+                "1",
+                vec![SharedCellPatch::new(point(0, 0), None, Some(painted))],
+                Some(block_id.clone()),
+            ));
+        }
+
+        // Solids resolve their own canvases exactly.
+        assert_eq!(
+            runtime
+                .resolved_canvas_for_layer("layer-1", 0)
+                .unwrap()
+                .get(&point(0, 0)),
+            Some(&keyframe_a)
+        );
+        assert_eq!(
+            runtime
+                .resolved_canvas_for_layer("layer-1", 16)
+                .unwrap()
+                .get(&point(0, 0)),
+            Some(&keyframe_b)
+        );
+        // Breath 12 is the middle empty's halfway crossing plus one: t = 5/9
+        // (~0.556, second half) — graphic from keyframe B, color and weight
+        // blended 5/9 of the way from A to B.
+        let blended = runtime
+            .resolved_canvas_for_layer("layer-1", 12)
+            .unwrap()
+            .get(&point(0, 0))
+            .unwrap()
+            .clone();
+        assert_eq!(blended.graphic, CellGraphic::Glyph('B'));
+        assert_eq!(
+            blended.color,
+            PaintColor::flat_rgb(
+                (255.0_f32 * 4.0 / 9.0).round() as u8,
+                0,
+                (255.0_f32 * 5.0 / 9.0).round() as u8
+            )
+        );
+        assert_eq!(blended.weight_index, (8.0_f32 * 5.0 / 9.0).round() as i64);
+        // First-half breath (t = 1/9) still shows keyframe A's graphic with the
+        // color already blending.
+        let early = runtime
+            .resolved_canvas_for_layer("layer-1", 9)
+            .unwrap()
+            .get(&point(0, 0))
+            .unwrap()
+            .clone();
+        assert_eq!(early.graphic, CellGraphic::Glyph('A'));
+        assert_ne!(
+            early.color, keyframe_a.color,
+            "color blends even in the first half"
+        );
+
+        // The edit surface seam is untouched: the raw block canvas over the
+        // empty is still empty, so strokes author a real keyframe there.
+        assert!(runtime
+            .canvas_for_layer("layer-1", 12)
+            .is_none_or(|canvas| canvas.is_empty()));
     }
 
     #[test]
@@ -4537,13 +4741,21 @@ mod tests {
                     b.start_breath,
                     b.start_breath + b.length_breaths,
                     b.is_blank,
-                    b.value.as_ref().and_then(|v| v.get("x").and_then(|x| x.as_i64())).map(|x| x as i32),
+                    b.value
+                        .as_ref()
+                        .and_then(|v| v.get("x").and_then(|x| x.as_i64()))
+                        .map(|x| x as i32),
                 )
             })
             .collect();
         assert_eq!(
             blocks,
-            vec![(0, 6, false, Some(2)), (6, 12, true, None), (12, 24, false, Some(12)), (24, 25, true, None)],
+            vec![
+                (0, 6, false, Some(2)),
+                (6, 12, true, None),
+                (12, 24, false, Some(12)),
+                (24, 25, true, None)
+            ],
             "track shape after two drags"
         );
         // The keyframe breaths carry their own offsets; the empty between
@@ -4551,7 +4763,10 @@ mod tests {
         assert_eq!(runtime.move_offset_for_layer("layer-1", 2).x, 2);
         assert_eq!(runtime.move_offset_for_layer("layer-1", 12).x, 12);
         let mid = runtime.move_offset_for_layer("layer-1", 8).x;
-        assert!(mid > 2 && mid < 12, "mid-empty breath must interpolate ({mid})");
+        assert!(
+            mid > 2 && mid < 12,
+            "mid-empty breath must interpolate ({mid})"
+        );
     }
 
     #[test]
@@ -4575,13 +4790,22 @@ mod tests {
                     b.start_breath,
                     b.start_breath + b.length_breaths,
                     b.is_blank,
-                    b.value.as_ref().and_then(|v| v.get("x").and_then(|x| x.as_i64())).map(|x| x as i32),
+                    b.value
+                        .as_ref()
+                        .and_then(|v| v.get("x").and_then(|x| x.as_i64()))
+                        .map(|x| x as i32),
                 )
             })
             .collect();
         assert_eq!(
             blocks,
-            vec![(0, 6, false, Some(2)), (6, 9, true, None), (9, 12, false, Some(13)), (12, 24, false, Some(12)), (24, 25, true, None)],
+            vec![
+                (0, 6, false, Some(2)),
+                (6, 9, true, None),
+                (9, 12, false, Some(13)),
+                (12, 24, false, Some(12)),
+                (24, 25, true, None)
+            ],
             "track shape after a mid-empty drag"
         );
         assert_eq!(runtime.move_offset_for_layer("layer-1", 9).x, 13);
@@ -4605,7 +4829,10 @@ mod tests {
                     b.start_breath,
                     b.start_breath + b.length_breaths,
                     b.is_blank,
-                    b.value.as_ref().and_then(|v| v.get("x").and_then(|x| x.as_i64())).map(|x| x as i32),
+                    b.value
+                        .as_ref()
+                        .and_then(|v| v.get("x").and_then(|x| x.as_i64()))
+                        .map(|x| x as i32),
                 )
             })
             .collect();
@@ -4634,7 +4861,10 @@ mod tests {
                     b.start_breath,
                     b.start_breath + b.length_breaths,
                     b.is_blank,
-                    b.value.as_ref().and_then(|v| v.get("x").and_then(|x| x.as_i64())).map(|x| x as i32),
+                    b.value
+                        .as_ref()
+                        .and_then(|v| v.get("x").and_then(|x| x.as_i64()))
+                        .map(|x| x as i32),
                 )
             })
             .collect();
@@ -4643,7 +4873,14 @@ mod tests {
         // representative after the new keyframe.
         assert_eq!(
             blocks,
-            vec![(0, 6, false, Some(2)), (6, 12, true, None), (12, 24, false, Some(12)), (24, 30, true, None), (30, 31, false, Some(17)), (31, 32, true, None)],
+            vec![
+                (0, 6, false, Some(2)),
+                (6, 12, true, None),
+                (12, 24, false, Some(12)),
+                (24, 30, true, None),
+                (30, 31, false, Some(17)),
+                (31, 32, true, None)
+            ],
             "track shape after a past-extent drag"
         );
         // The new keyframe carries the offset that was playing there (the
@@ -4653,7 +4890,8 @@ mod tests {
     }
 
     #[test]
-    fn a_move_drag_inside_a_loop_out_trailing_blank_lands_a_keyframe_and_the_mode_migrates_to_the_new_edge() {
+    fn a_move_drag_inside_a_loop_out_trailing_blank_lands_a_keyframe_and_the_mode_migrates_to_the_new_edge(
+    ) {
         let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
             "doc-1", "Doc", "layer-1", "Layer 1",
         ));
@@ -4673,8 +4911,14 @@ mod tests {
         assert!(runtime.add_move_offset("layer-1", 26, WorldPoint { x: 3, y: 0, z: 0 }));
         let track = runtime.property_track("layer-1", "move").unwrap();
         let last = track.blocks.last().unwrap();
-        assert!(last.is_blank, "the track still ends with a blank representative");
-        assert_eq!(last.interpretation, None, "no stranded loop mode survives a retile");
+        assert!(
+            last.is_blank,
+            "the track still ends with a blank representative"
+        );
+        assert_eq!(
+            last.interpretation, None,
+            "no stranded loop mode survives a retile"
+        );
         // The new keyframe carries the value the loop was playing there
         // (breath 26 wraps to region breath 2, the x=2 keyframe) plus delta.
         assert_eq!(runtime.move_offset_for_layer("layer-1", 26).x, 5);
@@ -4726,17 +4970,23 @@ mod tests {
         );
         let mut used_ids: Vec<&str> = Vec::new();
         for (index, block) in blocks.iter().enumerate() {
-            assert!(block.length_breaths >= 1, "seed {seed} op {op}: zero-length block {}", block.id);
+            assert!(
+                block.length_breaths >= 1,
+                "seed {seed} op {op}: zero-length block {}",
+                block.id
+            );
             assert!(
                 !used_ids.contains(&block.id.as_str()),
-                "seed {seed} op {op}: duplicate id {}", block.id
+                "seed {seed} op {op}: duplicate id {}",
+                block.id
             );
             used_ids.push(&block.id);
             if index > 0 {
                 let previous = &blocks[index - 1];
                 let previous_end = previous.start_breath + previous.length_breaths;
                 assert_eq!(
-                    block.start_breath, previous_end,
+                    block.start_breath,
+                    previous_end,
                     "seed {seed} op {op}: gap/overlap before block {} (shape {})",
                     block.id,
                     runtime.property_track_shape(layer_id, property_id)
@@ -4766,93 +5016,109 @@ mod tests {
     fn fuzzed_property_track_mutations_hold_the_binary_tiling_invariants() {
         for property in ["move", "raster"] {
             for seed in [0x9E3779B97F4A7C15, 0xD1B54A32D192ED03, 0x4873A2B5F1E0C6D9] {
-            let mut rand = FuzzRand(seed);
-            let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
-                "doc-1", "Doc", "layer-1", "Layer 1",
-            ));
-            let layer_window_end: u32 = 24;
-            for op in 0..300usize {
-                let track = runtime.property_track("layer-1", property).unwrap();
-                let pick = rand.below(10);
-                // Random breaths deliberately walk past the stored extent —
-                // the infinite region is where the vaporizing bug lived.
-                let breath = rand.below((layer_window_end as u64) * 2) as u32;
-                let block_id = track.blocks[rand.below(track.blocks.len() as u64) as usize].id.clone();
-                let (changed, trace): (bool, String) = match pick {
-                    0 => (
-                        runtime.add_move_offset(
-                            "layer-1",
-                            breath,
-                            WorldPoint { x: rand.below(7) as i32 - 3, y: 0, z: 0 },
-                        ),
-                        format!("add_move at {breath}"),
-                    ),
-                    1 => (
-                        runtime.split_property_block("layer-1", property, &block_id, breath).is_some(),
-                        format!("split {block_id} at {breath}"),
-                    ),
-                    2 => {
-                        let new_length = 1 + rand.below(6) as u32;
-                        let new_start = breath.min(layer_window_end.saturating_sub(1));
-                        (
-                            runtime.set_property_block_timing_destructive(
-                                "layer-1", property, &block_id, new_start, new_length,
+                let mut rand = FuzzRand(seed);
+                let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+                    "doc-1", "Doc", "layer-1", "Layer 1",
+                ));
+                let layer_window_end: u32 = 24;
+                for op in 0..300usize {
+                    let track = runtime.property_track("layer-1", property).unwrap();
+                    let pick = rand.below(10);
+                    // Random breaths deliberately walk past the stored extent —
+                    // the infinite region is where the vaporizing bug lived.
+                    let breath = rand.below((layer_window_end as u64) * 2) as u32;
+                    let block_id = track.blocks[rand.below(track.blocks.len() as u64) as usize]
+                        .id
+                        .clone();
+                    let (changed, trace): (bool, String) = match pick {
+                        0 => (
+                            runtime.add_move_offset(
+                                "layer-1",
+                                breath,
+                                WorldPoint {
+                                    x: rand.below(7) as i32 - 3,
+                                    y: 0,
+                                    z: 0,
+                                },
                             ),
-                            format!("destructive {block_id} -> {new_start}+{new_length}"),
-                        )
-                    }
-                    3 => {
-                        let new_length = 1 + rand.below(6) as u32;
-                        let new_start = breath.min(layer_window_end.saturating_sub(1));
-                        (
-                            runtime.set_property_block_timing_pushed(
-                                "layer-1", property, &block_id, new_start, new_length,
-                            ),
-                            format!("pushed {block_id} -> {new_start}+{new_length}"),
-                        )
-                    }
-                    4 => (
-                        runtime.cycle_property_block_interp_mode("layer-1", property, &block_id),
-                        format!("cycle-mode {block_id}"),
-                    ),
-                    5 => (
-                        runtime.cycle_property_block_ease_out("layer-1", property, &block_id),
-                        format!("ease-out {block_id}"),
-                    ),
-                    6 => (
-                        runtime.cycle_property_block_ease_in("layer-1", property, &block_id),
-                        format!("ease-in {block_id}"),
-                    ),
-                    7 => (
-                        runtime.merge_empty_property_block(
-                            "layer-1", property, &block_id, rand.below(2) == 0,
+                            format!("add_move at {breath}"),
                         ),
-                        format!("merge-empty {block_id}"),
-                    ),
-                    8 => (
-                        runtime.blank_property_block("layer-1", property, &block_id),
-                        format!("blank {block_id}"),
-                    ),
-                    _ => {
-                        let other_id = track.blocks[rand.below(track.blocks.len() as u64) as usize].id.clone();
-                        (
-                            runtime.swap_property_blocks("layer-1", property, &block_id, &other_id)
-                                || runtime
+                        1 => (
+                            runtime
+                                .split_property_block("layer-1", property, &block_id, breath)
+                                .is_some(),
+                            format!("split {block_id} at {breath}"),
+                        ),
+                        2 => {
+                            let new_length = 1 + rand.below(6) as u32;
+                            let new_start = breath.min(layer_window_end.saturating_sub(1));
+                            (
+                                runtime.set_property_block_timing_destructive(
+                                    "layer-1", property, &block_id, new_start, new_length,
+                                ),
+                                format!("destructive {block_id} -> {new_start}+{new_length}"),
+                            )
+                        }
+                        3 => {
+                            let new_length = 1 + rand.below(6) as u32;
+                            let new_start = breath.min(layer_window_end.saturating_sub(1));
+                            (
+                                runtime.set_property_block_timing_pushed(
+                                    "layer-1", property, &block_id, new_start, new_length,
+                                ),
+                                format!("pushed {block_id} -> {new_start}+{new_length}"),
+                            )
+                        }
+                        4 => (
+                            runtime
+                                .cycle_property_block_interp_mode("layer-1", property, &block_id),
+                            format!("cycle-mode {block_id}"),
+                        ),
+                        5 => (
+                            runtime.cycle_property_block_ease_out("layer-1", property, &block_id),
+                            format!("ease-out {block_id}"),
+                        ),
+                        6 => (
+                            runtime.cycle_property_block_ease_in("layer-1", property, &block_id),
+                            format!("ease-in {block_id}"),
+                        ),
+                        7 => (
+                            runtime.merge_empty_property_block(
+                                "layer-1",
+                                property,
+                                &block_id,
+                                rand.below(2) == 0,
+                            ),
+                            format!("merge-empty {block_id}"),
+                        ),
+                        8 => (
+                            runtime.blank_property_block("layer-1", property, &block_id),
+                            format!("blank {block_id}"),
+                        ),
+                        _ => {
+                            let other_id = track.blocks
+                                [rand.below(track.blocks.len() as u64) as usize]
+                                .id
+                                .clone();
+                            (
+                                runtime.swap_property_blocks(
+                                    "layer-1", property, &block_id, &other_id,
+                                ) || runtime
                                     .duplicate_property_block("layer-1", property, &block_id)
                                     .is_some(),
-                            format!("swap/dup {block_id} <-> {other_id}"),
-                        )
+                                format!("swap/dup {block_id} <-> {other_id}"),
+                            )
+                        }
+                    };
+                    let _ = changed;
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        assert_track_invariants(&runtime, "layer-1", property, seed, op);
+                    }));
+                    if result.is_err() {
+                        eprintln!("failing op {op} on {property}: {trace}");
+                        std::panic::resume_unwind(result.unwrap_err());
                     }
-                };
-                let _ = changed;
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    assert_track_invariants(&runtime, "layer-1", property, seed, op);
-                }));
-                if result.is_err() {
-                    eprintln!("failing op {op} on {property}: {trace}");
-                    std::panic::resume_unwind(result.unwrap_err());
                 }
-            }
             }
         }
     }
@@ -4880,7 +5146,11 @@ mod tests {
             actions_file_path: dir.join("actions.jsonl"),
         };
         save_shared_document_snapshot(&paths, &mut runtime).unwrap();
-        let reloaded = load_or_create_shared_document(&paths, SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1")).unwrap();
+        let reloaded = load_or_create_shared_document(
+            &paths,
+            SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1"),
+        )
+        .unwrap();
         let shape2 = reloaded.property_track_shape("layer-1", "move");
         assert_eq!(shape2, "[0..6 6..12/e 12..24 24..25/e]");
         assert_eq!(reloaded.move_offset_for_layer("layer-1", 2).x, 2);
@@ -4924,9 +5194,9 @@ mod tests {
         // blocks: block-1 (0..4), block-3 (4..8), block-2 (8..24), tail.
         // Swap block-3 (4..8) with a middle slice of block-2 via destructive drag:
         // move block-3 to 12..16 leaves a 4..12 gap blank (middle empty).
-        assert!(runtime.set_property_block_timing_destructive(
-            "layer-1", "raster", "block-3", 12, 4,
-        ));
+        assert!(
+            runtime.set_property_block_timing_destructive("layer-1", "raster", "block-3", 12, 4,)
+        );
         let shape = interp_test_layer_track(&runtime, "raster");
         let middle_blank_id = shape
             .iter()
@@ -4942,7 +5212,9 @@ mod tests {
         // The cycle skips both loop modes: interpolate -> hold -> interpolate -> ...
         for expected in ["hold", "interpolate", "hold", "interpolate"] {
             assert!(runtime.cycle_property_block_interp_mode(
-                "layer-1", "raster", &middle_blank_id,
+                "layer-1",
+                "raster",
+                &middle_blank_id,
             ));
             let mode = runtime
                 .property_track("layer-1", "raster")
@@ -4987,9 +5259,9 @@ mod tests {
 
         // Build a leading blank: destructive-drag block-1 (0..8) right to 8..12,
         // cropping block-2's front — the vacated 0..8 becomes the first block.
-        assert!(runtime.set_property_block_timing_destructive(
-            "layer-1", "raster", "block-1", 8, 4,
-        ));
+        assert!(
+            runtime.set_property_block_timing_destructive("layer-1", "raster", "block-1", 8, 4,)
+        );
         let shape = interp_test_layer_track(&runtime, "raster");
         let leading_blank_id = shape[0]
             .3
@@ -5028,7 +5300,14 @@ mod tests {
         runtime.cycle_property_block_interp_mode("layer-1", "raster", &tail_id);
         runtime.cycle_property_block_interp_mode("layer-1", "raster", &tail_id);
         assert_eq!(
-            runtime.property_track("layer-1", "raster").unwrap().blocks.last().unwrap().interpretation.as_deref(),
+            runtime
+                .property_track("layer-1", "raster")
+                .unwrap()
+                .blocks
+                .last()
+                .unwrap()
+                .interpretation
+                .as_deref(),
             Some("loop_out")
         );
 
@@ -5036,11 +5315,13 @@ mod tests {
         // the middle of the track — the loop mode must not survive there.
         assert!(runtime.swap_property_blocks("layer-1", "raster", "block-1", &tail_id));
         let blocks = &runtime.property_track("layer-1", "raster").unwrap().blocks;
-        assert!(blocks
-            .iter()
-            .all(|b| b.interpretation.is_none()),
+        assert!(
+            blocks.iter().all(|b| b.interpretation.is_none()),
             "no stranded loop modes: {:?}",
-            blocks.iter().map(|b| (b.id.as_str(), b.interpretation.clone())).collect::<Vec<_>>()
+            blocks
+                .iter()
+                .map(|b| (b.id.as_str(), b.interpretation.clone()))
+                .collect::<Vec<_>>()
         );
         // And the track still ends blank with a fresh trailing representative.
         assert!(blocks.last().unwrap().is_blank);
@@ -5079,7 +5360,9 @@ mod tests {
         // empty and 12..24 merges into the tail blank on re-tile.
         runtime.split_property_block("layer-1", "move", "block-1", 4);
         {
-            let track = runtime.ensure_property_track_mut("layer-1", "move").unwrap();
+            let track = runtime
+                .ensure_property_track_mut("layer-1", "move")
+                .unwrap();
             track.blocks[0].value = Some(serde_json::json!({"x": 0, "y": 0, "z": 0}));
             track.blocks[1].start_breath = 8;
             track.blocks[1].length_breaths = 4;
@@ -5095,7 +5378,13 @@ mod tests {
             .unwrap()
             .blocks
             .iter()
-            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .map(|b| {
+                (
+                    b.start_breath,
+                    b.start_breath + b.length_breaths,
+                    b.is_blank,
+                )
+            })
             .collect();
         assert_eq!(
             spans,

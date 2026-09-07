@@ -4,11 +4,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::pieces::{classify_bar_piece, cell_type_of, BarPiece, CellType};
+use crate::pieces::{cell_type_of, classify_bar_piece, BarPiece, CellType};
 use thaum_renderer_domain::{
-    Hotspot,
     Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, GizmoBar, GizmoClickOutcome,
-    GizmoKind, GizmoState, Module, ModulePointerButton, ModulePointerEvent, ModuleRect,
+    GizmoKind, GizmoState, Hotspot, Module, ModulePointerButton, ModulePointerEvent, ModuleRect,
     PanelChrome, PersistedModuleUiState, UiColorRole, UiPalette, WorldPoint,
 };
 
@@ -17,7 +16,6 @@ pub enum LayerPropertyKind {
     Raster,
     Move,
 }
-
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PropertyTrackBlock {
@@ -353,10 +351,16 @@ fn resolve_property_drag_mode(
                 PropertyTimingResolution::Destructive,
             )
         } else {
-            (PropertyDragMode::TrimStart, PropertyTimingResolution::Pushed)
+            (
+                PropertyDragMode::TrimStart,
+                PropertyTimingResolution::Pushed,
+            )
         }),
         (_, BarPiece::RightHead) => Some(if is_right {
-            (PropertyDragMode::TrimEnd, PropertyTimingResolution::Destructive)
+            (
+                PropertyDragMode::TrimEnd,
+                PropertyTimingResolution::Destructive,
+            )
         } else {
             (PropertyDragMode::TrimEnd, PropertyTimingResolution::Pushed)
         }),
@@ -369,13 +373,19 @@ fn resolve_property_drag_mode(
                 PropertyTimingResolution::Destructive,
             )
         } else {
-            (PropertyDragMode::Swap, PropertyTimingResolution::Destructive)
+            (
+                PropertyDragMode::Swap,
+                PropertyTimingResolution::Destructive,
+            )
         }),
         (CellType::Empty, BarPiece::Center) => {
             if is_right {
                 None
             } else {
-                Some((PropertyDragMode::Swap, PropertyTimingResolution::Destructive))
+                Some((
+                    PropertyDragMode::Swap,
+                    PropertyTimingResolution::Destructive,
+                ))
             }
         }
         // Empty single: left interactions are unused; right drag is the same
@@ -392,7 +402,6 @@ fn resolve_property_drag_mode(
         }
     }
 }
-
 
 /// How a press-drag on the loop-window bar reshapes the document's active
 /// timeline span. The bar has no swap notion, so left and right body drags
@@ -902,10 +911,7 @@ impl LayersPanelModule {
             // duplicates to the right instead; double-right replaces the span with
             // empties — the new delete.
             (CellType::Solid, BarPiece::Center, ModulePointerButton::Left) => {
-                trace(
-                    self,
-                    format!("SplitPropertyBlock at breath={}", hit.breath),
-                );
+                trace(self, format!("SplitPropertyBlock at breath={}", hit.breath));
                 self.state
                     .borrow_mut()
                     .queue_action(LayersPanelAction::SplitPropertyBlock(
@@ -1038,10 +1044,7 @@ impl LayersPanelModule {
             };
             let neighbor_end =
                 neighbor.start_breath + neighbor.length_breaths.max(1).saturating_sub(1);
-            (
-                block.start_breath,
-                neighbor_end - block.start_breath + 1,
-            )
+            (block.start_breath, neighbor_end - block.start_breath + 1)
         } else {
             let neighbor = row.blocks.iter().find(|other| {
                 other.start_breath + other.length_breaths.max(1) == block.start_breath
@@ -1050,10 +1053,7 @@ impl LayersPanelModule {
                 trace(self, "merge head reject: no left neighbor".into());
                 return; // left span edge — no neighbor to merge in
             };
-            (
-                neighbor.start_breath,
-                block_end - neighbor.start_breath + 1,
-            )
+            (neighbor.start_breath, block_end - neighbor.start_breath + 1)
         };
         trace(
             self,
@@ -1567,10 +1567,9 @@ impl Module for LayersPanelModule {
                         // so the dragged bar previews at its requested span instead of
                         // its stored one; victims stay intact until the release commit.
                         let (draw_start, draw_length) = match (&drag_preview, block) {
-                            (
-                                Some((drag_block_id, Some((start, length)))),
-                                previewed,
-                            ) if drag_block_id == &previewed.id => {
+                            (Some((drag_block_id, Some((start, length)))), previewed)
+                                if drag_block_id == &previewed.id =>
+                            {
                                 preview_block = Some((previewed, (*start, *length)));
                                 continue;
                             }
@@ -1815,7 +1814,11 @@ impl Module for LayersPanelModule {
                     match &next_hover {
                         Some(hit) => state.log_interaction(format!(
                             "hover {}/{} breath={} block={} {:?}/{:?}",
-                            hit.layer_id, hit.property_id, hit.breath, hit.block_id, hit.piece,
+                            hit.layer_id,
+                            hit.property_id,
+                            hit.breath,
+                            hit.block_id,
+                            hit.piece,
                             hit.cell_type,
                         )),
                         None => state.log_interaction("hover cleared".into()),
@@ -2000,9 +2003,9 @@ impl Module for LayersPanelModule {
                                 ),
                             );
                         } else {
-                            self.state
-                                .borrow_mut()
-                                .log_interaction("commit swap dropped: released over nothing".into());
+                            self.state.borrow_mut().log_interaction(
+                                "commit swap dropped: released over nothing".into(),
+                            );
                         }
                     } else if let Some((start, length)) = drag.last_requested {
                         // One commit per drag: the previewed span is applied exactly
@@ -3593,4 +3596,3 @@ mod tests {
         assert!(panel.is_hidden());
     }
 }
-

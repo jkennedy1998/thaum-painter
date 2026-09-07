@@ -90,7 +90,6 @@ mod tests {
     use super::*;
     use crate::storage::SharedDocumentPropertyBlock;
 
-
     fn bar(start_breath: u32, length_breaths: u32, is_blank: bool) -> SharedDocumentPropertyBlock {
         SharedDocumentPropertyBlock {
             id: format!("b{start_breath}-{length_breaths}"),

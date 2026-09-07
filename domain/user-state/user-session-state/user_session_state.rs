@@ -337,8 +337,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use thaum_renderer_domain::{
-    Camera, CameraRoll, CameraSwing, CellPoint, ModuleRegistry, ParallaxProfile, PerspectiveProfile,
-    UiPalette, WorldPoint,
+    Camera, CameraRoll, CameraSwing, CellPoint, ModuleRegistry, ParallaxProfile,
+    PerspectiveProfile, UiPalette, WorldPoint,
 };
 
 pub fn painter_session_state_path(artifacts_root: &Path, user_id: &str) -> PathBuf {
