@@ -171,7 +171,6 @@ impl Module for PaintCanvasBoundsModule {
                     if outcome == GizmoClickOutcome::Gizmo(GizmoKind::Close) {
                         self.hidden = true;
                     }
-                    return;
                 }
             }
             ModulePointerEvent::Move { x, y } => {

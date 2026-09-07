@@ -31,7 +31,7 @@ Bar-size mapping: 1 breath = single head only; 2 breaths = left + right heads; 3
 
 ## interpolation truth
 - `GapFill`/`resolve_gap_fill`/`surrounding_items` die as-is (they existed only for voids).
-- Interim behavior: a playhead over an **empty displays nothing** (stub). Real interpolation is a later pass.
+- ~~Interim behavior: a playhead over an **empty displays nothing** (stub).~~ SUPERSEDED — real interpolation has landed for the move channel (see the landed passes below). Raster alone keeps the no-show-over-empties rule until its own channel pass.
 - Future interpolation shape: each property row has its **own custom interpolation** (you cannot interpolate raster like you interpolate move). Empties fire in **one standard way**; the per-row difference lives in how a row's content resolves. The user will eventually set the interpolative mode of empty bars — that UX is not worked out yet.
 
 ## infinity truth (J 2026-09-07, after the operator's out_mode proposal was rejected)
@@ -139,3 +139,14 @@ Bar-size mapping: 1 breath = single head only; 2 breaths = left + right heads; 3
 - `domain/file/storage/contract.md` — schema break, tiling invariant, no migration
 - `domain/modules/individuals/layers-panel/contract.md` — piece taxonomy, interaction routing, empty/solid UX split
 - `domain/painter-session/timeline-state/contract.md` — auto-key-off rejection now lands on empties explicitly
+
+## keyframe-authoring move drags + document-space drawing (landed 2026-09-07, third pass)
+- **Move drags author keyframes (J 2026-09-07):** `add_move_offset` is the canvas drag commit seam and it no longer just piles deltas onto whatever block covers the playhead — that produced one constant offset (both drags on the same bar) or two ADJACENT bars (a position-to-position clip), so interpolation never showed. The rules now:
+  - **Drag strictly inside a solid keyframe** → the bar splits at the drag breath; the new keyframe (bar from the drag breath to the old bar's end) carries old offset + delta; an interpolating empty opens between the two bars, carved from the LEFT bar's right end (which keeps at least one breath; carve width = half the left remainder, min 1). Two drags at two breaths now produce visible motion by themselves.
+  - **Drag inside an empty** → the empty's left part STAYS empty (the interpolation region survives) and a new keyframe lands at the drag breath carrying the resolved offset + delta. Dragging mid-transition no longer swallows the whole empty into one solid.
+  - **Drag at a keyframe's own start breath** → accumulates in place; repeated drags at one breath stay one keyframe.
+  - **Drag onto a valueless born-tiled solid** → takes the value in place (it is not a real keyframe yet; splitting it would strand a valueless bar that resolves to nothing).
+  - With no covering block at all, a keyframe spanning the layer's timing window is created (unchanged).
+- **Drawing aims in document space (J 2026-09-07):** the entrypoint's `to_world` seam (and the stamp-hover anchor, the only other cursor→world site) subtracts the active layer's move offset at the current breath, so every tool — strokes, lasso, selection, stamp, text, bounds eligibility — aims at the cell that renders back under the cursor once the render path re-applies the move shift. One seam on purpose: no per-tool fixes. The offset is constant within a frame, so move-drag deltas are unaffected; zero move changes nothing.
+- Known deferred edge: a drag landing exactly on an empty's FIRST breath converts that whole empty to a keyframe (pre-existing in-place conversion) rather than splitting — revisit if it bites.
+- **Drag past the stored extent (in the infinite region) lands a one-breath keyframe at the drag breath** carrying the resolved offset + delta (J 2026-09-07 bug fix): previously it pushed a span solid over the whole layer window, which the retile trimmed over the existing bars and VAPORIZED later keyframes. The old tail blank merges with the retile's gap fill, and a fresh trailing representative is appended after the new keyframe. Authoring a keyframe inside a loop region strips the stranded loop mode per the edge lock (only first/last blanks carry loop modes).

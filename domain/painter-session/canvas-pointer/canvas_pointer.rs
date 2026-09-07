@@ -302,6 +302,12 @@ pub struct CanvasPointerStrokes {
     vector_move: Option<VectorMoveStroke>,
 }
 
+impl Default for CanvasPointerStrokes {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CanvasPointerStrokes {
     pub fn new() -> Self {
         Self {
@@ -532,7 +538,7 @@ impl CanvasPointerStrokes {
                     // captured; typing then owns the keyboard until Escape/exit.
                     let block_id = ctx
                         .document
-                        .active_raster_block_id(&ctx.active_layer_id, current_breath)?;
+                        .active_raster_block_id(ctx.active_layer_id, current_breath)?;
                     let brush_cell = ctx.tool_state.borrow().text_brush_cell_for_hand(hand);
                     let (options, space_replace) = {
                         let tool_state = ctx.tool_state.borrow();
@@ -551,7 +557,7 @@ impl CanvasPointerStrokes {
                 }
                 let block_id = ctx
                     .document
-                    .active_raster_block_id(&ctx.active_layer_id, current_breath)?;
+                    .active_raster_block_id(ctx.active_layer_id, current_breath)?;
                 if drag_behavior(ctx.tool_state.borrow().tool_for_hand(hand).id())
                     == DragBehavior::ReleaseBound
                 {
@@ -572,7 +578,7 @@ impl CanvasPointerStrokes {
                     hand,
                     bounds,
                     orientation,
-                    &ctx.active_layer_id,
+                    ctx.active_layer_id,
                     &block_id,
                 );
                 None
@@ -692,7 +698,7 @@ impl CanvasPointerStrokes {
                         hand,
                         bounds,
                         orientation,
-                        &ctx.active_layer_id,
+                        ctx.active_layer_id,
                         &block_id,
                     );
                 }
@@ -859,7 +865,7 @@ impl CanvasPointerStrokes {
                 ctx.document_paths,
                 ctx.action_counter,
                 ctx.session_user_id,
-                &ctx.active_layer_id,
+                ctx.active_layer_id,
                 ctx.canvas,
                 start,
             ) {

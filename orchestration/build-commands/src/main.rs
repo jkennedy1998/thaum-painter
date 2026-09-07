@@ -243,7 +243,7 @@ fn begin_canvas_press_if_eligible(
     if !paint_surface.contains(screen.x, screen.y)
         || !bounds.contains(position)
         || PaintCanvasBoundsModule::is_gizmo_hit(paint_viewport, screen.x, screen.y)
-        || text_entry.as_ref().map_or(false, |entry| entry.is_active())
+        || text_entry.as_ref().is_some_and(|entry| entry.is_active())
     {
         return;
     }
@@ -666,7 +666,7 @@ fn prompt_save_document_root(file_root: &Path, title: &str) -> Option<PathBuf> {
     let selected = FileDialog::new()
         .set_directory(file_root)
         .set_title("Save thaum-painter document as")
-        .set_file_name(&format!("{suggested}.json"))
+        .set_file_name(format!("{suggested}.json"))
         .save_file()
         .map(|path| save_as_root_from_dialog_path(&path));
     if let Some(path) = selected {
@@ -2532,7 +2532,7 @@ fn main() -> Result<()> {
                     *paint_canvas_bounds.borrow(),
                     view_orientation,
                     command_bar.contains(screen.x, screen.y) || modules.is_pointer_captured(),
-                    text_entry.as_ref().map_or(false, |entry| entry.is_active()),
+                    text_entry.as_ref().is_some_and(|entry| entry.is_active()),
                 );
             }
         }
@@ -2754,8 +2754,8 @@ fn main() -> Result<()> {
         );
         if let Ok(session_text) = serde_json::to_string_pretty(&session_state) {
             if last_saved_session_text.as_ref() != Some(&session_text) {
-                if last_save_at.elapsed() >= Duration::from_millis(150) {
-                    if save_painter_user_session_state(&session_state_path, &session_state).is_ok()
+                if last_save_at.elapsed() >= Duration::from_millis(150)
+                    && save_painter_user_session_state(&session_state_path, &session_state).is_ok()
                     {
                         last_saved_session_text = Some(session_text);
                         last_save_at = Instant::now();
@@ -2763,7 +2763,6 @@ fn main() -> Result<()> {
                     }
                     // Save failed or throttled: stay dirty so a later idle
                     // frame still comes back to persist the change.
-                }
             } else {
                 session_dirty = false;
             }

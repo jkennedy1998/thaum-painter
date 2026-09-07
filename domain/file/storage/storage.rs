@@ -149,9 +149,9 @@ fn retiled_property_track(
     // looked up across the whole track (highlight, swap, duplicate, merge), so a
     // duplicate id makes two blocks light up as one and routes edits to the wrong bar.
     let mut used_ids: Vec<String> = clipped.iter().map(|b| b.id.clone()).collect();
-    let mut next_free_block_id = |used_ids: &mut Vec<String>, tiled: &[SharedDocumentPropertyBlock]| -> String {
+    let next_free_block_id = |used_ids: &mut Vec<String>, tiled: &[SharedDocumentPropertyBlock]| -> String {
         let mut id = next_property_block_id(tiled);
-        while used_ids.iter().any(|used| *used == id) {
+        while used_ids.contains(&id) {
             id = format!("{id}x");
         }
         used_ids.push(id.clone());
@@ -1088,16 +1088,44 @@ impl SharedDocumentRuntime {
                 }
             }
             None => {
-                track.blocks.push(SharedDocumentPropertyBlock {
-                    id: next_property_block_id(&track.blocks),
-                    start_breath,
-                    length_breaths: length_breaths.max(1),
-                    is_blank: false,
-                    value: Some(next_value),
-                    interpretation: None,
-                    ease_out_percent: None,
-                    ease_in_percent: None,
-                });
+                // A breath past the stored extent maps onto the trailing blank
+                // (the infinite region resolves AS it) — so the drag lands a
+                // one-breath keyframe AT the drag breath carrying the resolved
+                // offset + delta. Pushing a span solid here would overlap the
+                // whole track and the retile would vaporize later keyframes.
+                let past_extent = track
+                    .blocks
+                    .last()
+                    .is_some_and(|last| last.is_blank && breath >= last.start_breath);
+                if past_extent {
+                    let resolved = crate::interp_move::resolve_move_offset(&track.blocks, breath)
+                        .unwrap_or([0, 0, 0]);
+                    track.blocks.push(SharedDocumentPropertyBlock {
+                        id: next_property_block_id(&track.blocks),
+                        start_breath: breath,
+                        length_breaths: 1,
+                        is_blank: false,
+                        value: Some(serde_json::json!({
+                            "x": resolved[0] + delta.x,
+                            "y": resolved[1] + delta.y,
+                            "z": resolved[2] + delta.z,
+                        })),
+                        interpretation: None,
+                        ease_out_percent: None,
+                        ease_in_percent: None,
+                    });
+                } else {
+                    track.blocks.push(SharedDocumentPropertyBlock {
+                        id: next_property_block_id(&track.blocks),
+                        start_breath,
+                        length_breaths: length_breaths.max(1),
+                        is_blank: false,
+                        value: Some(next_value),
+                        interpretation: None,
+                        ease_out_percent: None,
+                        ease_in_percent: None,
+                    });
+                }
             }
         }
         // Re-tile like every other mutating seam: painting into a blank can
@@ -4560,6 +4588,77 @@ mod tests {
             })
             .collect();
         assert_eq!(blocks, vec![(0, 24, false, Some(3)), (24, 25, true, None)]);
+    }
+
+    #[test]
+    fn a_move_drag_past_the_stored_extent_lands_a_keyframe_without_vaporizing_the_track() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        assert!(runtime.add_move_offset("layer-1", 2, WorldPoint { x: 2, y: 0, z: 0 }));
+        assert!(runtime.add_move_offset("layer-1", 12, WorldPoint { x: 10, y: 0, z: 0 }));
+        // Dragging out in the infinite region (breath 30, past the tail
+        // blank's stored extent) must land a one-breath keyframe there and
+        // keep every earlier keyframe — not push a span solid that the retile
+        // trims over the existing bars.
+        assert!(runtime.add_move_offset("layer-1", 30, WorldPoint { x: 5, y: 0, z: 0 }));
+        let blocks: Vec<(u32, u32, bool, Option<i32>)> = runtime
+            .property_track("layer-1", "move")
+            .unwrap()
+            .blocks
+            .iter()
+            .map(|b| {
+                (
+                    b.start_breath,
+                    b.start_breath + b.length_breaths,
+                    b.is_blank,
+                    b.value.as_ref().and_then(|v| v.get("x").and_then(|x| x.as_i64())).map(|x| x as i32),
+                )
+            })
+            .collect();
+        // The tail blank and the retile's gap fill merge into one blank
+        // (no-adjacent-empties), and the retile appends a fresh trailing
+        // representative after the new keyframe.
+        assert_eq!(
+            blocks,
+            vec![(0, 6, false, Some(2)), (6, 12, true, None), (12, 24, false, Some(12)), (24, 30, true, None), (30, 31, false, Some(17)), (31, 32, true, None)],
+            "track shape after a past-extent drag"
+        );
+        // The new keyframe carries the offset that was playing there (the
+        // x=12 keyframe holds through the trailing blank) plus the delta.
+        assert_eq!(runtime.move_offset_for_layer("layer-1", 30).x, 17);
+        assert_eq!(runtime.move_offset_for_layer("layer-1", 12).x, 12);
+    }
+
+    #[test]
+    fn a_move_drag_inside_a_loop_out_trailing_blank_lands_a_keyframe_and_the_mode_migrates_to_the_new_edge() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        assert!(runtime.add_move_offset("layer-1", 2, WorldPoint { x: 2, y: 0, z: 0 }));
+        assert!(runtime.add_move_offset("layer-1", 12, WorldPoint { x: 10, y: 0, z: 0 }));
+        // Loop out on the trailing blank, then drag inside the loop region:
+        // the keyframe lands there (extending the authored region) and the
+        // loop mode strips off the now-interior blank per the edge lock.
+        let track = runtime.property_track("layer-1", "move").unwrap();
+        let tail_id = track.blocks.last().unwrap().id.clone();
+        // Cycle the tail blank None -> hold -> loop_out (next_mode steps past
+        // the current, so two cycles land on loop_out).
+        for _ in 0..2 {
+            runtime.cycle_property_block_interp_mode("layer-1", "move", &tail_id);
+        }
+        let track = runtime.property_track("layer-1", "move").unwrap();
+        assert!(runtime.add_move_offset("layer-1", 26, WorldPoint { x: 3, y: 0, z: 0 }));
+        let track = runtime.property_track("layer-1", "move").unwrap();
+        let last = track.blocks.last().unwrap();
+        assert!(last.is_blank, "the track still ends with a blank representative");
+        assert_eq!(last.interpretation, None, "no stranded loop mode survives a retile");
+        // The new keyframe carries the value the loop was playing there
+        // (breath 26 wraps to region breath 2, the x=2 keyframe) plus delta.
+        assert_eq!(runtime.move_offset_for_layer("layer-1", 26).x, 5);
+        // Keyframes before the drag are untouched.
+        assert_eq!(runtime.move_offset_for_layer("layer-1", 2).x, 2);
+        assert_eq!(runtime.move_offset_for_layer("layer-1", 12).x, 12);
     }
 
     #[test]

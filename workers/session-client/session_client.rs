@@ -109,7 +109,7 @@ impl SessionClient {
             stream.flush()?;
         }
 
-        let (snapshot, log_length, roster) = loop {
+        let (snapshot, _log_length, roster) = loop {
             let message: HostMessage = read_message(&mut reader)?;
             match message {
                 HostMessage::Welcome { snapshot, log_length, roster } => {
