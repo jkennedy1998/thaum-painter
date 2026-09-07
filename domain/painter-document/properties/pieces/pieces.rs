@@ -124,6 +124,7 @@ mod tests {
             length_breaths: length,
             is_blank,
             value: None,
+            interpretation: None,
         }
     }
 

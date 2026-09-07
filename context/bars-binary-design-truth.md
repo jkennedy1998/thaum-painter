@@ -44,6 +44,15 @@ Bar-size mapping: 1 breath = single head only; 2 breaths = left + right heads; 3
 - Timeline **scrolling is coming** — do not hardcode panel widths or span-derived pixel math in the infinite-region work.
 - Setting the interpretation mode has **no UX yet**; the goal now is architecture that makes the behavior reachable without rework.
 
+## infinity implementation (landed 2026-09-07)
+- `retiled_property_track` no longer clips on the right: the track covers `[span_start, ∞)`. Blocks may live past the viewport end.
+- The track always ends with a **trailing blank representative** — a finite stored blank that semantically extends to infinity. If the last block is solid (even past the viewport end), a minimal representative is appended right after it.
+- Panel render: the trailing blank draws from its start through the panel's right edge, all center glyphs (`▪`), no right head — it has no end.
+- Hit-test: breaths past the stored extent resolve to the trailing blank as `Center/Empty`, so every empty interaction (merge, drags) works out there unchanged.
+- Duplicate no longer grows the layer span (viewport decoupled from editing).
+- `set_layer_timing` resizes the viewport only: growing extends the trailing representative, shrinking never clips content.
+- `SharedDocumentPropertyBlock.interpretation: Option<String>` is the end-blank interpretation slot (serde-default, unset everywhere, no UX).
+
 ## file break truth
 - New file schema, **no migration pass**, no importer. Migration bloat stays out of the system on purpose.
 - Attempting to open an old file should recognize it is unsupported and not fail hard when the system realizes it — clean recognition, not a crash. Exact mechanism deferred; bar behavior comes first.
@@ -100,7 +109,7 @@ Bar-size mapping: 1 breath = single head only; 2 breaths = left + right heads; 3
 2. Left empty head R-dblclick = **unused**.
 3. Empty merges (single + center, both heads mirrored) are **one seam**: find a side with content, prefer left, fall back right, **reject when there is no content on either side**.
 4. Content single L-dblclick duplicate = **same as center duplicate**: non-destructive push, fewer distinct outcomes for the user to expect.
-5. Duplicate at the span end: **place the new block next to it, on the right** — duplicates always land on the right. Span growth is bounded (exactly the duplicate's length, one interaction at a time — never fills to infinity). Timeline length is per-layer `length_breaths` (default 24); the document window is separate.
+5. Duplicate at the span end: **place the new block next to it, on the right** — duplicates always land on the right. (Superseded 2026-09-07 by the infinity truth: the duplicate no longer grows the layer span — the viewport is never coupled to editing, and the infinite trailing blank absorbs the room.)
 6. Center L-drag swaps the **actual keyframe content** (raster canvas / move value / whatever the property is) — the existing swap seam: spans exchange, content follows each block, so the two keyframes trade time positions. Already in the system.
 7. Empty center L-drag swaps the same way — predictability.
 8. Right-head mirroring is **total** — direction flips for every interaction.

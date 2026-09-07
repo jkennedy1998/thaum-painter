@@ -41,6 +41,14 @@ pub struct SharedDocumentPropertyBlock {
     /// `serde(default)` keeps existing files loading unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<Value>,
+    /// Interpretation-mode slot for the END blank keyframes (J 2026-09-07): the
+    /// trailing blank's mode is what happens at infinity (e.g. loop out), the
+    /// leading blank's is the mirror for negative time. Unset means the default
+    /// (hold). The available vocabulary differs per property channel; no UX sets
+    /// this yet — the slot is the architectural seam. `serde(default)` keeps
+    /// existing files loading unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interpretation: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,11 +101,12 @@ fn push_tiled_block(
     tiled.push(block);
 }
 
-/// Re-tiles one property track's blocks over the layer's breath span so the track
-/// stays fully covered: blocks are clipped into the span (fully-outside ones dropped),
-/// every uncovered window becomes a blank block, and adjacent blanks merge into one.
-/// Binary channels — every breath is empty or solid, never a void, never two touching
-/// empties.
+/// Re-tiles one property track's blocks so the track covers from the span start out
+/// to INFINITY (J 2026-09-07): blocks clip on the left edge only, every uncovered
+/// window becomes a blank block, adjacent blanks merge into one, and the track always
+/// ends with a blank — the trailing blank, the finite representative of the infinite
+/// empty region. Everything past its stored extent resolves as that same blank at
+/// render and hit-test time; no infinite block is ever stored.
 fn retiled_property_track(
     blocks: Vec<SharedDocumentPropertyBlock>,
     span_start: u32,
@@ -106,15 +115,17 @@ fn retiled_property_track(
     let span_end = span_start.saturating_add(span_length.max(1));
     let mut clipped: Vec<SharedDocumentPropertyBlock> = Vec::new();
     for mut block in blocks {
-        let block_end = block.start_breath + block.length_breaths.max(1);
+        // Left clip only: the span end is a viewport boundary, not a data wall.
         let new_start = block.start_breath.max(span_start);
-        let new_end = block_end.min(span_end);
-        if new_end <= new_start {
-            // Fully outside the span — nothing left to cover.
+        if block.start_breath + block.length_breaths.max(1) <= new_start {
+            // Fully left of the span — nothing left to cover.
             continue;
         }
-        block.start_breath = new_start;
-        block.length_breaths = new_end - new_start;
+        if block.start_breath < new_start {
+            let trimmed = block.length_breaths.max(1) - (new_start - block.start_breath);
+            block.start_breath = new_start;
+            block.length_breaths = trimmed;
+        }
         clipped.push(block);
     }
     clipped.sort_by_key(|block| block.start_breath);
@@ -148,6 +159,7 @@ fn retiled_property_track(
                     length_breaths: block.start_breath - cursor,
                     is_blank: true,
                     value: None,
+                    interpretation: None,
                 },
             );
         } else {
@@ -168,8 +180,32 @@ fn retiled_property_track(
                 length_breaths: span_end - cursor,
                 is_blank: true,
                 value: None,
+                interpretation: None,
             },
         );
+    }
+    // The trailing blank: the last block must be blank so the infinite empty region
+    // always has a stored representative to carry its interpretation and receive
+    // its interactions. If the last block is solid (possibly past the viewport end),
+    // append the minimal representative right after it.
+    if let Some(last) = tiled.last() {
+        if !last.is_blank {
+            let tail_start = last.start_breath + last.length_breaths;
+            let tail_id = next_free_block_id(&tiled);
+            let tail_length = if tail_start < span_end {
+                span_end - tail_start
+            } else {
+                1
+            };
+            tiled.push(SharedDocumentPropertyBlock {
+                id: tail_id,
+                start_breath: tail_start,
+                length_breaths: tail_length,
+                is_blank: true,
+                value: None,
+                interpretation: None,
+            });
+        }
     }
     tiled
 }
@@ -186,6 +222,7 @@ fn default_raster_property_track(
             length_breaths: length_breaths.max(1),
             is_blank: false,
             value: None,
+            interpretation: None,
         }],
     }
 }
@@ -891,6 +928,7 @@ impl SharedDocumentRuntime {
                 length_breaths: length_breaths.max(1),
                 is_blank: false,
                 value: None,
+                interpretation: None,
             });
             track.blocks.last_mut().expect("just pushed")
         };
@@ -1372,6 +1410,7 @@ impl SharedDocumentRuntime {
                 length_breaths: right_length,
                 is_blank: block.is_blank,
                 value: block.value.clone(),
+                interpretation: None,
             },
         );
         // The new right half starts with its own (empty) canvas; the caller propagates
@@ -1576,14 +1615,6 @@ impl SharedDocumentRuntime {
         property_id: &str,
         block_id: &str,
     ) -> Option<String> {
-        let (span_start, span_length) = {
-            let layer = self
-                .document
-                .layers
-                .iter()
-                .find(|layer| layer.layer_id == layer_id)?;
-            (layer.start_breath, layer.length_breaths)
-        };
         let source = {
             let track = self.property_track(layer_id, property_id)?;
             let index = track
@@ -1593,14 +1624,9 @@ impl SharedDocumentRuntime {
             track.blocks[index].clone()
         };
         let new_start = source.start_breath + source.length_breaths;
-        let span_end = span_start + span_length.max(1);
-        let overflow = (new_start + source.length_breaths).saturating_sub(span_end);
-        if overflow > 0 {
-            // The duplicate needs room past the span end: grow the layer by exactly
-            // the overflow. `set_layer_timing` re-tiles every track of the layer, so
-            // the new tail is blank and coverage stays exact.
-            self.set_layer_timing(layer_id, span_start, span_length + overflow);
-        }
+        // The viewport (layer span) is never coupled to editing (J 2026-09-07): a
+        // duplicate landing past the span end just lands there — the trailing blank
+        // and the infinite empty region absorb the room. No span growth.
         let Some(track) = self.ensure_property_track_mut(layer_id, property_id) else {
             return None;
         };
@@ -1625,33 +1651,38 @@ impl SharedDocumentRuntime {
                 length_breaths: source.length_breaths,
                 is_blank: source.is_blank,
                 value: source.value.clone(),
+                interpretation: None,
             },
         );
         self.block_canvases
             .insert((layer_id.to_string(), new_id.clone()), Canvas::new());
-        // When the layer grew, `set_layer_timing` re-tiled this track and left a tail
-        // blank inside the new span — and the push above then shifted that tail blank
-        // past the span end. One more re-tile drops the out-of-span tail and restores
-        // exact coverage of the grown span.
-        if overflow > 0 {
-            if let Some(track) = self
-                .document
-                .layers
-                .iter_mut()
-                .find(|layer| layer.layer_id == layer_id)
-                .and_then(|layer| {
-                    layer
-                        .property_tracks
-                        .iter_mut()
-                        .find(|track| track.property_id == property_id)
-                })
-            {
-                track.blocks = retiled_property_track(
-                    std::mem::take(&mut track.blocks),
-                    span_start,
-                    span_length + overflow,
-                );
-            }
+        let (span_start, span_length) = self
+            .document
+            .layers
+            .iter()
+            .find(|layer| layer.layer_id == layer_id)
+            .map(|layer| (layer.start_breath, layer.length_breaths))
+            .unwrap_or((0, 1));
+        // The push may leave the track's tail blank stranded (shifted right, now
+        // starting at the duplicate's old spot) — one re-tile re-opens the gap and
+        // restores the trailing-blank representative.
+        if let Some(track) = self
+            .document
+            .layers
+            .iter_mut()
+            .find(|layer| layer.layer_id == layer_id)
+            .and_then(|layer| {
+                layer
+                    .property_tracks
+                    .iter_mut()
+                    .find(|track| track.property_id == property_id)
+            })
+        {
+            track.blocks = retiled_property_track(
+                std::mem::take(&mut track.blocks),
+                span_start,
+                span_length,
+            );
         }
         Some(new_id)
     }
@@ -3535,7 +3566,8 @@ mod tests {
 
         // Track: empty (0..8), content (8..16), content (16..24). Merging the empty
         // prefers the left... there is no content on the left, so it falls back to
-        // the right: content (8..16) expands left over the empty.
+        // the right: content (8..16) expands left over the empty. The re-tile then
+        // appends the trailing blank representative past the last content block.
         assert!(runtime.merge_empty_property_block("layer-1", "raster", "block-1", true));
         let track = runtime.property_track("layer-1", "raster").unwrap();
         let covered: Vec<(u32, u32, bool)> = track
@@ -3543,7 +3575,7 @@ mod tests {
             .iter()
             .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
             .collect();
-        assert_eq!(covered, vec![(0, 16, false), (16, 24, false)]);
+        assert_eq!(covered, vec![(0, 16, false), (16, 24, false), (24, 25, true)]);
     }
 
     #[test]
@@ -3556,6 +3588,7 @@ mod tests {
 
         // Track: content (0..8), content (8..16), content (16..24). Blank the middle
         // and merge it: the left neighbor (0..8) expands over it, keeping its content.
+        // The re-tile then appends the trailing blank representative.
         assert!(runtime.blank_property_block("layer-1", "raster", "block-2"));
         assert!(runtime.merge_empty_property_block("layer-1", "raster", "block-2", true));
         let track = runtime.property_track("layer-1", "raster").unwrap();
@@ -3564,7 +3597,7 @@ mod tests {
             .iter()
             .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
             .collect();
-        assert_eq!(covered, vec![(0, 16, false), (16, 24, false)]);
+        assert_eq!(covered, vec![(0, 16, false), (16, 24, false), (24, 25, true)]);
     }
 
     #[test]
@@ -3606,19 +3639,20 @@ mod tests {
             .collect();
         assert_eq!(
             covered,
-            vec![(0, 8, false), (8, 16, false), (16, 32, false)]
+            vec![(0, 8, false), (8, 16, false), (16, 32, false), (32, 33, true)]
         );
         assert_ne!(new_id, "block-1");
     }
 
     #[test]
-    fn duplicate_at_the_span_end_grows_the_layer_by_exactly_the_duplicate() {
+    fn duplicate_past_the_viewport_end_leaves_the_layer_span_alone() {
         let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
             "doc-1", "Doc", "layer-1", "Layer 1",
         ));
 
-        // block-1 (0..24) ends at the span end: the duplicate lands at (24..48) and
-        // the layer grows by exactly 24 — bounded, one interaction at a time.
+        // block-1 (0..24) ends at the viewport end: the duplicate lands at (24..48)
+        // and the layer span does NOT grow — the viewport is never coupled to editing
+        // (J 2026-09-07). The infinite trailing blank absorbs the room.
         let _new_id = runtime
             .duplicate_property_block("layer-1", "raster", "block-1")
             .expect("duplicate");
@@ -3627,14 +3661,14 @@ mod tests {
             .iter()
             .find(|layer| layer.layer_id == "layer-1")
             .unwrap();
-        assert_eq!((layer.start_breath, layer.length_breaths), (0, 48));
+        assert_eq!((layer.start_breath, layer.length_breaths), (0, 24));
         let track = runtime.property_track("layer-1", "raster").unwrap();
         let covered: Vec<(u32, u32, bool)> = track
             .blocks
             .iter()
             .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
             .collect();
-        assert_eq!(covered, vec![(0, 24, false), (24, 48, false)]);
+        assert_eq!(covered, vec![(0, 24, false), (24, 48, false), (48, 49, true)]);
     }
 
     #[test]
@@ -3651,11 +3685,15 @@ mod tests {
             .expect("duplicate");
         let track = runtime.property_track("layer-1", "raster").unwrap();
         let ids: Vec<&str> = track.blocks.iter().map(|b| b.id.as_str()).collect();
-        assert_eq!(ids, vec!["block-1", "block-2", new_id.as_str(), "block-3"]);
+        assert_eq!(ids.len(), 5);
+        assert_eq!(&ids[..4], &["block-1", "block-2", new_id.as_str(), "block-3"]);
         assert_eq!(track.blocks[0].start_breath, 0);
         assert_eq!(track.blocks[1].start_breath, 8);
         assert_eq!(track.blocks[2].start_breath, 16);
         assert_eq!(track.blocks[3].start_breath, 24);
+        // The trailing blank representative: fresh id, blank, right after the tail.
+        assert!(track.blocks[4].is_blank);
+        assert_ne!(track.blocks[4].id, track.blocks[3].id);
     }
 
     #[test]
@@ -3690,7 +3728,7 @@ mod tests {
             .collect();
         assert_eq!(
             covered,
-            vec![(0, 18, true), (18, 22, false), (22, 24, true)]
+            vec![(0, 18, true), (18, 22, false), (22, 25, true)]
         );
     }
 
@@ -3722,13 +3760,15 @@ mod tests {
 
         // block-1 (0..8) grows destructively to 0..24: block-2 (8..24) is fully
         // covered, so it is removed outright — the edited block covers its range.
+        // The trailing blank representative is appended after the solid tail.
         assert!(
             runtime.set_property_block_timing_destructive("layer-1", "raster", "block-1", 0, 24)
         );
         let blocks = &runtime.property_track("layer-1", "raster").unwrap().blocks;
-        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks.len(), 2);
         assert_eq!((blocks[0].start_breath, blocks[0].length_breaths), (0, 24));
         assert!(!blocks[0].is_blank);
+        assert!(blocks[1].is_blank);
     }
 
     #[test]
@@ -3753,13 +3793,14 @@ mod tests {
     }
 
     #[test]
-    fn set_layer_timing_retiles_tracks_to_the_new_span() {
+    fn set_layer_timing_resizes_the_viewport_without_clipping_tracks() {
         let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
             "doc-1", "Doc", "layer-1", "Layer 1",
         ));
         runtime.split_property_block("layer-1", "raster", "block-1", 8);
 
-        // Grow the layer span to 32: the uncovered tail re-tiles into a blank block.
+        // The viewport (layer span) is never coupled to track data (J 2026-09-07):
+        // growing it just extends the trailing blank representative.
         assert!(runtime.set_layer_timing("layer-1", 0, 32));
         let track = runtime.property_track("layer-1", "raster").unwrap();
         let covered: Vec<(u32, u32, bool)> = track
@@ -3772,7 +3813,8 @@ mod tests {
             vec![(0, 8, false), (8, 24, false), (24, 32, true)]
         );
 
-        // Shrink the span to 12: the block past the end clips into it.
+        // Shrinking it never clips content — blocks past the viewport survive, and
+        // the trailing blank's stored extent just stays (it is infinite either way).
         assert!(runtime.set_layer_timing("layer-1", 0, 12));
         let track = runtime.property_track("layer-1", "raster").unwrap();
         let covered: Vec<(u32, u32, bool)> = track
@@ -3780,7 +3822,10 @@ mod tests {
             .iter()
             .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
             .collect();
-        assert_eq!(covered, vec![(0, 8, false), (8, 12, false)]);
+        assert_eq!(
+            covered,
+            vec![(0, 8, false), (8, 24, false), (24, 32, true)]
+        );
     }
 
     #[test]

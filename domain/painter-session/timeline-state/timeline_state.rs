@@ -98,6 +98,7 @@ mod tests {
             length_breaths,
             is_blank,
             value: None,
+            interpretation: None,
         }
     }
 

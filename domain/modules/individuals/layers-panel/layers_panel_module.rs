@@ -640,13 +640,30 @@ impl LayersPanelModule {
         let block = property.blocks.iter().find(|block| {
             let end = block.start_breath + block.length_breaths.max(1).saturating_sub(1);
             breath >= block.start_breath && breath <= end
-        })?;
+        });
+        // Past every stored block the track resolves as the trailing blank (the
+        // infinite empty region — J 2026-09-07): hit the last block when it is the
+        // trailing blank, otherwise the implicit blank region past a solid tail.
+        let (block, force_center) = match block {
+            Some(block) => (block, false),
+            None => {
+                let last = property.blocks.last()?;
+                if !(last.is_blank && breath > last.start_breath) {
+                    return None;
+                }
+                (last, true)
+            }
+        };
         Some(PropertyBlockHit {
             layer_id: property.layer_id.clone(),
             property_id: property.property_id.clone(),
             block_id: block.id.clone(),
             breath,
-            piece: classify_bar_piece(block.start_breath, block.length_breaths, breath),
+            piece: if force_center {
+                BarPiece::Center
+            } else {
+                classify_bar_piece(block.start_breath, block.length_breaths, breath)
+            },
             cell_type: cell_type_of(block.is_blank),
         })
     }
@@ -1454,7 +1471,7 @@ impl Module for LayersPanelModule {
                     // overdraws its requested span, so a rightward destructive drag
                     // shows the final state instead of the victim covering it.
                     let mut preview_block: Option<(&PropertyTrackBlock, (u32, u32))> = None;
-                    for block in &property.blocks {
+                    for (block_index, block) in property.blocks.iter().enumerate() {
                         // While a timing drag is in flight the document is untouched,
                         // so the dragged bar previews at its requested span instead of
                         // its stored one; victims stay intact until the release commit.
@@ -1468,8 +1485,19 @@ impl Module for LayersPanelModule {
                             }
                             _ => (block.start_breath, block.length_breaths.max(1)),
                         };
+                        // The trailing blank is the infinite empty region (J
+                        // 2026-09-07): it renders through to the panel's right edge
+                        // with no right head — it has no end. The stored extent is
+                        // only a finite representative.
+                        let is_trailing_blank =
+                            block_index + 1 == property.blocks.len() && block.is_blank;
+                        let graphic_length = if is_trailing_blank {
+                            u32::MAX / 2
+                        } else {
+                            draw_length
+                        };
                         let block_start_x = self.x_for_breath(draw_start);
-                        for local_index in 0..draw_length {
+                        for local_index in 0..graphic_length {
                             let breath = draw_start + local_index;
                             let x = block_start_x + local_index as i32;
                             if x > timeline_end {
@@ -1482,7 +1510,7 @@ impl Module for LayersPanelModule {
                                 graphic: CellGraphic::Glyph(property_track_cell_graphic(
                                     block.is_blank,
                                     is_visible,
-                                    draw_length,
+                                    graphic_length,
                                     local_index,
                                 )),
                                 color,
@@ -2573,6 +2601,67 @@ mod tests {
             Some(LayersPanelAction::SelectProperty(..))
         ));
         assert!(!panel.wants_pointer_capture());
+    }
+
+    #[test]
+    fn the_trailing_blank_renders_past_the_layer_span_to_the_panel_edge() {
+        let state = state_with_content_then_trailing_blank();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(5);
+
+        // Layer span is 0..10 but the panel is 50 wide: past the span the infinite
+        // trailing blank keeps rendering as blank cells, never as ruler dots, and
+        // never shows a right endcap — it has no end.
+        let group = panel.draw();
+        for breath in [10u32, 15, 20, 25, 29] {
+            let cell = group
+                .cells
+                .get(&CellPoint {
+                    x: timeline_start + breath as i32,
+                    y,
+                    z: 0,
+                })
+                .unwrap();
+            assert_eq!(cell.graphic, CellGraphic::Glyph('▪'), "breath {breath}");
+        }
+    }
+
+    #[test]
+    fn clicking_past_the_layer_span_hits_the_trailing_blank_as_an_empty_center() {
+        let state = state_with_content_then_trailing_blank();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(5);
+
+        // Breath 30 sits well past the 10-breath layer span: the infinite trailing
+        // blank region hit-tests as that blank, center piece, empty cell type.
+        let hit = panel.property_block_hit_at(timeline_start + 30, y).unwrap();
+        assert_eq!(hit.block_id, "block-2");
+        assert_eq!(hit.piece, BarPiece::Center);
+        assert_eq!(hit.cell_type, CellType::Empty);
+
+        // And the merge interaction works out there like on any empty center.
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 30,
+            y,
+            button: ModulePointerButton::Left,
+        });
+        state.borrow_mut().take_pending_action();
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 30,
+            y,
+            button: ModulePointerButton::Left,
+        });
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::MergeEmptyPropertyBlock(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-2".to_string(),
+                true,
+            ))
+        );
     }
 
     #[test]
