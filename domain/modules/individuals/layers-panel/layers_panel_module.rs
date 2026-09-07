@@ -67,10 +67,14 @@ pub enum LayersPanelAction {
     SetPropertyBlockTimingDestructive(String, String, String, u32, u32),
     BlankPropertyBlock(String, String, String),
     SwapPropertyBlocks(String, String, String, String),
-    /// Double-left duplicate (solid single + center): the block's full span and content
+    /// Double-left duplicate (solid single only): the block's full span and content
     /// copy to its right, pushing later bars right (non-destructive, duplicates always
     /// land on the right — J 2026-09-07).
     DuplicatePropertyBlock(String, String, String),
+    /// Double-left split (solid center): the bar separates at the double-clicked
+    /// breath — the left half keeps the id, the right half gets the rest, and the
+    /// track's total content length is unchanged (J 2026-09-07).
+    SplitPropertyBlock(String, String, String, u32),
     /// Double-right on an empty bar (single + center, right heads mirrored): the empty
     /// merges into the adjacent content block, preferring the left side, falling back
     /// right, and rejecting when the track has no content at all (J 2026-09-07).
@@ -105,9 +109,33 @@ pub struct LayersPanelState {
     pub playing: bool,
     pub loop_enabled: bool,
     pending_action: Option<LayersPanelAction>,
+    /// Interaction-matrix trace lines the panel pushes while routing pointer
+    /// events (which piece × cell type was hit and which branch fired). The
+    /// orchestration layer drains and appends them to the interaction log
+    /// artifact each frame so J can test drives and the operator can read back
+    /// what the panel actually routed.
+    interaction_log: Vec<String>,
 }
 
+/// The panel log is drained every frame; the cap only bounds a worst case
+/// where nobody drains (headless tests, a wedged frame loop).
+const INTERACTION_LOG_CAP: usize = 256;
+
 impl LayersPanelState {
+    /// Pushes one interaction-trace line onto the panel's log buffer.
+    fn log_interaction(&mut self, line: String) {
+        if self.interaction_log.len() >= INTERACTION_LOG_CAP {
+            self.interaction_log.remove(0);
+        }
+        self.interaction_log.push(line);
+    }
+
+    /// Drains the interaction trace lines for the orchestration layer to
+    /// append to the interaction log artifact.
+    pub fn take_interaction_log(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.interaction_log)
+    }
+
     /// Refreshes the displayed rows/selection/timeline readout from the real document and
     /// session. Called once per frame by the orchestration layer.
     pub fn sync(
@@ -264,6 +292,9 @@ struct PropertyBlockDrag {
     /// mutates the document mid-flight — the panel only previews — and this final span
     /// is committed exactly once on pointer-up through the queued timing action.
     last_requested: Option<(u32, u32)>,
+    /// Set by the move handler when the requested span differs from the previous
+    /// frame's, so the interaction log records distinct drag frames only.
+    last_requested_changed: bool,
 }
 
 /// Resolves what a press-drag on `hit` should do, keyed by piece × cell type per the
@@ -662,10 +693,24 @@ impl LayersPanelModule {
             LayerPropertyKind::Move => self.palette.get(UiColorRole::Medium),
         };
         // Bars rest at weight one; any highlight (hover or active drag) steps the
-        // whole bar up to weight two.
+        // whole bar up to weight two. A swap drag's target lights at Medium so the
+        // dragged bar and its target read as two distinct things, not one object.
         if drag_matches_block {
+            let is_swap_target = self
+                .property_block_drag
+                .as_ref()
+                .map(|drag| {
+                    drag.mode == PropertyDragMode::Swap
+                        && drag.swap_target_block_id.as_deref() == Some(block.id.as_str())
+                })
+                .unwrap_or(false);
+            let highlight = if is_swap_target {
+                self.palette.get(UiColorRole::Medium)
+            } else {
+                self.palette.get(UiColorRole::Vivid)
+            };
             return (
-                self.palette.get(UiColorRole::Vivid),
+                highlight,
                 thaum_renderer_domain::CellWeight::from_index_clamped(2),
             );
         }
@@ -746,11 +791,33 @@ impl LayersPanelModule {
             ));
 
         let Some((mode, resolution)) = resolve_property_drag_mode(&hit, button) else {
+            self.state.borrow_mut().log_interaction(format!(
+                "click {} {}/{} breath={} block={} {:?}/{:?} -> unused (select only)",
+                button_name(button),
+                hit.layer_id,
+                hit.property_id,
+                hit.breath,
+                hit.block_id,
+                hit.piece,
+                hit.cell_type,
+            ));
             return;
         };
         let Some(block) = self.find_property_block(&hit) else {
             return;
         };
+        self.state.borrow_mut().log_interaction(format!(
+            "click {} {}/{} breath={} block={} {:?}/{:?} -> drag {:?}/{:?}",
+            button_name(button),
+            hit.layer_id,
+            hit.property_id,
+            hit.breath,
+            hit.block_id,
+            hit.piece,
+            hit.cell_type,
+            mode,
+            resolution,
+        ));
         self.property_block_drag = Some(PropertyBlockDrag {
             layer_id: hit.layer_id,
             property_id: hit.property_id,
@@ -762,6 +829,7 @@ impl LayersPanelModule {
             anchor_breath: hit.breath,
             swap_target_block_id: None,
             last_requested: None,
+            last_requested_changed: false,
         });
     }
 
@@ -772,12 +840,44 @@ impl LayersPanelModule {
         hit: PropertyBlockHit,
         button: ModulePointerButton,
     ) {
+        let trace_prefix = format!(
+            "dblclick {} {}/{} breath={} block={} {:?}/{:?}",
+            button_name(button),
+            hit.layer_id,
+            hit.property_id,
+            hit.breath,
+            hit.block_id,
+            hit.piece,
+            hit.cell_type,
+        );
+        let trace = |panel: &Self, outcome: String| {
+            panel
+                .state
+                .borrow_mut()
+                .log_interaction(format!("{trace_prefix} -> {outcome}"));
+        };
         match (hit.cell_type, hit.piece, button) {
-            // Solid single + center: double-left duplicates to the right
-            // (non-destructive push); double-right replaces the span with empties —
-            // the new delete.
-            (CellType::Solid, BarPiece::Single, ModulePointerButton::Left)
-            | (CellType::Solid, BarPiece::Center, ModulePointerButton::Left) => {
+            // Solid center: double-left splits the bar at the double-clicked breath —
+            // total content length is preserved, the bar just separates there (J
+            // 2026-09-07). A solid single cannot split (length 1), so double-left
+            // duplicates to the right instead; double-right replaces the span with
+            // empties — the new delete.
+            (CellType::Solid, BarPiece::Center, ModulePointerButton::Left) => {
+                trace(
+                    self,
+                    format!("SplitPropertyBlock at breath={}", hit.breath),
+                );
+                self.state
+                    .borrow_mut()
+                    .queue_action(LayersPanelAction::SplitPropertyBlock(
+                        hit.layer_id,
+                        hit.property_id,
+                        hit.block_id,
+                        hit.breath,
+                    ));
+            }
+            (CellType::Solid, BarPiece::Single, ModulePointerButton::Left) => {
+                trace(self, "DuplicatePropertyBlock".into());
                 self.state
                     .borrow_mut()
                     .queue_action(LayersPanelAction::DuplicatePropertyBlock(
@@ -788,6 +888,7 @@ impl LayersPanelModule {
             }
             (CellType::Solid, BarPiece::Single, ModulePointerButton::Right)
             | (CellType::Solid, BarPiece::Center, ModulePointerButton::Right) => {
+                trace(self, "BlankPropertyBlock".into());
                 self.state
                     .borrow_mut()
                     .queue_action(LayersPanelAction::BlankPropertyBlock(
@@ -801,26 +902,33 @@ impl LayersPanelModule {
             // to the neighbor's far edge (J 2026-09-07). Right heads mirror: the bar on
             // the right merges in. Rejected at the span edge (no neighbor to run into).
             (CellType::Solid, BarPiece::LeftHead, ModulePointerButton::Left) => {
-                self.queue_content_head_merge(&hit, false);
+                self.queue_content_head_merge(&hit, false, &trace);
             }
             (CellType::Solid, BarPiece::RightHead, ModulePointerButton::Left) => {
-                self.queue_content_head_merge(&hit, true);
+                self.queue_content_head_merge(&hit, true, &trace);
             }
             // Empty bars: double-right merges the empty into the adjacent content
             // block — one seam, left-preferred with right fallback, rejecting on a
             // fully-empty track (J 2026-09-07). Right heads mirror to prefer the right.
             // Double-left on empties and double-right on solid heads are unused.
             (CellType::Empty, _, ModulePointerButton::Right) => {
+                let prefer_left = hit.piece != BarPiece::RightHead;
+                trace(
+                    self,
+                    format!("MergeEmptyPropertyBlock prefer_left={prefer_left}"),
+                );
                 self.state
                     .borrow_mut()
                     .queue_action(LayersPanelAction::MergeEmptyPropertyBlock(
                         hit.layer_id,
                         hit.property_id,
                         hit.block_id,
-                        hit.piece != BarPiece::RightHead,
+                        prefer_left,
                     ));
             }
-            _ => {}
+            _ => {
+                trace(self, "unused".into());
+            }
         }
     }
 
@@ -828,7 +936,12 @@ impl LayersPanelModule {
     /// from the adjacent neighbor's far edge through this bar's own span. With no
     /// adjacent block (the bar sits at the layer-span edge) the interaction rejects —
     /// under tiling a non-edge bar always has something to run into.
-    fn queue_content_head_merge(&mut self, hit: &PropertyBlockHit, mirror_right: bool) {
+    fn queue_content_head_merge(
+        &mut self,
+        hit: &PropertyBlockHit,
+        mirror_right: bool,
+        trace: &dyn Fn(&Self, String),
+    ) {
         let Some(row) = self.find_property_row(hit) else {
             return;
         };
@@ -842,6 +955,7 @@ impl LayersPanelModule {
                 .iter()
                 .find(|other| other.start_breath == block_end.saturating_add(1));
             let Some(neighbor) = neighbor else {
+                trace(self, "merge head reject: no right neighbor".into());
                 return; // right span edge — no neighbor to merge in
             };
             let neighbor_end =
@@ -855,6 +969,7 @@ impl LayersPanelModule {
                 other.start_breath + other.length_breaths.max(1) == block.start_breath
             });
             let Some(neighbor) = neighbor else {
+                trace(self, "merge head reject: no left neighbor".into());
                 return; // left span edge — no neighbor to merge in
             };
             (
@@ -862,6 +977,13 @@ impl LayersPanelModule {
                 block_end - neighbor.start_breath + 1,
             )
         };
+        trace(
+            self,
+            format!(
+                "merge head mirror_right={mirror_right} -> destructive span=({}, {})",
+                merged.0, merged.1,
+            ),
+        );
         self.state
             .borrow_mut()
             .queue_action(LayersPanelAction::SetPropertyBlockTimingDestructive(
@@ -871,6 +993,15 @@ impl LayersPanelModule {
                 merged.0,
                 merged.1,
             ));
+    }
+}
+
+/// Short button tag for the interaction trace lines.
+fn button_name(button: ModulePointerButton) -> &'static str {
+    if button == ModulePointerButton::Right {
+        "R"
+    } else {
+        "L"
     }
 }
 
@@ -886,15 +1017,15 @@ fn property_track_cell_graphic(
 
     if is_blank {
         if is_single {
-            return '▢';
+            return '▪';
         }
         if is_first {
-            return '<';
+            return '◧';
         }
         if is_last {
-            return '>';
+            return '◨';
         }
-        return '▢';
+        return '▪';
     }
 
     if is_visible {
@@ -1505,7 +1636,19 @@ impl Module for LayersPanelModule {
             }
             ModulePointerEvent::Move { x, y } => {
                 self.gizmo_state.note_pointer(&self.gizmos, self.rect, x, y);
-                self.hovered_property_block = self.property_block_hit_at(x, y);
+                let next_hover = self.property_block_hit_at(x, y);
+                if next_hover != self.hovered_property_block {
+                    let mut state = self.state.borrow_mut();
+                    match &next_hover {
+                        Some(hit) => state.log_interaction(format!(
+                            "hover {}/{} breath={} block={} {:?}/{:?}",
+                            hit.layer_id, hit.property_id, hit.breath, hit.block_id, hit.piece,
+                            hit.cell_type,
+                        )),
+                        None => state.log_interaction("hover cleared".into()),
+                    }
+                }
+                self.hovered_property_block = next_hover;
                 self.hovered_loop_window = self.loop_window_hit_at(x, y).is_some();
                 self.hovered_playhead = matches!(self.row_at(x, y), Some(PanelRow::BreathRuler))
                     && (x - self.rect.x0) == self.x_for_breath(self.state.borrow().current_breath);
@@ -1644,7 +1787,15 @@ impl Module for LayersPanelModule {
                             }
                             PropertyDragMode::Swap => unreachable!(),
                         };
+                        drag.last_requested_changed =
+                            drag.last_requested != Some((requested_start, requested_length));
                         drag.last_requested = Some((requested_start, requested_length));
+                        if drag.last_requested_changed {
+                            self.state.borrow_mut().log_interaction(format!(
+                                "drag {:?} block={} requested=({}, {})",
+                                drag.mode, drag.block_id, requested_start, requested_length,
+                            ));
+                        }
                     }
                 }
             }
@@ -1663,6 +1814,10 @@ impl Module for LayersPanelModule {
                 if let Some(drag) = self.property_block_drag.take() {
                     if drag.mode == PropertyDragMode::Swap {
                         if let Some(target_block_id) = drag.swap_target_block_id {
+                            self.state.borrow_mut().log_interaction(format!(
+                                "commit swap {} -> {}",
+                                drag.block_id, target_block_id,
+                            ));
                             self.state.borrow_mut().queue_action(
                                 LayersPanelAction::SwapPropertyBlocks(
                                     drag.layer_id,
@@ -1671,11 +1826,19 @@ impl Module for LayersPanelModule {
                                     target_block_id,
                                 ),
                             );
+                        } else {
+                            self.state
+                                .borrow_mut()
+                                .log_interaction("commit swap dropped: released over nothing".into());
                         }
                     } else if let Some((start, length)) = drag.last_requested {
                         // One commit per drag: the previewed span is applied exactly
                         // here, so destructive drags only yield the bars under the
                         // release position instead of everything crossed mid-flight.
+                        self.state.borrow_mut().log_interaction(format!(
+                            "commit {:?} block={} span=({}, {})",
+                            drag.resolution, drag.block_id, start, length,
+                        ));
                         let action = match drag.resolution {
                             PropertyTimingResolution::Pushed => {
                                 LayersPanelAction::SetPropertyBlockTimingPushed(
@@ -1885,15 +2048,17 @@ mod tests {
     }
 
     #[test]
-    fn raster_property_blocks_use_old_system_endcaps_midsections_and_singles() {
+    fn raster_property_blocks_use_solid_endcaps_and_new_empty_graphics() {
         assert_eq!(property_track_cell_graphic(false, true, 1, 0), '█');
         assert_eq!(property_track_cell_graphic(false, true, 2, 0), '█');
         assert_eq!(property_track_cell_graphic(false, true, 2, 1), '▦');
         assert_eq!(property_track_cell_graphic(false, true, 4, 1), '▥');
-        assert_eq!(property_track_cell_graphic(true, true, 1, 0), '▢');
-        assert_eq!(property_track_cell_graphic(true, true, 2, 0), '<');
-        assert_eq!(property_track_cell_graphic(true, true, 2, 1), '>');
-        assert_eq!(property_track_cell_graphic(true, true, 4, 1), '▢');
+        // J's 2026-09-07 empty graphics: ◧ left empty head, ◨ right empty head,
+        // ▪ empty center + empty single.
+        assert_eq!(property_track_cell_graphic(true, true, 1, 0), '▪');
+        assert_eq!(property_track_cell_graphic(true, true, 2, 0), '◧');
+        assert_eq!(property_track_cell_graphic(true, true, 2, 1), '◨');
+        assert_eq!(property_track_cell_graphic(true, true, 4, 1), '▪');
     }
 
     #[test]
@@ -2052,7 +2217,7 @@ mod tests {
     }
 
     #[test]
-    fn double_left_clicking_a_solid_center_duplicates_it_to_the_right() {
+    fn double_left_clicking_a_solid_center_splits_it_at_the_clicked_breath() {
         let state = state_with_rows();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
@@ -2072,10 +2237,11 @@ mod tests {
 
         assert_eq!(
             state.borrow_mut().take_pending_action(),
-            Some(LayersPanelAction::DuplicatePropertyBlock(
+            Some(LayersPanelAction::SplitPropertyBlock(
                 "layer-1".to_string(),
                 "raster".to_string(),
                 "block-1".to_string(),
+                2,
             ))
         );
     }

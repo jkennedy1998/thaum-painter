@@ -18,7 +18,7 @@ use thaum_painter_domain::{
         load_document_from_root, new_unsaved_document, resolve_painter_file_root,
     }, layers_runtime::{
         apply_layers_panel_action, build_selected_layer_property_rows, resolved_active_layer_id,
-    }, camera_actions::{apply_painter_camera_action, apply_painter_pan_action},
+    }, layers_panel_module::LayersPanelAction, camera_actions::{apply_painter_camera_action, apply_painter_pan_action},
     render_space::build_document_layer_cell_groups, save_shared_document_snapshot, canvas_pointer::{CanvasPointerContext, CanvasPointerStrokes, StampHover}, session_document::{
         commit_staged_paint_stroke, apply_shared_history_action,
         recover_snapshot_conflict, stage_text_entry_change, sync_canvas_from_active_layer,
@@ -36,7 +36,7 @@ use thaum_renderer_boot::{
 use thaum_renderer_domain::{
     camera_view_orientation_for_camera, remap_surface_units_to_active_plane_world,
     remap_surface_units_to_flat_2d_local, ActionBindingMap, ActionName, CameraDepthLink,
-    CameraLayersLink, CellPoint, Hotspot, MAX_VISIBLE_PLANE_RADIUS, TooltipState,
+    CameraLayersLink, CellPoint, MAX_VISIBLE_PLANE_RADIUS, TooltipState,
     tooltip_card_group,
     CommandBar, CommandBarButton, CommandBarClickOutcome, Composition, ControlActionRow,
     ControlsProfile, effective_bindings,
@@ -98,6 +98,57 @@ fn canvas_pointer_context<'a>(
 /// enqueues actions on many pointer paths (clicks, captured drags, releases)
 /// and every path must drain before the frame ends, or its commit is
 /// stranded in the queue until some later unrelated event.
+/// The interaction log artifact: one append-only file under the repo/dev root's
+/// orchestration artifacts so J's test drives can be read back against what the
+/// panel routed and what the document became.
+fn interaction_log_path() -> PathBuf {
+    painter_root().join("orchestration/artifacts/interaction-log/interaction-log.txt")
+}
+
+/// Appends non-empty line batches to the interaction log artifact.
+fn append_interaction_log(lines: &[String]) {
+    if lines.is_empty() {
+        return;
+    }
+    use std::io::Write;
+    let path = interaction_log_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        for line in lines {
+            let _ = writeln!(file, "{line}");
+        }
+    }
+}
+
+/// Human-readable UTC timestamp from the system clock (no chrono dependency):
+/// civil-from-days over the Unix epoch seconds.
+fn interaction_timestamp() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = (now / 86400) as i64;
+    let secs = now % 86400;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { year + 1 } else { year };
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}",
+        secs / 3600,
+        secs % 3600 / 60,
+        secs % 60,
+    )
+}
+
 #[allow(clippy::too_many_arguments)] // session-bridge seam: one fn carries the live session state; struct-izing touches the entrypoint
 fn drain_layers_panel_action(
     layers_panel_state: &Rc<RefCell<LayersPanelState>>,
@@ -111,8 +162,26 @@ fn drain_layers_panel_action(
     timeline_state: &Rc<RefCell<TimelineState>>,
     selection: &Rc<RefCell<PainterSelection>>,
 ) {
+    let action = layers_panel_state.borrow_mut().take_pending_action();
+    let mut log_lines = layers_panel_state.borrow_mut().take_interaction_log();
+    // Pure-UI actions (selection, playhead, auto-key) never touch the document,
+    // so they don't need a shape line after the apply.
+    let document_mutated = !matches!(
+        action,
+        Some(
+            LayersPanelAction::Select(_)
+                | LayersPanelAction::SelectProperty(..)
+                | LayersPanelAction::ToggleAutoKey
+                | LayersPanelAction::SetCurrentBreath(_)
+                | LayersPanelAction::TogglePlay
+                | LayersPanelAction::ToggleLoop
+        )
+    );
+    if let Some(action) = &action {
+        log_lines.push(format!("[{}] apply {action:?}", interaction_timestamp()));
+    }
     apply_layers_panel_action(
-        layers_panel_state.borrow_mut().take_pending_action(),
+        action,
         shared_document,
         shared_document_paths,
         shared_action_counter,
@@ -123,6 +192,18 @@ fn drain_layers_panel_action(
         timeline_state,
         selection,
     );
+    if document_mutated {
+        // The document shape after the mutation — this is the ground truth the
+        // panel mirrors back, so bar-behavior surprises read straight out of it.
+        log_lines.push(format!(
+            "[{}] shape raster={} move={} layer={}",
+            interaction_timestamp(),
+            shared_document.property_track_shape(active_layer_id, "raster"),
+            shared_document.property_track_shape(active_layer_id, "move"),
+            active_layer_id,
+        ));
+    }
+    append_interaction_log(&log_lines);
 }
 
 /// Runs one hand's canvas press through the shared seam when the click

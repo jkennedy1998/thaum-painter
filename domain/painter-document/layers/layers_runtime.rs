@@ -303,6 +303,36 @@ pub fn apply_layers_panel_action(
                 &target_block_id,
             );
         }
+        LayersPanelAction::SplitPropertyBlock(
+            layer_id,
+            property_id,
+            block_id,
+            split_breath,
+        ) => {
+            let Some(new_block_id) = shared_document.split_property_block(
+                &layer_id,
+                &property_id,
+                &block_id,
+                split_breath,
+            ) else {
+                return;
+            };
+            *selected_property_id = Some(property_id.clone());
+            // Propagate the split block's channel data onto the new half as a recorded
+            // patch: both halves start as identical copies and replay rebuilds the copy.
+            if let Some(record) = shared_document.split_data_propagation_record(
+                &layer_id,
+                &block_id,
+                &new_block_id,
+                next_action_id(shared_action_counter, session_user_id),
+                session_user_id,
+                action_timestamp_string(),
+            ) {
+                let _ =
+                    append_and_apply_shared_action(shared_document, shared_document_paths, record);
+            }
+            sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
+        }
         LayersPanelAction::DuplicatePropertyBlock(layer_id, property_id, block_id) => {
             let Some(new_block_id) = shared_document.duplicate_property_block(
                 &layer_id,

@@ -48,7 +48,7 @@ Bar-size mapping: 1 breath = single head only; 2 breaths = left + right heads; 3
   - R-click: unused
   - L-drag: positional drag, overwrites whatever it lands on (destructive move)
   - R-drag: resize, overwrites whatever it expands over (destructive, edge from pointer side)
-  - L-dblclick: duplicate this single frame to the right (same non-destructive push as center duplicate); lands on the right, growing the layer span by exactly the duplicate's length when it would pass the span end (bounded — never auto-fills)
+  - L-dblclick: duplicate this single frame to the right; lands on the right, growing the layer span by exactly the duplicate's length when it would pass the span end (bounded — never auto-fills). (A length-1 bar cannot split, so single keeps duplicate while center splits — J 2026-09-07.)
   - R-dblclick: replace with empty (this is the new delete — empties are voids now)
 - **left head**
   - L-click: select the layer
@@ -63,7 +63,7 @@ Bar-size mapping: 1 breath = single head only; 2 breaths = left + right heads; 3
   - R-click: unused
   - L-drag: swaps the actual keyframe content with the bar the drag lands on (the existing swap seam: spans exchange, each block's content follows it, so the two keyframes trade time positions)
   - R-drag: slides the bar destructively, overwriting content it lands on, leaving an empty in its previous span
-  - L-dblclick: duplicate this frame to the right of this one (whole bar span), non-destructive — shifts all other bars right so it has room to land
+  - L-dblclick: split the bar at the double-clicked breath — the bar separates there, left half keeps the id and breaths before the split, the right half gets the rest, and the track's total content length is unchanged (J 2026-09-07, reverted from duplicate back to the original split; implemented as `SplitPropertyBlock` at `hit.breath`)
   - R-dblclick: replace the block span with empties
 
 ### blank bar (empty / 0 / null of the binary system)

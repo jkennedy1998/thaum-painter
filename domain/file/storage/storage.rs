@@ -912,6 +912,27 @@ impl SharedDocumentRuntime {
             .find(|track| track.property_id == property_id)
     }
 
+    /// One-line shape of a property track for the interaction log artifact:
+    /// each block as `start..end` with `/e` marking an empty — `0..5 5..10/e`.
+    pub fn property_track_shape(&self, layer_id: &str, property_id: &str) -> String {
+        let Some(track) = self.property_track(layer_id, property_id) else {
+            return "[]".to_string();
+        };
+        let spans: Vec<String> = track
+            .blocks
+            .iter()
+            .map(|block| {
+                format!(
+                    "{}..{}{}",
+                    block.start_breath,
+                    block.start_breath + block.length_breaths,
+                    if block.is_blank { "/e" } else { "" }
+                )
+            })
+            .collect();
+        format!("[{}]", spans.join(" "))
+    }
+
     fn ensure_property_track_mut(
         &mut self,
         layer_id: &str,
