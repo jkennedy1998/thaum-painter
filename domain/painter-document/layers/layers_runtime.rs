@@ -287,31 +287,6 @@ pub fn apply_layers_panel_action(
                 length_breaths,
             );
         }
-        LayersPanelAction::SplitPropertyBlock(layer_id, property_id, block_id, split_breath) => {
-            let Some(new_block_id) = shared_document.split_property_block(
-                &layer_id,
-                &property_id,
-                &block_id,
-                split_breath,
-            ) else {
-                return;
-            };
-            *selected_property_id = Some(property_id.clone());
-            // Propagate the split block's channel data onto the new half as a recorded
-            // patch: both halves start as identical copies and replay rebuilds the copy.
-            if let Some(record) = shared_document.split_data_propagation_record(
-                &layer_id,
-                &block_id,
-                &new_block_id,
-                next_action_id(shared_action_counter, session_user_id),
-                session_user_id,
-                action_timestamp_string(),
-            ) {
-                let _ =
-                    append_and_apply_shared_action(shared_document, shared_document_paths, record);
-            }
-            sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
-        }
         LayersPanelAction::BlankPropertyBlock(layer_id, property_id, block_id) => {
             shared_document.blank_property_block(&layer_id, &property_id, &block_id);
         }
@@ -327,6 +302,45 @@ pub fn apply_layers_panel_action(
                 &source_block_id,
                 &target_block_id,
             );
+        }
+        LayersPanelAction::DuplicatePropertyBlock(layer_id, property_id, block_id) => {
+            let Some(new_block_id) = shared_document.duplicate_property_block(
+                &layer_id,
+                &property_id,
+                &block_id,
+            ) else {
+                return;
+            };
+            *selected_property_id = Some(property_id.clone());
+            // Propagate the duplicated block's channel data onto the copy as a recorded
+            // patch: the copy starts as an identical duplicate and diverges as it is
+            // edited separately.
+            if let Some(record) = shared_document.duplicate_data_propagation_record(
+                &layer_id,
+                &block_id,
+                &new_block_id,
+                next_action_id(shared_action_counter, session_user_id),
+                session_user_id,
+                action_timestamp_string(),
+            ) {
+                let _ =
+                    append_and_apply_shared_action(shared_document, shared_document_paths, record);
+            }
+            sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
+        }
+        LayersPanelAction::MergeEmptyPropertyBlock(
+            layer_id,
+            property_id,
+            block_id,
+            prefer_left,
+        ) => {
+            shared_document.merge_empty_property_block(
+                &layer_id,
+                &property_id,
+                &block_id,
+                prefer_left,
+            );
+            sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
         }
     }
     if document_mutated {

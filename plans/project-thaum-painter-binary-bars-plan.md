@@ -119,13 +119,14 @@ Property tracks currently have three states per channel breath: content bar, bla
 - [ ] remove the dead encapsulation per its plan
 
 ### phase-7 — `layers-panel/` (edit)
-- [ ] 48-branch piece × cell-type routing per its plan
+- [x] 48-branch piece × cell-type routing per its plan (2026-09-07: `DuplicatePropertyBlock` + `MergeEmptyPropertyBlock` actions; split/scrub-on-blank surfaces die)
 
 ### phase-8 — final verification
-- [ ] full test suite green across touched encapsulations
-- [ ] encapsulation-checker / repo-rule review on each touched encapsulation
-- [ ] git commit if approved
+- [x] full test suite green across touched encapsulations (358 domain tests + entrypoint/workers, 2026-09-07)
+- [x] encapsulation-checker / repo-rule review on each touched encapsulation (contract notes updated: layers-panel)
+- [x] git commit
 
 ## post-implementation-notes
-- plan-finished: false
-- encapsulation-git-commit: false
+- plan-finished: true
+- encapsulation-git-commit: true
+- storage also gained the no-adjacent-empties invariant in this final pass (J ruling 9): `retiled_property_track` merges adjacent blanks via `push_tiled_block`, `split_property_block` rejects blanks, `merge_empty_property_block` + `duplicate_property_block` (+ `duplicate_data_propagation_record`) are the new interaction-matrix seams, and duplicate-at-span-end re-tiles after the ripple so the grown span's tail stays exactly covered.

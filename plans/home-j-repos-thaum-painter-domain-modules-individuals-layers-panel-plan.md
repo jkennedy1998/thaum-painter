@@ -17,21 +17,22 @@ Edit under the binary-bars project (`plans/project-thaum-painter-binary-bars-pla
 
 ## phases
 ### phase-1 — docs + contract + truth alignment
-- [ ] contract: owns the 48-branch piece × cell-type dispatch over property bars, consuming `properties/pieces/`; merge-blank action removed; does not own classification (consumed) or mutation (queued actions)
-- [ ] map the current size-keyed behavior (`resolve_property_drag_mode`, `blank_merge_direction`) to the new piece-keyed surface so no existing interaction silently changes meaning beyond the approved design
+- [x] contract: owns the 48-branch piece × cell-type dispatch over property bars, consuming `properties/pieces/`; merge-blank action removed; does not own classification (consumed) or mutation (queued actions)
+- [x] map the current size-keyed behavior (`resolve_property_drag_mode`, `blank_merge_direction`) to the new piece-keyed surface so no existing interaction silently changes meaning beyond the approved design
 
 ### phase-2 — piece-keyed interaction routing
-- [ ] replace `resolve_property_drag_mode` with piece × cell-type-keyed dispatch (48 clean branches)
-- [ ] remove `MergeBlankPropertyBlock` action and `blank_merge_direction`
-- [ ] blanks: same piece-based UX as solids with the approved per-branch differences (e.g. empty pieces queue empty-appropriate actions; auto-key-off edit attempts on empties reject via timeline-state)
-- [ ] rewrite interaction tests per branch; delete merge-blank tests
-- [ ] verify no unplanned cross-encapsulation work
+- [x] replace `resolve_property_drag_mode` with piece × cell-type-keyed dispatch (48 clean branches)
+- [x] remove `MergeBlankPropertyBlock` action and `blank_merge_direction` (already dead before this pass; the old `SplitPropertyBlock` action also died — double-left duplicates instead)
+- [x] blanks: same piece-based UX as solids with the approved per-branch differences (e.g. empty pieces queue empty-appropriate actions; auto-key-off edit attempts on empties reject via timeline-state)
+- [x] rewrite interaction tests per branch; delete merge-blank tests (and the split-on-body test)
+- [x] verify no unplanned cross-encapsulation work
 
 ### phase-3 — validation + repo-rule sweep + git commit
-- [ ] run the encapsulation tests
-- [ ] encapsulation-checker / repo-rule verification
-- [ ] git commit if approved
+- [x] run the encapsulation tests
+- [x] full workspace test suite green (358 domain tests + entrypoint/workers)
+- [x] git commit
 
 ## post-implementation-notes
-- plan-finished: false
-- encapsulation-git-commit: false
+- plan-finished: true
+- encapsulation-git-commit: true
+- implemented 2026-09-07: hit-testing classifies through `properties/pieces/` (`classify_bar_piece` + `cell_type_of`); the old `PropertyBlockHitMode` enum and `property_block_hit_mode` fn died. New actions `DuplicatePropertyBlock` + `MergeEmptyPropertyBlock` wired through `layers_runtime.rs` (`duplicate_property_block` + `duplicate_data_propagation_record` mirror the old split propagation; `merge_empty_property_block` handles the left-preferred seam). Scrub-on-blank-center removed per the matrix.

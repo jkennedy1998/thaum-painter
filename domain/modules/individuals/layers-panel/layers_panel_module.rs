@@ -4,6 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::pieces::{classify_bar_piece, cell_type_of, BarPiece, CellType};
 use thaum_renderer_domain::{
     Hotspot,
     Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, GizmoBar, GizmoClickOutcome,
@@ -64,9 +65,16 @@ pub enum LayersPanelAction {
     SetPropertyBlockTiming(String, String, String, u32, u32),
     SetPropertyBlockTimingPushed(String, String, String, u32, u32),
     SetPropertyBlockTimingDestructive(String, String, String, u32, u32),
-    SplitPropertyBlock(String, String, String, u32),
     BlankPropertyBlock(String, String, String),
     SwapPropertyBlocks(String, String, String, String),
+    /// Double-left duplicate (solid single + center): the block's full span and content
+    /// copy to its right, pushing later bars right (non-destructive, duplicates always
+    /// land on the right — J 2026-09-07).
+    DuplicatePropertyBlock(String, String, String),
+    /// Double-right on an empty bar (single + center, right heads mirrored): the empty
+    /// merges into the adjacent content block, preferring the left side, falling back
+    /// right, and rejecting when the track has no content at all (J 2026-09-07).
+    MergeEmptyPropertyBlock(String, String, String, bool),
     /// Commits a dragged loop-window bar: the document's active timeline span.
     /// The bar itself cannot be split or deleted, so this is the only edit it
     /// supports beyond hover styling.
@@ -194,26 +202,17 @@ struct BarDrag {
     anchor_breath: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PropertyBlockHitMode {
-    EdgeStart,
-    EdgeEnd,
-    BodyMove,
-    BodySingle,
-    BlankStart,
-    BlankEnd,
-    BlankCenter,
-    BlankSingle,
-}
-
+/// Where on a property bar a pointer event landed, classified with the shared
+/// `pieces/` seam: which UX piece of the covering bar × which cell type. The
+/// 48-branch interaction matrix keys off exactly this pair (J 2026-09-07).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PropertyBlockHit {
     layer_id: String,
     property_id: String,
     block_id: String,
     breath: u32,
-    mode: PropertyBlockHitMode,
-    is_blank: bool,
+    piece: BarPiece,
+    cell_type: CellType,
 }
 
 /// How a property-block press-drag reshapes the block, mirroring the old system's
@@ -267,37 +266,22 @@ struct PropertyBlockDrag {
     last_requested: Option<(u32, u32)>,
 }
 
-/// Resolves what a press-drag on `hit` should do, mirroring the old system's
-/// `resolve_groups_raster_drag_mode`: blanks only drag via a right-click swap on their
-/// center; edge drags are time-preserving (push) on left-click and destructive
-/// (overwrite) on right-click; a multi-breath body swaps on left-click and destructively
-/// slides over neighbors on right-click; a single-breath block destructively repositions
-/// on left-click and destructively resizes from whichever side the pointer moves toward
-/// on right-click.
+/// Resolves what a press-drag on `hit` should do, keyed by piece × cell type per the
+/// 48-branch interaction matrix (`context/bars-binary-design-truth.md`, J dictation
+/// 2026-09-07). Solid and empty heads drag identically (same pushed/destructive code);
+/// solid and empty centers swap on left and destructively slide on right (solid) or
+/// nothing (empty); a solid single destructively repositions on left and destructively
+/// resizes from whichever side the pointer moves toward on right; an empty single is
+/// unused on left and destructively resizes on right.
 fn resolve_property_drag_mode(
     hit: &PropertyBlockHit,
     button: ModulePointerButton,
 ) -> Option<(PropertyDragMode, PropertyTimingResolution)> {
-    if hit.is_blank {
-        return if button == ModulePointerButton::Right
-            && hit.mode == PropertyBlockHitMode::BlankCenter
-        {
-            Some((
-                PropertyDragMode::Swap,
-                PropertyTimingResolution::Destructive,
-            ))
-        } else {
-            None
-        };
-    }
     let is_right = button == ModulePointerButton::Right;
-    let edge_resolution = if is_right {
-        PropertyTimingResolution::Destructive
-    } else {
-        PropertyTimingResolution::Pushed
-    };
-    match hit.mode {
-        PropertyBlockHitMode::BodySingle => Some(if is_right {
+    match (hit.cell_type, hit.piece) {
+        // Solid single: left drag is a destructive positional move; right drag is a
+        // destructive resize that grows from whichever side the pointer moves toward.
+        (CellType::Solid, BarPiece::Single) => Some(if is_right {
             (
                 PropertyDragMode::DynamicResize,
                 PropertyTimingResolution::Destructive,
@@ -308,23 +292,52 @@ fn resolve_property_drag_mode(
                 PropertyTimingResolution::Destructive,
             )
         }),
-        PropertyBlockHitMode::EdgeStart => Some((PropertyDragMode::TrimStart, edge_resolution)),
-        PropertyBlockHitMode::EdgeEnd => Some((PropertyDragMode::TrimEnd, edge_resolution)),
-        PropertyBlockHitMode::BodyMove => Some(if is_right {
+        // Heads (empty and solid alike): left drag preserves the timing of the bars
+        // around it (pushed ripple); right drag overwrites destructively. Same code
+        // for both cell types by design.
+        (_, BarPiece::LeftHead) => Some(if is_right {
+            (
+                PropertyDragMode::TrimStart,
+                PropertyTimingResolution::Destructive,
+            )
+        } else {
+            (PropertyDragMode::TrimStart, PropertyTimingResolution::Pushed)
+        }),
+        (_, BarPiece::RightHead) => Some(if is_right {
+            (PropertyDragMode::TrimEnd, PropertyTimingResolution::Destructive)
+        } else {
+            (PropertyDragMode::TrimEnd, PropertyTimingResolution::Pushed)
+        }),
+        // Center: left drag swaps keyframe content with the bar the drag lands on —
+        // empty centers swap too, for predictability (J 2026-09-07). Right drag
+        // destructively slides a solid center; an empty center is unused on right.
+        (CellType::Solid, BarPiece::Center) => Some(if is_right {
             (
                 PropertyDragMode::Move,
                 PropertyTimingResolution::Destructive,
             )
         } else {
-            (
-                PropertyDragMode::Swap,
-                PropertyTimingResolution::Destructive,
-            )
+            (PropertyDragMode::Swap, PropertyTimingResolution::Destructive)
         }),
-        PropertyBlockHitMode::BlankStart
-        | PropertyBlockHitMode::BlankEnd
-        | PropertyBlockHitMode::BlankCenter
-        | PropertyBlockHitMode::BlankSingle => None,
+        (CellType::Empty, BarPiece::Center) => {
+            if is_right {
+                None
+            } else {
+                Some((PropertyDragMode::Swap, PropertyTimingResolution::Destructive))
+            }
+        }
+        // Empty single: left interactions are unused; right drag is the same
+        // destructive resize a solid single gets.
+        (CellType::Empty, BarPiece::Single) => {
+            if is_right {
+                Some((
+                    PropertyDragMode::DynamicResize,
+                    PropertyTimingResolution::Destructive,
+                ))
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -597,14 +610,13 @@ impl LayersPanelModule {
             let end = block.start_breath + block.length_breaths.max(1).saturating_sub(1);
             breath >= block.start_breath && breath <= end
         })?;
-        let mode = property_block_hit_mode(block, breath);
         Some(PropertyBlockHit {
             layer_id: property.layer_id.clone(),
             property_id: property.property_id.clone(),
             block_id: block.id.clone(),
             breath,
-            mode,
-            is_blank: block.is_blank,
+            piece: classify_bar_piece(block.start_breath, block.length_breaths, breath),
+            cell_type: cell_type_of(block.is_blank),
         })
     }
 
@@ -675,7 +687,7 @@ impl LayersPanelModule {
         )
     }
 
-    fn find_property_block(&self, hit: &PropertyBlockHit) -> Option<PropertyTrackBlock> {
+    fn find_property_row(&self, hit: &PropertyBlockHit) -> Option<PropertyTrackRow> {
         self.state
             .borrow()
             .property_rows
@@ -683,13 +695,16 @@ impl LayersPanelModule {
             .find(|property| {
                 property.layer_id == hit.layer_id && property.property_id == hit.property_id
             })
-            .and_then(|property| {
-                property
-                    .blocks
-                    .iter()
-                    .find(|block| block.id == hit.block_id)
-            })
             .cloned()
+    }
+
+    fn find_property_block(&self, hit: &PropertyBlockHit) -> Option<PropertyTrackBlock> {
+        self.find_property_row(hit).and_then(|property| {
+            property
+                .blocks
+                .into_iter()
+                .find(|block| block.id == hit.block_id)
+        })
     }
 
     fn handle_property_block_click(&mut self, hit: PropertyBlockHit, button: ModulePointerButton) {
@@ -704,7 +719,8 @@ impl LayersPanelModule {
                     && recent.hit.layer_id == hit.layer_id
                     && recent.hit.property_id == hit.property_id
                     && recent.hit.block_id == hit.block_id
-                    && recent.hit.mode == hit.mode
+                    && recent.hit.piece == hit.piece
+                    && recent.hit.cell_type == hit.cell_type
             })
             .unwrap_or(false);
         self.recent_raster_click = Some(RecentRasterClick {
@@ -715,54 +731,19 @@ impl LayersPanelModule {
 
         if is_double_click {
             self.property_block_drag = None;
-            if hit.is_blank {
-                // Blanks carry no content, so a double-click has nothing to edit;
-                // the empty-piece interaction surface lands in the routing pass.
-                return;
-            }
-            if button == ModulePointerButton::Left && hit.mode == PropertyBlockHitMode::BodyMove {
-                self.state
-                    .borrow_mut()
-                    .queue_action(LayersPanelAction::SplitPropertyBlock(
-                        hit.layer_id,
-                        hit.property_id,
-                        hit.block_id,
-                        hit.breath,
-                    ));
-                return;
-            }
-            if button == ModulePointerButton::Right {
-                self.state
-                    .borrow_mut()
-                    .queue_action(LayersPanelAction::BlankPropertyBlock(
-                        hit.layer_id,
-                        hit.property_id,
-                        hit.block_id,
-                    ));
-            }
+            self.handle_property_block_double_click(hit, button);
             return;
         }
 
+        // Selection rule (J 2026-09-07): any interaction on a property row selects that
+        // layer's property first — "unused" branches mean no additional action, never
+        // no selection.
         self.state
             .borrow_mut()
             .queue_action(LayersPanelAction::SelectProperty(
                 hit.layer_id.clone(),
                 hit.property_id.clone(),
             ));
-
-        if hit.is_blank
-            && button == ModulePointerButton::Left
-            && matches!(
-                hit.mode,
-                PropertyBlockHitMode::BlankCenter | PropertyBlockHitMode::BlankSingle
-            )
-        {
-            self.state
-                .borrow_mut()
-                .queue_action(LayersPanelAction::SetCurrentBreath(hit.breath));
-            self.scrubbing_ruler = true;
-            return;
-        }
 
         let Some((mode, resolution)) = resolve_property_drag_mode(&hit, button) else {
             return;
@@ -783,36 +764,113 @@ impl LayersPanelModule {
             last_requested: None,
         });
     }
-}
 
-fn property_block_hit_mode(block: &PropertyTrackBlock, breath: u32) -> PropertyBlockHitMode {
-    let start = block.start_breath;
-    let end = block.start_breath + block.length_breaths.max(1).saturating_sub(1);
-    if start == end {
-        return if block.is_blank {
-            PropertyBlockHitMode::BlankSingle
-        } else {
-            PropertyBlockHitMode::BodySingle
-        };
+    /// Dispatches the double-click branches of the 48-branch interaction matrix. Every
+    /// branch already selected the property through the first click of the pair.
+    fn handle_property_block_double_click(
+        &mut self,
+        hit: PropertyBlockHit,
+        button: ModulePointerButton,
+    ) {
+        match (hit.cell_type, hit.piece, button) {
+            // Solid single + center: double-left duplicates to the right
+            // (non-destructive push); double-right replaces the span with empties —
+            // the new delete.
+            (CellType::Solid, BarPiece::Single, ModulePointerButton::Left)
+            | (CellType::Solid, BarPiece::Center, ModulePointerButton::Left) => {
+                self.state
+                    .borrow_mut()
+                    .queue_action(LayersPanelAction::DuplicatePropertyBlock(
+                        hit.layer_id,
+                        hit.property_id,
+                        hit.block_id,
+                    ));
+            }
+            (CellType::Solid, BarPiece::Single, ModulePointerButton::Right)
+            | (CellType::Solid, BarPiece::Center, ModulePointerButton::Right) => {
+                self.state
+                    .borrow_mut()
+                    .queue_action(LayersPanelAction::BlankPropertyBlock(
+                        hit.layer_id,
+                        hit.property_id,
+                        hit.block_id,
+                    ));
+            }
+            // Solid heads: double-left merges the adjacent bar into this one — the
+            // double-clicked bar's content stays, implemented as a destructive resize
+            // to the neighbor's far edge (J 2026-09-07). Right heads mirror: the bar on
+            // the right merges in. Rejected at the span edge (no neighbor to run into).
+            (CellType::Solid, BarPiece::LeftHead, ModulePointerButton::Left) => {
+                self.queue_content_head_merge(&hit, false);
+            }
+            (CellType::Solid, BarPiece::RightHead, ModulePointerButton::Left) => {
+                self.queue_content_head_merge(&hit, true);
+            }
+            // Empty bars: double-right merges the empty into the adjacent content
+            // block — one seam, left-preferred with right fallback, rejecting on a
+            // fully-empty track (J 2026-09-07). Right heads mirror to prefer the right.
+            // Double-left on empties and double-right on solid heads are unused.
+            (CellType::Empty, _, ModulePointerButton::Right) => {
+                self.state
+                    .borrow_mut()
+                    .queue_action(LayersPanelAction::MergeEmptyPropertyBlock(
+                        hit.layer_id,
+                        hit.property_id,
+                        hit.block_id,
+                        hit.piece != BarPiece::RightHead,
+                    ));
+            }
+            _ => {}
+        }
     }
-    if breath == start {
-        return if block.is_blank {
-            PropertyBlockHitMode::BlankStart
-        } else {
-            PropertyBlockHitMode::EdgeStart
+
+    /// Resolves a solid head's double-left merge into a destructive resize that spans
+    /// from the adjacent neighbor's far edge through this bar's own span. With no
+    /// adjacent block (the bar sits at the layer-span edge) the interaction rejects —
+    /// under tiling a non-edge bar always has something to run into.
+    fn queue_content_head_merge(&mut self, hit: &PropertyBlockHit, mirror_right: bool) {
+        let Some(row) = self.find_property_row(hit) else {
+            return;
         };
-    }
-    if breath == end {
-        return if block.is_blank {
-            PropertyBlockHitMode::BlankEnd
-        } else {
-            PropertyBlockHitMode::EdgeEnd
+        let Some(block) = row.blocks.iter().find(|block| block.id == hit.block_id) else {
+            return;
         };
-    }
-    if block.is_blank {
-        PropertyBlockHitMode::BlankCenter
-    } else {
-        PropertyBlockHitMode::BodyMove
+        let block_end = block.start_breath + block.length_breaths.max(1) - 1;
+        let merged = if mirror_right {
+            let neighbor = row
+                .blocks
+                .iter()
+                .find(|other| other.start_breath == block_end.saturating_add(1));
+            let Some(neighbor) = neighbor else {
+                return; // right span edge — no neighbor to merge in
+            };
+            let neighbor_end =
+                neighbor.start_breath + neighbor.length_breaths.max(1).saturating_sub(1);
+            (
+                block.start_breath,
+                neighbor_end - block.start_breath + 1,
+            )
+        } else {
+            let neighbor = row.blocks.iter().find(|other| {
+                other.start_breath + other.length_breaths.max(1) == block.start_breath
+            });
+            let Some(neighbor) = neighbor else {
+                return; // left span edge — no neighbor to merge in
+            };
+            (
+                neighbor.start_breath,
+                block_end - neighbor.start_breath + 1,
+            )
+        };
+        self.state
+            .borrow_mut()
+            .queue_action(LayersPanelAction::SetPropertyBlockTimingDestructive(
+                hit.layer_id.clone(),
+                hit.property_id.clone(),
+                hit.block_id.clone(),
+                merged.0,
+                merged.1,
+            ));
     }
 }
 
@@ -1994,7 +2052,7 @@ mod tests {
     }
 
     #[test]
-    fn double_clicking_the_body_of_a_raster_block_splits_it() {
+    fn double_left_clicking_a_solid_center_duplicates_it_to_the_right() {
         let state = state_with_rows();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
@@ -2014,17 +2072,135 @@ mod tests {
 
         assert_eq!(
             state.borrow_mut().take_pending_action(),
-            Some(LayersPanelAction::SplitPropertyBlock(
+            Some(LayersPanelAction::DuplicatePropertyBlock(
                 "layer-1".to_string(),
                 "raster".to_string(),
                 "block-1".to_string(),
-                2,
             ))
         );
     }
 
     #[test]
-    fn right_double_clicking_a_content_block_blanks_it() {
+    fn double_left_clicking_a_solid_single_duplicates_it_too() {
+        let state = state_with_two_single_breath_blocks();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(5);
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 3,
+            y,
+            button: ModulePointerButton::Left,
+        });
+        state.borrow_mut().take_pending_action();
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 3,
+            y,
+            button: ModulePointerButton::Left,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::DuplicatePropertyBlock(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-1".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn double_left_clicking_a_solid_left_head_merges_the_bar_on_the_left_into_it() {
+        let state = state_with_two_adjacent_content_blocks();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(5);
+
+        // block-2 starts at breath 5: its left head. Double-left merges block-1 into
+        // it as a destructive resize spanning block-1's start through block-2's end.
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 5,
+            y,
+            button: ModulePointerButton::Left,
+        });
+        state.borrow_mut().take_pending_action();
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 5,
+            y,
+            button: ModulePointerButton::Left,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::SetPropertyBlockTimingDestructive(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-2".to_string(),
+                0,
+                10,
+            ))
+        );
+    }
+
+    #[test]
+    fn double_left_clicking_a_solid_right_head_merges_the_bar_on_the_right_into_it() {
+        let state = state_with_two_adjacent_content_blocks();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(5);
+
+        // Mirror of the left-head merge: block-1's right head (breath 4) merges
+        // block-2 in destructively through block-2's end.
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 4,
+            y,
+            button: ModulePointerButton::Left,
+        });
+        state.borrow_mut().take_pending_action();
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 4,
+            y,
+            button: ModulePointerButton::Left,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::SetPropertyBlockTimingDestructive(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-1".to_string(),
+                0,
+                10,
+            ))
+        );
+    }
+
+    #[test]
+    fn double_left_clicking_a_solid_left_head_at_the_span_edge_rejects() {
+        let state = state_with_two_adjacent_content_blocks();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(5);
+
+        // block-1 starts at the layer span start: no left neighbor, so the merge
+        // interaction is rejected.
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start,
+            y,
+            button: ModulePointerButton::Left,
+        });
+        state.borrow_mut().take_pending_action();
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start,
+            y,
+            button: ModulePointerButton::Left,
+        });
+
+        assert_eq!(state.borrow_mut().take_pending_action(), None);
+    }
+
+    #[test]
+    fn right_double_clicking_a_solid_center_blanks_its_span() {
         let state = state_with_rows();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
@@ -2050,6 +2226,28 @@ mod tests {
                 "block-1".to_string(),
             ))
         );
+    }
+
+    #[test]
+    fn right_double_clicking_a_solid_head_is_unused() {
+        let state = state_with_two_adjacent_content_blocks();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(5);
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 5,
+            y,
+            button: ModulePointerButton::Right,
+        });
+        state.borrow_mut().take_pending_action();
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 5,
+            y,
+            button: ModulePointerButton::Right,
+        });
+
+        assert_eq!(state.borrow_mut().take_pending_action(), None);
     }
 
     fn state_with_a_blank_between_two_content_blocks() -> Rc<RefCell<LayersPanelState>> {
@@ -2095,7 +2293,92 @@ mod tests {
     }
 
     #[test]
-    fn left_click_dragging_the_center_of_a_blank_scrubs_the_timeline_instead_of_dragging() {
+    fn left_click_dragging_an_empty_center_swaps_keyframes_like_a_solid_center() {
+        let state = state_with_a_blank_between_two_content_blocks();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(5);
+
+        // Empty center L-drag swaps keyframe content exactly like a solid center —
+        // predictability (J 2026-09-07). The old scrub-on-blank behavior is gone.
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 5,
+            y,
+            button: ModulePointerButton::Left,
+        });
+        assert!(matches!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::SelectProperty(..))
+        ));
+        assert!(panel.wants_pointer_capture());
+
+        panel.on_pointer_event(ModulePointerEvent::Move {
+            x: timeline_start + 1,
+            y,
+        });
+        assert_eq!(state.borrow_mut().take_pending_action(), None);
+
+        panel.on_pointer_event(ModulePointerEvent::Up {
+            x: timeline_start + 1,
+            y,
+        });
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::SwapPropertyBlocks(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-2".to_string(),
+                "block-1".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn left_clicking_an_empty_single_and_right_clicking_an_empty_center_start_no_drag() {
+        let state = state_with_a_blank_between_two_content_blocks();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(5);
+
+        // Empty center: right click is unused beyond selection.
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 5,
+            y,
+            button: ModulePointerButton::Right,
+        });
+        panel.on_pointer_event(ModulePointerEvent::Up {
+            x: timeline_start + 5,
+            y,
+        });
+        assert!(matches!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::SelectProperty(..))
+        ));
+        assert!(!panel.wants_pointer_capture());
+
+        // Empty single: left click is unused beyond selection too.
+        let state = state_with_solid_and_empty_singles();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(5);
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 6,
+            y,
+            button: ModulePointerButton::Left,
+        });
+        panel.on_pointer_event(ModulePointerEvent::Up {
+            x: timeline_start + 6,
+            y,
+        });
+        assert!(matches!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::SelectProperty(..))
+        ));
+        assert!(!panel.wants_pointer_capture());
+    }
+
+    #[test]
+    fn right_double_clicking_an_empty_center_merges_it_into_the_left_content_block() {
         let state = state_with_a_blank_between_two_content_blocks();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
@@ -2104,23 +2387,228 @@ mod tests {
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 5,
             y,
-            button: ModulePointerButton::Left,
+            button: ModulePointerButton::Right,
+        });
+        state.borrow_mut().take_pending_action();
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 5,
+            y,
+            button: ModulePointerButton::Right,
         });
 
         assert_eq!(
             state.borrow_mut().take_pending_action(),
-            Some(LayersPanelAction::SetCurrentBreath(5))
+            Some(LayersPanelAction::MergeEmptyPropertyBlock(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-2".to_string(),
+                true,
+            ))
         );
-        assert!(panel.wants_pointer_capture());
+    }
 
-        panel.on_pointer_event(ModulePointerEvent::Move {
+    #[test]
+    fn right_double_clicking_an_empty_right_head_prefers_the_right_side() {
+        let state = state_with_content_then_trailing_blank();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(5);
+
+        // The mirror: a right-head empty merges into the block on its right first.
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 9,
+            y,
+            button: ModulePointerButton::Right,
+        });
+        state.borrow_mut().take_pending_action();
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 9,
+            y,
+            button: ModulePointerButton::Right,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::MergeEmptyPropertyBlock(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-2".to_string(),
+                false,
+            ))
+        );
+    }
+
+    #[test]
+    fn right_click_dragging_an_empty_single_resizes_destructively() {
+        let state = state_with_solid_and_empty_singles();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(5);
+
+        // block-2 (breath 6) is an empty single: right drag grows it destructively,
+        // overwriting whatever it expands over.
+        panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 6,
+            y,
+            button: ModulePointerButton::Right,
+        });
+        state.borrow_mut().take_pending_action();
+        panel.on_pointer_event(ModulePointerEvent::Move {
+            x: timeline_start + 8,
+            y,
+        });
+        panel.on_pointer_event(ModulePointerEvent::Up {
+            x: timeline_start + 8,
             y,
         });
         assert_eq!(
             state.borrow_mut().take_pending_action(),
-            Some(LayersPanelAction::SetCurrentBreath(6))
+            Some(LayersPanelAction::SetPropertyBlockTimingDestructive(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-2".to_string(),
+                6,
+                3,
+            ))
         );
+    }
+
+    #[test]
+    fn right_double_clicking_an_empty_single_merges_into_the_left_content_block() {
+        let state = state_with_solid_and_empty_singles();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(5);
+
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 6,
+            y,
+            button: ModulePointerButton::Right,
+        });
+        state.borrow_mut().take_pending_action();
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 6,
+            y,
+            button: ModulePointerButton::Right,
+        });
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::MergeEmptyPropertyBlock(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-2".to_string(),
+                true,
+            ))
+        );
+    }
+
+    #[test]
+    fn left_click_dragging_an_empty_left_head_previews_the_pushed_timing() {
+        let state = state_with_content_then_trailing_blank();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let (timeline_start, _) = panel.timeline_bounds();
+        let y = panel.row_y(5);
+
+        // Empty heads drag exactly like solid heads: pushed on left, destructive on
+        // right (same code — J 2026-09-07).
+        panel.on_pointer_event(ModulePointerEvent::Click {
+            x: timeline_start + 5,
+            y,
+            button: ModulePointerButton::Left,
+        });
+        state.borrow_mut().take_pending_action();
+        panel.on_pointer_event(ModulePointerEvent::Move {
+            x: timeline_start + 7,
+            y,
+        });
+        assert_eq!(state.borrow_mut().take_pending_action(), None);
+        panel.on_pointer_event(ModulePointerEvent::Up {
+            x: timeline_start + 7,
+            y,
+        });
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::SetPropertyBlockTimingPushed(
+                "layer-1".to_string(),
+                "raster".to_string(),
+                "block-2".to_string(),
+                7,
+                3,
+            ))
+        );
+    }
+
+    fn state_with_solid_and_empty_singles() -> Rc<RefCell<LayersPanelState>> {
+        let state = Rc::new(RefCell::new(LayersPanelState::default()));
+        state.borrow_mut().sync(
+            vec![row("layer-1", "Layer 1", 0, 10)],
+            vec![property(
+                "layer-1",
+                "raster",
+                "RASTER",
+                LayerPropertyKind::Raster,
+                vec![
+                    PropertyTrackBlock {
+                        id: "block-1".to_string(),
+                        start_breath: 3,
+                        length_breaths: 1,
+                        is_blank: false,
+                    },
+                    PropertyTrackBlock {
+                        id: "block-2".to_string(),
+                        start_breath: 6,
+                        length_breaths: 1,
+                        is_blank: true,
+                    },
+                ],
+            )],
+            Some("layer-1".to_string()),
+            Some("raster".to_string()),
+            0,
+            false,
+            0,
+            23,
+            false,
+            true,
+        );
+        state
+    }
+
+    fn state_with_content_then_trailing_blank() -> Rc<RefCell<LayersPanelState>> {
+        let state = Rc::new(RefCell::new(LayersPanelState::default()));
+        state.borrow_mut().sync(
+            vec![row("layer-1", "Layer 1", 0, 10)],
+            vec![property(
+                "layer-1",
+                "raster",
+                "RASTER",
+                LayerPropertyKind::Raster,
+                vec![
+                    PropertyTrackBlock {
+                        id: "block-1".to_string(),
+                        start_breath: 0,
+                        length_breaths: 5,
+                        is_blank: false,
+                    },
+                    PropertyTrackBlock {
+                        id: "block-2".to_string(),
+                        start_breath: 5,
+                        length_breaths: 5,
+                        is_blank: true,
+                    },
+                ],
+            )],
+            Some("layer-1".to_string()),
+            Some("raster".to_string()),
+            0,
+            false,
+            0,
+            23,
+            false,
+            true,
+        );
+        state
     }
 
     fn state_with_two_adjacent_content_blocks() -> Rc<RefCell<LayersPanelState>> {

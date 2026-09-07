@@ -76,10 +76,28 @@ fn default_layer_length_breaths() -> u32 {
     24
 }
 
+/// Pushes one re-tiled block, merging it into the previous block when both are blank.
+/// Adjacent empties merge into one — the no-adjacent-empties invariant (J, 2026-09-07):
+/// the user only ever sees empties and bars, never two empties touching. Only blanks
+/// merge; two solid bars stay distinct keyframes even when adjacent.
+fn push_tiled_block(
+    tiled: &mut Vec<SharedDocumentPropertyBlock>,
+    block: SharedDocumentPropertyBlock,
+) {
+    if let Some(last) = tiled.last_mut() {
+        if last.is_blank && block.is_blank {
+            last.length_breaths += block.length_breaths;
+            return;
+        }
+    }
+    tiled.push(block);
+}
+
 /// Re-tiles one property track's blocks over the layer's breath span so the track
 /// stays fully covered: blocks are clipped into the span (fully-outside ones dropped),
-/// and every uncovered window becomes a blank block. Binary channels — every breath is
-/// empty or solid, never a void.
+/// every uncovered window becomes a blank block, and adjacent blanks merge into one.
+/// Binary channels — every breath is empty or solid, never a void, never two touching
+/// empties.
 fn retiled_property_track(
     blocks: Vec<SharedDocumentPropertyBlock>,
     span_start: u32,
@@ -109,29 +127,37 @@ fn retiled_property_track(
             continue;
         }
         if block.start_breath > cursor {
-            tiled.push(SharedDocumentPropertyBlock {
-                id: next_property_block_id(&tiled),
-                start_breath: cursor,
-                length_breaths: block.start_breath - cursor,
-                is_blank: true,
-                value: None,
-            });
+            let gap_id = next_property_block_id(&tiled);
+            push_tiled_block(
+                &mut tiled,
+                SharedDocumentPropertyBlock {
+                    id: gap_id,
+                    start_breath: cursor,
+                    length_breaths: block.start_breath - cursor,
+                    is_blank: true,
+                    value: None,
+                },
+            );
         } else {
             // Overlapping broken data: trim to the first uncovered breath.
             block.start_breath = cursor;
             block.length_breaths = block_end - cursor;
         }
         cursor = block.start_breath + block.length_breaths;
-        tiled.push(block);
+        push_tiled_block(&mut tiled, block);
     }
     if cursor < span_end {
-        tiled.push(SharedDocumentPropertyBlock {
-            id: next_property_block_id(&tiled),
-            start_breath: cursor,
-            length_breaths: span_end - cursor,
-            is_blank: true,
-            value: None,
-        });
+        let tail_id = next_property_block_id(&tiled);
+        push_tiled_block(
+            &mut tiled,
+            SharedDocumentPropertyBlock {
+                id: tail_id,
+                start_breath: cursor,
+                length_breaths: span_end - cursor,
+                is_blank: true,
+                value: None,
+            },
+        );
     }
     tiled
 }
@@ -1285,6 +1311,12 @@ impl SharedDocumentRuntime {
         if block.length_breaths <= 1 {
             return None;
         }
+        // Splitting an empty is meaningless — the halves would be adjacent empties,
+        // which the no-adjacent-empties invariant forbids. Blanks have no split
+        // branch in the interaction matrix.
+        if block.is_blank {
+            return None;
+        }
         let block_end = block.start_breath + block.length_breaths - 1;
         if split_breath <= block.start_breath || split_breath > block_end {
             return None;
@@ -1354,13 +1386,25 @@ impl SharedDocumentRuntime {
 
     /// Turns a content block into a blank placeholder covering the same breath range, leaving
     /// the track's coverage continuous. The block's painted content is discarded — a blank
-    /// block renders empty. Returns `false` if no such block exists.
+    /// block renders empty. The track re-tiles afterwards so the new empty merges with any
+    /// adjacent empty (no-adjacent-empties invariant). Returns `false` if no such block exists.
     pub fn blank_property_block(
         &mut self,
         layer_id: &str,
         property_id: &str,
         block_id: &str,
     ) -> bool {
+        let (span_start, span_length) = {
+            let Some(layer) = self
+                .document
+                .layers
+                .iter()
+                .find(|layer| layer.layer_id == layer_id)
+            else {
+                return false;
+            };
+            (layer.start_breath, layer.length_breaths)
+        };
         let Some(track) = self.ensure_property_track_mut(layer_id, property_id) else {
             return false;
         };
@@ -1368,8 +1412,72 @@ impl SharedDocumentRuntime {
             return false;
         };
         block.is_blank = true;
+        track.blocks = retiled_property_track(
+            std::mem::take(&mut track.blocks),
+            span_start,
+            span_length,
+        );
         self.block_canvases
             .insert((layer_id.to_string(), block_id.to_string()), Canvas::new());
+        true
+    }
+
+    /// Merges one empty (blank) block into the adjacent content block, preferring the
+    /// left side and falling back to the right (J 2026-09-07: one seam for single and
+    /// center empties; right-head empties pass `prefer_left: false` for the mirror).
+    /// The content block expands destructively over the empty's span and keeps its
+    /// content; the empty disappears. Returns `false` — rejecting the interaction —
+    /// when the block is not blank or the track has no content at all (fully-empty
+    /// track: nothing to merge into).
+    pub fn merge_empty_property_block(
+        &mut self,
+        layer_id: &str,
+        property_id: &str,
+        block_id: &str,
+        prefer_left: bool,
+    ) -> bool {
+        let Some(track) = self.ensure_property_track_mut(layer_id, property_id) else {
+            return false;
+        };
+        let Some(index) = track.blocks.iter().position(|block| block.id == block_id) else {
+            return false;
+        };
+        if !track.blocks[index].is_blank {
+            return false;
+        }
+        // The no-adjacent-empties invariant guarantees the empty's neighbors are
+        // content blocks or the span edge — never another empty.
+        let left = if index > 0 { Some(index - 1) } else { None };
+        let right = if index + 1 < track.blocks.len() {
+            Some(index + 1)
+        } else {
+            None
+        };
+        let target = if prefer_left {
+            left.filter(|&i| !track.blocks[i].is_blank)
+                .or(right.filter(|&i| !track.blocks[i].is_blank))
+        } else {
+            right.filter(|&i| !track.blocks[i].is_blank)
+                .or(left.filter(|&i| !track.blocks[i].is_blank))
+        };
+        let Some(target_index) = target else {
+            return false; // fully-empty track — no content anywhere to merge into
+        };
+        let empty_span = (
+            track.blocks[index].start_breath,
+            track.blocks[index].length_breaths,
+        );
+        if target_index < index {
+            // Content on the left expands right over the empty.
+            track.blocks[target_index].length_breaths += empty_span.1;
+        } else {
+            // Content on the right expands left over the empty.
+            track.blocks[target_index].start_breath = empty_span.0;
+            track.blocks[target_index].length_breaths += empty_span.1;
+        }
+        track.blocks.remove(index);
+        self.block_canvases
+            .remove(&(layer_id.to_string(), block_id.to_string()));
         true
     }
 
@@ -1419,6 +1527,134 @@ impl SharedDocumentRuntime {
         // canvases too would put each block's content back where it started — a
         // visual no-op — so only the timing moves here.
         true
+    }
+
+    /// Duplicates one block's full span and content immediately to its right, pushing
+    /// every later block right by the duplicated length (non-destructive, duplicates
+    /// always land on the right — J 2026-09-07). If the duplicate would pass the layer
+    /// span end, the layer span grows by exactly the overflow — bounded growth, one
+    /// interaction at a time, never auto-filling. The new block starts with an empty
+    /// canvas; the caller copies the source's content onto it through
+    /// `duplicate_data_propagation_record` so live edits and replay build the same
+    /// copy. Returns the new block's id.
+    pub fn duplicate_property_block(
+        &mut self,
+        layer_id: &str,
+        property_id: &str,
+        block_id: &str,
+    ) -> Option<String> {
+        let (span_start, span_length) = {
+            let layer = self
+                .document
+                .layers
+                .iter()
+                .find(|layer| layer.layer_id == layer_id)?;
+            (layer.start_breath, layer.length_breaths)
+        };
+        let source = {
+            let track = self.property_track(layer_id, property_id)?;
+            let index = track
+                .blocks
+                .iter()
+                .position(|block| block.id == block_id)?;
+            track.blocks[index].clone()
+        };
+        let new_start = source.start_breath + source.length_breaths;
+        let span_end = span_start + span_length.max(1);
+        let overflow = (new_start + source.length_breaths).saturating_sub(span_end);
+        if overflow > 0 {
+            // The duplicate needs room past the span end: grow the layer by exactly
+            // the overflow. `set_layer_timing` re-tiles every track of the layer, so
+            // the new tail is blank and coverage stays exact.
+            self.set_layer_timing(layer_id, span_start, span_length + overflow);
+        }
+        let Some(track) = self.ensure_property_track_mut(layer_id, property_id) else {
+            return None;
+        };
+        let source_index = track
+            .blocks
+            .iter()
+            .position(|block| block.id == block_id)?;
+        // Non-destructive push: every block starting at/after the source's end shifts
+        // right by the duplicated length. In a tiled track nothing else overlaps the
+        // source's span, so this is the complete ripple.
+        for block in track.blocks.iter_mut() {
+            if block.start_breath >= source.start_breath + source.length_breaths {
+                block.start_breath += source.length_breaths;
+            }
+        }
+        let new_id = next_property_block_id(&track.blocks);
+        track.blocks.insert(
+            source_index + 1,
+            SharedDocumentPropertyBlock {
+                id: new_id.clone(),
+                start_breath: new_start,
+                length_breaths: source.length_breaths,
+                is_blank: source.is_blank,
+                value: source.value.clone(),
+            },
+        );
+        self.block_canvases
+            .insert((layer_id.to_string(), new_id.clone()), Canvas::new());
+        // When the layer grew, `set_layer_timing` re-tiled this track and left a tail
+        // blank inside the new span — and the push above then shifted that tail blank
+        // past the span end. One more re-tile drops the out-of-span tail and restores
+        // exact coverage of the grown span.
+        if overflow > 0 {
+            if let Some(track) = self
+                .document
+                .layers
+                .iter_mut()
+                .find(|layer| layer.layer_id == layer_id)
+                .and_then(|layer| {
+                    layer
+                        .property_tracks
+                        .iter_mut()
+                        .find(|track| track.property_id == property_id)
+                })
+            {
+                track.blocks = retiled_property_track(
+                    std::mem::take(&mut track.blocks),
+                    span_start,
+                    span_length + overflow,
+                );
+            }
+        }
+        Some(new_id)
+    }
+
+    /// Builds the full-cell patch record that propagates a duplicated block's channel
+    /// data onto its copy — the duplicate starts as an identical copy at a later span
+    /// and diverges as it is edited separately. Returns `None` when the source carries
+    /// no data (empty canvas), leaving the copy empty.
+    pub fn duplicate_data_propagation_record(
+        &self,
+        layer_id: &str,
+        source_block_id: &str,
+        new_block_id: &str,
+        action_id: String,
+        user_id: &str,
+        timestamp: String,
+    ) -> Option<SharedDocumentActionRecord> {
+        let canvas = self
+            .block_canvases
+            .get(&(layer_id.to_string(), source_block_id.to_string()))?;
+        if canvas.is_empty() {
+            return None;
+        }
+        let patches: Vec<SharedCellPatch> = canvas
+            .iter()
+            .map(|(position, cell)| SharedCellPatch::new(*position, None, Some(cell)))
+            .collect();
+        Some(SharedDocumentActionRecord::cell_patch_set(
+            action_id,
+            self.document.document_id.clone(),
+            layer_id,
+            user_id,
+            timestamp,
+            patches,
+            Some(new_block_id.to_string()),
+        ))
     }
 
     /// Flattens every visible layer's canvas for the breath into one canvas, in document
@@ -3223,6 +3459,182 @@ mod tests {
     }
 
     #[test]
+    fn adjacent_empties_merge_into_one_on_retile() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+
+        // Blanking block-1 (0..24) leaves one empty; shrinking the layer span and
+        // growing it back must not produce two touching empties — the invariant is
+        // that the user only ever sees empties and bars, never two empties touching.
+        assert!(runtime.blank_property_block("layer-1", "raster", "block-1"));
+        assert!(runtime.set_layer_timing("layer-1", 0, 12));
+        assert!(runtime.set_layer_timing("layer-1", 0, 24));
+        let track = runtime.property_track("layer-1", "raster").unwrap();
+        assert_eq!(track.blocks.len(), 1);
+        assert!(track.blocks[0].is_blank);
+        assert_eq!((track.blocks[0].start_breath, track.blocks[0].length_breaths), (0, 24));
+    }
+
+    #[test]
+    fn blanking_next_to_an_existing_empty_merges_them() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        runtime.split_property_block("layer-1", "raster", "block-1", 8);
+
+        // block-1 (0..8) and block-2 (8..24) both blanked: one empty, not two.
+        assert!(runtime.blank_property_block("layer-1", "raster", "block-1"));
+        assert!(runtime.blank_property_block("layer-1", "raster", "block-2"));
+        let track = runtime.property_track("layer-1", "raster").unwrap();
+        assert_eq!(track.blocks.len(), 1);
+        assert!(track.blocks[0].is_blank);
+    }
+
+    #[test]
+    fn merge_empty_prefers_the_left_content_block() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        runtime.split_property_block("layer-1", "raster", "block-1", 8);
+        assert!(runtime.blank_property_block("layer-1", "raster", "block-1"));
+        assert!(runtime.split_property_block("layer-1", "raster", "block-2", 16).is_some());
+
+        // Track: empty (0..8), content (8..16), content (16..24). Merging the empty
+        // prefers the left... there is no content on the left, so it falls back to
+        // the right: content (8..16) expands left over the empty.
+        assert!(runtime.merge_empty_property_block("layer-1", "raster", "block-1", true));
+        let track = runtime.property_track("layer-1", "raster").unwrap();
+        let covered: Vec<(u32, u32, bool)> = track
+            .blocks
+            .iter()
+            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .collect();
+        assert_eq!(covered, vec![(0, 16, false), (16, 24, false)]);
+    }
+
+    #[test]
+    fn merge_empty_prefers_left_when_both_sides_have_content() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        runtime.split_property_block("layer-1", "raster", "block-1", 8);
+        runtime.split_property_block("layer-1", "raster", "block-2", 16);
+
+        // Track: content (0..8), content (8..16), content (16..24). Blank the middle
+        // and merge it: the left neighbor (0..8) expands over it, keeping its content.
+        assert!(runtime.blank_property_block("layer-1", "raster", "block-2"));
+        assert!(runtime.merge_empty_property_block("layer-1", "raster", "block-2", true));
+        let track = runtime.property_track("layer-1", "raster").unwrap();
+        let covered: Vec<(u32, u32, bool)> = track
+            .blocks
+            .iter()
+            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .collect();
+        assert_eq!(covered, vec![(0, 16, false), (16, 24, false)]);
+    }
+
+    #[test]
+    fn merge_empty_on_a_fully_empty_track_rejects() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+
+        // The fresh track is one empty covering the whole span: no content anywhere,
+        // so the merge interaction rejects.
+        assert!(!runtime.merge_empty_property_block("layer-1", "raster", "block-1", true));
+    }
+
+    #[test]
+    fn merge_empty_rejects_content_blocks() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        assert!(!runtime.merge_empty_property_block("layer-1", "raster", "block-1", true));
+    }
+
+    #[test]
+    fn duplicate_lands_on_the_right_pushing_later_blocks() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        runtime.split_property_block("layer-1", "raster", "block-1", 8);
+
+        // Track: content (0..8), content (8..24). Duplicating block-1 lands a copy
+        // at (8..16) and pushes block-2 right by 8 — non-destructive.
+        let new_id = runtime
+            .duplicate_property_block("layer-1", "raster", "block-1")
+            .expect("duplicate");
+        let track = runtime.property_track("layer-1", "raster").unwrap();
+        let covered: Vec<(u32, u32, bool)> = track
+            .blocks
+            .iter()
+            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .collect();
+        assert_eq!(
+            covered,
+            vec![(0, 8, false), (8, 16, false), (16, 32, false)]
+        );
+        assert_ne!(new_id, "block-1");
+    }
+
+    #[test]
+    fn duplicate_at_the_span_end_grows_the_layer_by_exactly_the_duplicate() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+
+        // block-1 (0..24) ends at the span end: the duplicate lands at (24..48) and
+        // the layer grows by exactly 24 — bounded, one interaction at a time.
+        let _new_id = runtime
+            .duplicate_property_block("layer-1", "raster", "block-1")
+            .expect("duplicate");
+        let layer = runtime
+            .layers()
+            .iter()
+            .find(|layer| layer.layer_id == "layer-1")
+            .unwrap();
+        assert_eq!((layer.start_breath, layer.length_breaths), (0, 48));
+        let track = runtime.property_track("layer-1", "raster").unwrap();
+        let covered: Vec<(u32, u32, bool)> = track
+            .blocks
+            .iter()
+            .map(|b| (b.start_breath, b.start_breath + b.length_breaths, b.is_blank))
+            .collect();
+        assert_eq!(covered, vec![(0, 24, false), (24, 48, false)]);
+    }
+
+    #[test]
+    fn duplicate_does_not_disturb_earlier_blocks() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        runtime.split_property_block("layer-1", "raster", "block-1", 8);
+        runtime.split_property_block("layer-1", "raster", "block-2", 16);
+
+        // Track: (0..8), (8..16), (16..24). Duplicating block-2 shifts only block-3.
+        let new_id = runtime
+            .duplicate_property_block("layer-1", "raster", "block-2")
+            .expect("duplicate");
+        let track = runtime.property_track("layer-1", "raster").unwrap();
+        let ids: Vec<&str> = track.blocks.iter().map(|b| b.id.as_str()).collect();
+        assert_eq!(ids, vec!["block-1", "block-2", new_id.as_str(), "block-3"]);
+        assert_eq!(track.blocks[0].start_breath, 0);
+        assert_eq!(track.blocks[1].start_breath, 8);
+        assert_eq!(track.blocks[2].start_breath, 16);
+        assert_eq!(track.blocks[3].start_breath, 24);
+    }
+
+    #[test]
+    fn split_rejects_blank_blocks() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        assert!(runtime.blank_property_block("layer-1", "raster", "block-1"));
+        assert!(runtime.split_property_block("layer-1", "raster", "block-1", 8).is_none());
+    }
+
+    #[test]
     fn destructive_timing_victims_become_blanks_and_the_track_stays_tiled() {
         let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
             "doc-1", "Doc", "layer-1", "Layer 1",
@@ -3233,6 +3645,7 @@ mod tests {
         // block-1 (0..8, empty) slides destructively into the middle of block-2
         // (16..24): the victim keeps only its pre-edited remainder and turns blank,
         // and every vacated window re-tiles into blank blocks — no void anywhere.
+        // The two adjacent victim blanks merge into one (no-adjacent-empties).
         assert!(
             runtime.set_property_block_timing_destructive("layer-1", "raster", "block-1", 18, 4)
         );
@@ -3244,13 +3657,7 @@ mod tests {
             .collect();
         assert_eq!(
             covered,
-            vec![
-                (0, 8, true),
-                (8, 16, true),
-                (16, 18, true),
-                (18, 22, false),
-                (22, 24, true),
-            ]
+            vec![(0, 18, true), (18, 22, false), (22, 24, true)]
         );
     }
 
