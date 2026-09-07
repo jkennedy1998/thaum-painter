@@ -75,9 +75,11 @@ pub enum LayersPanelAction {
     /// breath — the left half keeps the id, the right half gets the rest, and the
     /// track's total content length is unchanged (J 2026-09-07).
     SplitPropertyBlock(String, String, String, u32),
-    /// Double-right on an empty bar (single + center, right heads mirrored): the empty
+    /// Double-right on an empty bar (any piece, right heads mirrored): the empty
     /// merges into the adjacent content block, preferring the left side, falling back
-    /// right, and rejecting when the track has no content at all (J 2026-09-07).
+    /// right, and rejecting when the track has no content at all (J-flip 2026-09-07:
+    /// double-right, matching the content-head merge and the right-click delete
+    /// family; double-left on empties is reserved for keyframing).
     MergeEmptyPropertyBlock(String, String, String, bool),
     /// Commits a dragged loop-window bar: the document's active timeline span.
     /// The bar itself cannot be split or deleted, so this is the only edit it
@@ -914,22 +916,26 @@ impl LayersPanelModule {
                         hit.block_id,
                     ));
             }
-            // Solid heads: double-left merges the adjacent bar into this one — the
+            // Solid heads: double-RIGHT merges the adjacent bar into this one — the
             // double-clicked bar's content stays, implemented as a destructive resize
-            // to the neighbor's far edge (J 2026-09-07). Right heads mirror: the bar on
-            // the right merges in. Rejected at the span edge (no neighbor to run into).
-            (CellType::Solid, BarPiece::LeftHead, ModulePointerButton::Left) => {
+            // to the neighbor's far edge (J-flip 2026-09-07: moved off double-left so
+            // right-click stays the destructive family and double-left on content ends
+            // stays free for keyframe interpolation between empties and this cell).
+            // Right heads mirror: the bar on the right merges in. Rejected at the span
+            // edge (no neighbor to run into). Double-left on heads is unused for now.
+            (CellType::Solid, BarPiece::LeftHead, ModulePointerButton::Right) => {
                 self.queue_content_head_merge(&hit, false, &trace);
             }
-            (CellType::Solid, BarPiece::RightHead, ModulePointerButton::Left) => {
+            (CellType::Solid, BarPiece::RightHead, ModulePointerButton::Right) => {
                 self.queue_content_head_merge(&hit, true, &trace);
             }
-            // Empty bars: double-left merges the empty into the adjacent content
-            // block — same direction as the content-head merge so both ends read
-            // one way (J 2026-09-07). One seam, left-preferred with right fallback,
-            // rejecting on a fully-empty track; right heads mirror to prefer the
-            // right. Double-right on empties is unused everywhere.
-            (CellType::Empty, _, ModulePointerButton::Left) => {
+            // Empty bars: double-RIGHT merges the empty into the adjacent content
+            // block (J-flip 2026-09-07: moved off double-left so right-click stays
+            // the delete/merge family and double-left on empties is reserved for
+            // keyframing). One seam, left-preferred with right fallback, rejecting
+            // on a fully-empty track; right heads mirror to prefer the right. All
+            // pieces route here: single, center, both heads.
+            (CellType::Empty, _, ModulePointerButton::Right) => {
                 let prefer_left = hit.piece != BarPiece::RightHead;
                 trace(
                     self,
@@ -2336,24 +2342,25 @@ mod tests {
     }
 
     #[test]
-    fn double_left_clicking_a_solid_left_head_merges_the_bar_on_the_left_into_it() {
+    fn right_double_clicking_a_solid_left_head_merges_the_bar_on_the_left_into_it() {
         let state = state_with_two_adjacent_content_blocks();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
         let y = panel.row_y(5);
 
-        // block-2 starts at breath 5: its left head. Double-left merges block-1 into
-        // it as a destructive resize spanning block-1's start through block-2's end.
+        // block-2 starts at breath 5: its left head. Double-right merges block-1
+        // into it as a destructive resize spanning block-1's start through
+        // block-2's end (J-flip 2026-09-07: merges live on the right button).
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 5,
             y,
-            button: ModulePointerButton::Left,
+            button: ModulePointerButton::Right,
         });
         state.borrow_mut().take_pending_action();
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 5,
             y,
-            button: ModulePointerButton::Left,
+            button: ModulePointerButton::Right,
         });
 
         assert_eq!(
@@ -2369,7 +2376,7 @@ mod tests {
     }
 
     #[test]
-    fn double_left_clicking_a_solid_right_head_merges_the_bar_on_the_right_into_it() {
+    fn right_double_clicking_a_solid_right_head_merges_the_bar_on_the_right_into_it() {
         let state = state_with_two_adjacent_content_blocks();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
@@ -2380,13 +2387,13 @@ mod tests {
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 4,
             y,
-            button: ModulePointerButton::Left,
+            button: ModulePointerButton::Right,
         });
         state.borrow_mut().take_pending_action();
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 4,
             y,
-            button: ModulePointerButton::Left,
+            button: ModulePointerButton::Right,
         });
 
         assert_eq!(
@@ -2402,7 +2409,7 @@ mod tests {
     }
 
     #[test]
-    fn double_left_clicking_a_solid_left_head_at_the_span_edge_rejects() {
+    fn right_double_clicking_a_solid_left_head_at_the_span_edge_rejects() {
         let state = state_with_two_adjacent_content_blocks();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
@@ -2413,13 +2420,13 @@ mod tests {
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start,
             y,
-            button: ModulePointerButton::Left,
+            button: ModulePointerButton::Right,
         });
         state.borrow_mut().take_pending_action();
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start,
             y,
-            button: ModulePointerButton::Left,
+            button: ModulePointerButton::Right,
         });
 
         assert_eq!(state.borrow_mut().take_pending_action(), None);
@@ -2455,22 +2462,24 @@ mod tests {
     }
 
     #[test]
-    fn right_double_clicking_a_solid_head_is_unused() {
+    fn left_double_clicking_a_solid_head_is_unused() {
         let state = state_with_two_adjacent_content_blocks();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
         let y = panel.row_y(5);
 
+        // J-flip 2026-09-07: head merges moved to double-right; double-left on a
+        // content end is reserved for keyframe interpolation later.
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 5,
             y,
-            button: ModulePointerButton::Right,
+            button: ModulePointerButton::Left,
         });
         state.borrow_mut().take_pending_action();
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 5,
             y,
-            button: ModulePointerButton::Right,
+            button: ModulePointerButton::Left,
         });
 
         assert_eq!(state.borrow_mut().take_pending_action(), None);
@@ -2645,13 +2654,13 @@ mod tests {
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 30,
             y,
-            button: ModulePointerButton::Left,
+            button: ModulePointerButton::Right,
         });
         state.borrow_mut().take_pending_action();
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 30,
             y,
-            button: ModulePointerButton::Left,
+            button: ModulePointerButton::Right,
         });
         assert_eq!(
             state.borrow_mut().take_pending_action(),
@@ -2665,7 +2674,7 @@ mod tests {
     }
 
     #[test]
-    fn left_double_clicking_an_empty_center_merges_it_into_the_left_content_block() {
+    fn right_double_clicking_an_empty_center_merges_it_into_the_left_content_block() {
         let state = state_with_a_blank_between_two_content_blocks();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
@@ -2674,13 +2683,13 @@ mod tests {
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 5,
             y,
-            button: ModulePointerButton::Left,
+            button: ModulePointerButton::Right,
         });
         state.borrow_mut().take_pending_action();
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 5,
             y,
-            button: ModulePointerButton::Left,
+            button: ModulePointerButton::Right,
         });
 
         assert_eq!(
@@ -2695,7 +2704,7 @@ mod tests {
     }
 
     #[test]
-    fn left_double_clicking_an_empty_right_head_prefers_the_right_side() {
+    fn right_double_clicking_an_empty_right_head_prefers_the_right_side() {
         let state = state_with_content_then_trailing_blank();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
@@ -2705,13 +2714,13 @@ mod tests {
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 9,
             y,
-            button: ModulePointerButton::Left,
+            button: ModulePointerButton::Right,
         });
         state.borrow_mut().take_pending_action();
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 9,
             y,
-            button: ModulePointerButton::Left,
+            button: ModulePointerButton::Right,
         });
 
         assert_eq!(
@@ -2726,22 +2735,24 @@ mod tests {
     }
 
     #[test]
-    fn right_double_clicking_an_empty_is_unused_everywhere() {
+    fn left_double_clicking_an_empty_is_unused_everywhere() {
         let state = state_with_a_blank_between_two_content_blocks();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
         let y = panel.row_y(5);
 
+        // J-flip 2026-09-07: empty merges moved to double-right; double-left on
+        // empties is reserved for keyframing later.
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 5,
             y,
-            button: ModulePointerButton::Right,
+            button: ModulePointerButton::Left,
         });
         state.borrow_mut().take_pending_action();
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 5,
             y,
-            button: ModulePointerButton::Right,
+            button: ModulePointerButton::Left,
         });
 
         assert!(state.borrow_mut().take_pending_action().is_none());
@@ -2783,7 +2794,7 @@ mod tests {
     }
 
     #[test]
-    fn left_double_clicking_an_empty_single_merges_into_the_left_content_block() {
+    fn right_double_clicking_an_empty_single_merges_into_the_left_content_block() {
         let state = state_with_solid_and_empty_singles();
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
         let (timeline_start, _) = panel.timeline_bounds();
@@ -2792,13 +2803,13 @@ mod tests {
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 6,
             y,
-            button: ModulePointerButton::Left,
+            button: ModulePointerButton::Right,
         });
         state.borrow_mut().take_pending_action();
         panel.on_pointer_event(ModulePointerEvent::Click {
             x: timeline_start + 6,
             y,
-            button: ModulePointerButton::Left,
+            button: ModulePointerButton::Right,
         });
 
         assert_eq!(

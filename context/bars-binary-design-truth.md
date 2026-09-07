@@ -78,8 +78,8 @@ Bar-size mapping: 1 breath = single head only; 2 breaths = left + right heads; 3
   - R-click: unused
   - L-drag: positional drag preserving the timing of bars around it (pushed ripple, resizes this bar's start edge); dragging left pushes content left, dragging right pulls content in from the left. Preview of every affected bar plus the dragged bar.
   - R-drag: positional drag that does NOT preserve surrounding timing — overwrites blocks under without moving them (crop, or delete if fully encompassed); dragged right it leaves an empty in the wake
-  - L-dblclick: the bar on the left merges into this one; the double-clicked bar's content stays — implement as destructive resize to the left bar's start position `(J-confirmed via ruling 11; implemented 2026-09-07 as a destructive timing commit, right heads mirror, span-edge rejects)`
-  - R-dblclick: unused
+  - L-dblclick: unused (J-flip 2026-09-07: reserved for keyframe interpolation between the adjacent empty and this cell)
+  - R-dblclick: the bar on the left merges into this one; the double-clicked bar's content stays — implemented as destructive resize to the left bar's start position (J-flip 2026-09-07: merges live on the right button so right-click stays the delete/merge family; right heads mirror, span-edge rejects)
 - **right head**: exact mirror of left head
 - **center**
   - L-click: select the layer
@@ -95,24 +95,28 @@ Bar-size mapping: 1 breath = single head only; 2 breaths = left + right heads; 3
   - L-click / R-click: unused (but every interaction still selects the layer first — see selection rule)
   - L-drag: positional drag resizing this empty the same time-preserving (pushed) way as a solid left head — same code
   - R-drag: resize, overwrites whatever it expands over (destructive, victims become empty)
-  - L-dblclick: merge this empty into the adjacent content block — same seam as empty center: prefer the left side, fall back to the right, reject when the track has no content at all (J-flip 2026-09-07: L-dblclick, matching the content-head merge direction)
+  - L-dblclick: unused (J-flip 2026-09-07: reserved for keyframing — left clicks on empties will author/inspect keyframe interpolation later)
+  - R-dblclick: merge this empty into the adjacent content block — same seam as empty center: prefer the left side, fall back to the right, reject when the track has no content at all (J-flip 2026-09-07: R-dblclick, matching the content-head merge and the right-click delete family)
 - **left empty head**
-  - R-click / R-dblclick: unused (J-flip 2026-09-07: R-dblclick unassigned on both empty end cells)
+  - R-click: unused
   - L-drag: positional drag resizing this empty the same time-preserving (pushed) way as a solid left head — same code
   - R-drag: same destructive way as a solid left head
-  - L-dblclick: merge this empty into the adjacent content block (content survives instead of the empty — the inverse of the solid left-head merge). Prefer/fallback: left-preferred, right fallback, reject on fully-empty track (J 2026-09-07)
-- **right empty head**: exact mirror of left empty head (L-dblclick merges, R-dblclick unused)
+  - L-dblclick: unused (J-flip 2026-09-07: reserved for keyframing)
+  - R-dblclick: merge this empty into the adjacent content block (content survives instead of the empty — the inverse of the solid left-head merge). Prefer/fallback: left-preferred, right fallback, reject on fully-empty track (J-flip 2026-09-07)
+- **right empty head**: exact mirror of left empty head (R-dblclick merges, L-dblclick unused)
 - **empty center**
   - L-click / R-click: unused (but every interaction still selects the layer first)
   - L-drag: swaps keyframe content exactly like solid center (predictability)
   - R-drag: resize, overwrites whatever it expands over (destructive, victims become empty)
-  - L-dblclick: merge this empty into the adjacent content block — **J-flip 2026-09-07: L-dblclick, not R-dblclick**, so content ends and empty ends merge with the same button. One seam shared with empty single: find a side with content preferring the left, fall back right, reject when there is no content on either side (fully-empty track).
+  - L-dblclick: unused (J-flip 2026-09-07: reserved for keyframing)
+  - R-dblclick: merge this empty into the adjacent content block — **J-flip 2026-09-07: R-dblclick, not L-dblclick**, so all merges (content ends + empty ends) live on the right button and double-left stays free for keyframe authoring. One seam shared with empty single: find a side with content preferring the left, fall back right, reject when there is no content on either side (fully-empty track).
 
 ## rulings from J (2026-09-07, answering the inconsistency list)
-1. Empty center merge = **L-dblclick** (J-flip 2026-09-07: was R-dblclick; empty ends and content ends now merge with the same button, and R-dblclick is unassigned on all empty pieces).
-2. Left empty head R-dblclick = **unused**.
+1. Empty center merge = **R-dblclick** (J-flip 2026-09-07: was L-dblclick; the right button owns the whole delete/merge family so double-left stays free for keyframe authoring on empties and content ends).
+2. Left empty head L-dblclick = **unused** (reserved for keyframing).
 3. Empty merges (single + center, both heads mirrored) are **one seam**: find a side with content, prefer left, fall back right, **reject when there is no content on either side**.
 4. Content single L-dblclick duplicate = **same as center duplicate**: non-destructive push, fewer distinct outcomes for the user to expect.
+4b. Merge button family (J 2026-09-07 second pass): **all merges are R-dblclick** — solid left/right head merges and every empty merge. L-dblclick on solid heads and on empties is unused, reserved for keyframe interpolation (the first real user will be the move row, linear interpolation mode; long term the user toggles each empty's interpolation mode, so empties become authored content).
 5. Duplicate at the span end: **place the new block next to it, on the right** — duplicates always land on the right. (Superseded 2026-09-07 by the infinity truth: the duplicate no longer grows the layer span — the viewport is never coupled to editing, and the infinite trailing blank absorbs the room.)
 6. Center L-drag swaps the **actual keyframe content** (raster canvas / move value / whatever the property is) — the existing swap seam: spans exchange, content follows each block, so the two keyframes trade time positions. Already in the system.
 7. Empty center L-drag swaps the same way — predictability.
