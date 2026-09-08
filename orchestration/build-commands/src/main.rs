@@ -245,31 +245,40 @@ fn apply_session_panel_action(
     let mut panel = session_panel_state.borrow_mut();
     match action {
         SessionPanelAction::HostRequested => {
-            // Lane choice: THAUM_SESSION_RELAY set → host over the relay
-            // (invite code, works across networks); otherwise the LAN port.
-            // The same host core and seed flow runs behind either lane.
-            let snapshot_document = shared_document.document.clone();
-            let seed_records = shared_document.actions_for_file();
-            let relay = std::env::var("THAUM_SESSION_RELAY").ok().filter(|r| !r.is_empty());
-            let result = match relay {
-                Some(relay) => thaum_painter_workers::SessionNet::host_relay(
-                    &relay,
-                    Box::new(move || snapshot_document.clone()),
+            // Lane choice: the relay is the default host lane (baked default
+            // address, THAUM_SESSION_RELAY overrides) — its dial is checked
+            // synchronously, and a failed dial falls back to LAN direct. The
+            // same host core and seed flow runs behind either lane.
+            let relay = std::env::var("THAUM_SESSION_RELAY")
+                .ok()
+                .filter(|r| !r.is_empty())
+                .unwrap_or_else(|| {
+                    thaum_painter_workers::session_relay::DEFAULT_RELAY_ADDRESS.to_string()
+                });
+            let lan_snapshot = shared_document.document.clone();
+            let lan_seed_records = shared_document.actions_for_file();
+            let snapshot_document = lan_snapshot.clone();
+            let seed_records = lan_seed_records.clone();
+            let result = thaum_painter_workers::SessionNet::host_relay(
+                &relay,
+                Box::new(move || snapshot_document.clone()),
+                thaum_painter_workers::session_user_from_identity(session_identity),
+                seed_records,
+            )
+            .map(|net| (net, format!("hosting over relay {relay}")))
+            .or_else(|relay_error| {
+                eprintln!(
+                    "relay host dial to {relay} failed ({relay_error}); falling back to LAN direct"
+                );
+                let port = thaum_painter_workers::host_port_from_env();
+                thaum_painter_workers::SessionNet::host(
+                    Box::new(move || lan_snapshot.clone()),
                     thaum_painter_workers::session_user_from_identity(session_identity),
-                    seed_records,
+                    port,
+                    lan_seed_records,
                 )
-                .map(|net| (net, format!("hosting over relay {relay}"))),
-                None => {
-                    let port = thaum_painter_workers::host_port_from_env();
-                    thaum_painter_workers::SessionNet::host(
-                        Box::new(move || snapshot_document.clone()),
-                        thaum_painter_workers::session_user_from_identity(session_identity),
-                        port,
-                        seed_records,
-                    )
-                    .map(|net| (net, format!("hosting on port {port}")))
-                }
-            };
+                .map(|net| (net, format!("hosting on port {port}")))
+            });
             match result {
                 Ok((net, event)) => {
                     // Everything already in the local log is inside the
