@@ -25,7 +25,7 @@ use thaum_painter_domain::storage::{SharedDocumentActionRecord, SharedDocumentFi
 
 /// Bumped on any wire-shape change; a `Hello` with a mismatched version is
 /// denied so old clients fail loudly instead of corrupting sessions.
-pub const SESSION_PROTOCOL_VERSION: u32 = 1;
+pub const SESSION_PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionUser {
@@ -77,6 +77,9 @@ pub enum HostMessage {
     Denied {
         reason: String,
     },
+    /// The host ended the session on purpose. Clients render that honestly
+    /// and drop to offline — no silent death, no rejoin attempt.
+    Ended,
     Pong,
 }
 
@@ -91,6 +94,8 @@ pub enum ClientRejection {
     SnapshotUnavailable,
     /// `Action`/`Presence`/`Ping` before a successful `Hello`.
     NotJoined,
+    /// The host already ended the session; no further joins.
+    SessionEnded,
 }
 
 pub struct HostClient {
@@ -106,6 +111,7 @@ pub struct SessionHost {
     clients: Vec<HostClient>,
     cursors: HashMap<String, Option<[i32; 3]>>,
     snapshot_source: Option<Box<dyn Fn() -> SharedDocumentFile + Send>>,
+    ended: bool,
 }
 
 impl Default for SessionHost {
@@ -121,6 +127,7 @@ impl SessionHost {
             clients: Vec::new(),
             cursors: HashMap::new(),
             snapshot_source: None,
+            ended: false,
         }
     }
 
@@ -163,6 +170,9 @@ impl SessionHost {
                 user,
                 protocol_version,
             } => {
+                if self.ended {
+                    return Err(ClientRejection::SessionEnded);
+                }
                 if protocol_version != SESSION_PROTOCOL_VERSION {
                     return Err(ClientRejection::ProtocolVersion);
                 }
@@ -250,6 +260,20 @@ impl SessionHost {
                 users: self.roster(),
             },
         );
+    }
+
+    /// The host ends the session on purpose: every connected client learns
+    /// `Ended` (rendered as "host ended the session"), and further joins are
+    /// denied. The log is untouched.
+    pub fn end_session(&mut self) {
+        self.ended = true;
+        for client in &mut self.clients {
+            client.outgoing.push_back(HostMessage::Ended);
+        }
+    }
+
+    pub fn is_ended(&self) -> bool {
+        self.ended
     }
 
     /// The host user's own edits: the local app already applied the record
@@ -591,6 +615,31 @@ mod tests {
         host.handle_client_message("alice", ClientMessage::Ping)
             .unwrap();
         assert_eq!(host.take_outgoing("alice"), vec![HostMessage::Pong]);
+    }
+
+    #[test]
+    fn end_session_broadcasts_ended_and_denies_new_joins() {
+        let mut host = host();
+        hello(&mut host, "alice");
+        hello(&mut host, "bob");
+        host.take_outgoing("alice");
+        host.take_outgoing("bob");
+
+        host.end_session();
+        assert!(host.is_ended());
+        assert_eq!(host.take_outgoing("alice"), vec![HostMessage::Ended]);
+        assert_eq!(host.take_outgoing("bob"), vec![HostMessage::Ended]);
+
+        assert_eq!(
+            host.handle_client_message(
+                "carol",
+                ClientMessage::Hello {
+                    user: user("carol"),
+                    protocol_version: SESSION_PROTOCOL_VERSION,
+                }
+            ),
+            Err(ClientRejection::SessionEnded)
+        );
     }
 
     #[test]

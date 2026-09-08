@@ -38,6 +38,8 @@ pub enum SessionClientError {
     Json(String),
     /// The connection died after joining.
     Disconnected,
+    /// The host ended the session on purpose — not a drop, never retried.
+    SessionEnded,
 }
 
 impl std::fmt::Display for SessionClientError {
@@ -48,6 +50,7 @@ impl std::fmt::Display for SessionClientError {
             Self::Timeout => write!(f, "join handshake timed out"),
             Self::Json(error) => write!(f, "bad wire message: {error}"),
             Self::Disconnected => write!(f, "session connection lost"),
+            Self::SessionEnded => write!(f, "the host ended the session"),
         }
     }
 }
@@ -64,6 +67,8 @@ pub struct SessionClient {
     cursors: HashMap<String, Option<[i32; 3]>>,
     inbound: Arc<Mutex<VecDeque<HostMessage>>>,
     connected: Arc<AtomicBool>,
+    /// Set when the host says `Ended` — a purposeful end, never rejoined.
+    ended: Arc<AtomicBool>,
     outbound: mpsc::Sender<String>,
     reader_thread: Option<JoinHandle<()>>,
     writer_thread: Option<JoinHandle<()>>,
@@ -128,6 +133,7 @@ impl SessionClient {
         stream.set_read_timeout(None).ok();
 
         let connected = Arc::new(AtomicBool::new(true));
+        let ended = Arc::new(AtomicBool::new(false));
         let inbound: Arc<Mutex<VecDeque<HostMessage>>> = Arc::new(Mutex::new(VecDeque::new()));
 
         // Reader thread: wire -> inbound queue. It takes over the handshake's
@@ -181,6 +187,7 @@ impl SessionClient {
             cursors,
             inbound,
             connected,
+            ended,
             outbound,
             reader_thread: Some(reader_thread),
             writer_thread: Some(writer_thread),
@@ -198,7 +205,11 @@ impl SessionClient {
         runtime: &mut SharedDocumentRuntime,
     ) -> Result<usize, SessionClientError> {
         if !self.is_connected() {
-            return Err(SessionClientError::Disconnected);
+            return Err(if self.session_ended() {
+                SessionClientError::SessionEnded
+            } else {
+                SessionClientError::Disconnected
+            });
         }
         let mut applied = 0;
         let messages: Vec<HostMessage> = self
@@ -226,6 +237,11 @@ impl SessionClient {
                     self.roster = users;
                 }
                 HostMessage::Pong | HostMessage::Welcome { .. } => {}
+                HostMessage::Ended => {
+                    self.ended.store(true, Ordering::SeqCst);
+                    self.connected.store(false, Ordering::SeqCst);
+                    return Err(SessionClientError::SessionEnded);
+                }
                 HostMessage::Denied { reason } => {
                     self.connected.store(false, Ordering::SeqCst);
                     return Err(SessionClientError::Denied(reason));
@@ -255,6 +271,18 @@ impl SessionClient {
 
     pub fn is_connected(&self) -> bool {
         self.connected.load(Ordering::SeqCst)
+    }
+
+    /// True once the host said `Ended` — a purposeful session end, distinct
+    /// from a drop. Rejoin logic must never retry past this.
+    pub fn session_ended(&self) -> bool {
+        self.ended.load(Ordering::SeqCst)
+    }
+
+    /// Forces the socket down the way a real peer drop would, so the reader
+    /// thread notices the loss. Test exposure for rejoin/drop behavior.
+    pub fn force_disconnect(&self) {
+        let _ = self.stream.shutdown(Shutdown::Both);
     }
 
     pub fn roster(&self) -> &[SessionUser] {
@@ -524,6 +552,30 @@ mod tests {
 
         alice.client.shutdown();
         bob.client.shutdown();
+        server.shutdown();
+    }
+
+    #[test]
+    fn host_ended_is_distinct_from_a_drop() {
+        let (_host, server) = spawn_host();
+        let mut peer = TestPeer::connect(server.port, "alice");
+        peer.sync();
+
+        _host.lock().unwrap().end_session();
+        let mut ended = false;
+        for _ in 0..100 {
+            match peer.client.sync(&mut peer.runtime) {
+                Err(SessionClientError::SessionEnded) => {
+                    ended = true;
+                    break;
+                }
+                _ => thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        assert!(ended);
+        assert!(peer.client.session_ended());
+        assert!(!peer.client.is_connected());
+        peer.client.shutdown();
         server.shutdown();
     }
 

@@ -253,6 +253,7 @@ fn rejection_reason(rejection: crate::session_host::ClientRejection) -> String {
         DuplicateUserId => "user-id-in-use".to_string(),
         SnapshotUnavailable => "snapshot-unavailable".to_string(),
         NotJoined => "not-joined".to_string(),
+        SessionEnded => "session-ended".to_string(),
     }
 }
 
@@ -407,6 +408,34 @@ mod tests {
         drop(dupe_stream);
         close(&alice_stream);
         close(&bob_stream);
+        server.shutdown();
+    }
+
+    #[test]
+    fn ended_broadcast_reaches_real_clients_and_late_joins_are_denied() {
+        let (host, server) = spawn_test_host();
+
+        let (alice_stream, mut alice_reader) = connect(server.port);
+        send(&alice_stream, &hello_for("alice"));
+        read_message(&mut alice_reader); // welcome
+
+        host.lock().unwrap().end_session();
+        // The pump drains within one tick.
+        match read_message(&mut alice_reader) {
+            HostMessage::Ended => {}
+            other => panic!("expected ended, got {other:?}"),
+        }
+
+        // A join after the end is denied with the honest reason.
+        let (late_stream, mut late_reader) = connect(server.port);
+        send(&late_stream, &hello_for("carol"));
+        match read_message(&mut late_reader) {
+            HostMessage::Denied { reason } => assert_eq!(reason, "session-ended"),
+            other => panic!("expected denied, got {other:?}"),
+        }
+
+        close(&alice_stream);
+        drop(late_stream);
         server.shutdown();
     }
 

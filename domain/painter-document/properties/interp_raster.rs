@@ -18,10 +18,10 @@
 //!     happens, which reads as an intentional swap rather than a pop.
 //!   - a material color is discrete like a graphic and rides the same cutoff.
 //!   - a cell present in only one keyframe shows during the half its side is
-//!     active, with its weight fading toward Zero across that half (J
-//!     2026-09-07): the cell dissolves in/out through the lightest glyph
-//!     weight instead of popping at the halfway crossing. Weight Zero still
-//!     renders, so this is a fade approximation, not a true alpha fade.
+//!     active, with its weight fading toward Zero across that half. Its glyph
+//!     also walks the shape-fade system toward/from `▪`, the deliberately
+//!     low-coverage clear-transition glyph, before the cell vanishes or
+//!     appears at the halfway crossing.
 //! - **loop_out / loop_in** — edge-locked modes: replay the authored region through
 //!   the trailing / leading blank, resolving each mapped breath through this module.
 //!
@@ -197,14 +197,16 @@ pub fn blend_canvases(
                 );
             }
             (Some(a), None) if from_active => {
-                let mut faded = a.clone();
-                faded.weight_index = fade_one_sided_weight(a.weight_index, progress);
-                blended.insert(*position, faded);
+                blended.insert(
+                    *position,
+                    fade_one_sided_cell(a, progress, true, graphic_fade),
+                );
             }
             (None, Some(b)) if !from_active => {
-                let mut grown = b.clone();
-                grown.weight_index = fade_one_sided_weight(b.weight_index, progress);
-                blended.insert(*position, grown);
+                blended.insert(
+                    *position,
+                    fade_one_sided_cell(b, progress, false, graphic_fade),
+                );
             }
             _ => {}
         }
@@ -229,6 +231,41 @@ fn blend_cells(
         color: blend_colors(from.color, to.color, progress, from_active),
         weight_index: lerp_weight(from.weight_index, to.weight_index, progress),
     }
+}
+
+/// The shape-fade endpoint used in place of a truly absent cell. `▪` is a
+/// deliberately low-coverage loaded glyph, so it carries the transition toward
+/// less-covered raster content while still using the shared gradient tour.
+const CLEAR_TRANSITION_GLYPH: char = '▪';
+
+/// Resolves a present cell toward/from the clear-transition glyph over its
+/// active half, while preserving the existing numeric weight fade. Without a
+/// loaded shape-fade graph (or for sprites), the graphic keeps its old behavior.
+fn fade_one_sided_cell(
+    cell: &PaintedCell,
+    progress: f32,
+    fading_out: bool,
+    graphic_fade: Option<&ShapeFade>,
+) -> PaintedCell {
+    let mut faded = cell.clone();
+    let graphic_progress = if fading_out {
+        progress * 2.0
+    } else {
+        (progress - 0.5) * 2.0
+    }
+    .clamp(0.0, 1.0);
+    if let (Some(fade), CellGraphic::Glyph(glyph)) = (graphic_fade, &cell.graphic) {
+        let (from, to) = if fading_out {
+            (*glyph, CLEAR_TRANSITION_GLYPH)
+        } else {
+            (CLEAR_TRANSITION_GLYPH, *glyph)
+        };
+        if let Some(graphic) = fade.resolve_shape_fade(from, to, graphic_progress) {
+            faded.graphic = CellGraphic::Glyph(graphic);
+        }
+    }
+    faded.weight_index = fade_one_sided_weight(cell.weight_index, progress);
+    faded
 }
 
 /// One-sided-cell weight fade: the cell exists in only one keyframe, so across
@@ -312,7 +349,11 @@ mod tests {
     use crate::legacy_indexed_palette::legacy_indexed_palette;
     use crate::paint_color::PaintColor;
     use serde_json::json;
-    use thaum_renderer_domain::{CellGraphic, CellMaterialId, CellPoint};
+    use thaum_renderer_domain::shape_fade::neighbor_graph::FadeTileProvider;
+    use thaum_renderer_domain::{
+        CellGraphic, CellMaterialId, CellPoint, GlyphTileRaster, GLYPH_TILE_HEIGHT,
+        GLYPH_TILE_WIDTH,
+    };
 
     fn point(x: i32, y: i32) -> CellPoint {
         CellPoint { x, y, z: 0 }
@@ -445,6 +486,36 @@ mod tests {
             blend_canvases(&from, &to, 1.0, None).get(&point(2, 2)),
             to.get(&point(2, 2))
         );
+    }
+
+    struct ClearTransitionTiles;
+
+    impl FadeTileProvider for ClearTransitionTiles {
+        fn tiles(&self) -> Vec<(char, GlyphTileRaster)> {
+            let mut solid = GlyphTileRaster {
+                width: GLYPH_TILE_WIDTH,
+                height: GLYPH_TILE_HEIGHT,
+                alpha: [255; 12 * 16],
+            };
+            let mut clear = solid.clone();
+            clear.alpha.fill(0);
+            clear.alpha[0] = 32;
+            solid.alpha[0] = 255;
+            vec![('x', solid), (CLEAR_TRANSITION_GLYPH, clear)]
+        }
+    }
+
+    #[test]
+    fn one_sided_cells_walk_through_the_low_coverage_clear_transition_glyph() {
+        let fade = ShapeFade::build(&ClearTransitionTiles);
+        let authored = cell('x', PaintColor::flat_rgb(1, 2, 3), 4);
+        let faded = fade_one_sided_cell(&authored, 0.5, true, Some(&fade));
+        let starting = fade_one_sided_cell(&authored, 0.5, false, Some(&fade));
+        let grown = fade_one_sided_cell(&authored, 1.0, false, Some(&fade));
+        assert_eq!(faded.graphic, CellGraphic::Glyph(CLEAR_TRANSITION_GLYPH));
+        assert_eq!(starting.graphic, CellGraphic::Glyph(CLEAR_TRANSITION_GLYPH));
+        assert_eq!(starting.weight_index, 0);
+        assert_eq!(grown.graphic, CellGraphic::Glyph('x'));
     }
 
     #[test]

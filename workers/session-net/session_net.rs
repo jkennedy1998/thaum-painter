@@ -13,7 +13,9 @@
 //! still bypass the record log (`document.json` path) are not replayed — that
 //! gap closes with the structure-edit record variants in `domain/file/storage/`.
 
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::session_client::{SessionClient, SessionClientError};
 use crate::session_host::{SessionHost, SessionUser};
@@ -28,6 +30,8 @@ pub enum SessionNet {
         /// Kept for shutdown/drop; the accept loop ends on drop.
         _server: SessionHostServer,
         user_id: String,
+        /// The bound listen port — the `invite_addresses()` truth source.
+        port: u16,
         /// How many host-log records the local app has consumed into its own
         /// runtime. Own records are skipped (applied at publish); foreign
         /// records (from clients) are applied here.
@@ -35,8 +39,25 @@ pub enum SessionNet {
     },
     Client {
         client: SessionClient,
+        /// Client-owned auto-rejoin truth: where and who to rejoin as, plus
+        /// the current capped backoff. Never used after the host says `Ended`.
+        rejoin: ClientRejoin,
     },
 }
+
+/// Client-owned rejoin state. Backoff starts at `REJOIN_INITIAL_BACKOFF`,
+/// doubles per failed attempt, and caps at `REJOIN_MAX_BACKOFF`. A rejoin is
+/// the existing cheap join path: fresh snapshot, full-log replay, runtime
+/// rebuilt from the snapshot inside `sync` — no delta machinery.
+pub struct ClientRejoin {
+    address: String,
+    user: SessionUser,
+    backoff: Duration,
+    next_attempt: Instant,
+}
+
+const REJOIN_INITIAL_BACKOFF: Duration = Duration::from_millis(500);
+const REJOIN_MAX_BACKOFF: Duration = Duration::from_secs(8);
 
 impl SessionNet {
     /// Starts hosting: binds the TCP server and registers the snapshot
@@ -50,28 +71,109 @@ impl SessionNet {
         host.set_snapshot_source(snapshot_source);
         let host = Arc::new(Mutex::new(host));
         let server = spawn_session_host_server(Arc::clone(&host), port)?;
+        let port = server.port;
         Ok(Self::Host {
             host,
             _server: server,
             user_id: user.user_id,
+            port,
             consumed: 0,
         })
     }
 
     /// Joins a host. Returns the net seam plus the host's snapshot document —
-    /// the caller rebuilds its runtime from it before the first sync.
+    /// the caller rebuilds its runtime from it before the first sync. Auto-
+    /// rejoin is armed from this same address and identity.
     pub fn join(
         address: &str,
         user: SessionUser,
     ) -> Result<(Self, SharedDocumentFile), SessionClientError> {
-        let (client, snapshot) = SessionClient::connect(address, user)?;
-        Ok((Self::Client { client }, snapshot))
+        let (client, snapshot) = SessionClient::connect(address, user.clone())?;
+        Ok((
+            Self::Client {
+                client,
+                rejoin: ClientRejoin {
+                    address: address.to_string(),
+                    user,
+                    backoff: REJOIN_INITIAL_BACKOFF,
+                    next_attempt: Instant::now(),
+                },
+            },
+            snapshot,
+        ))
+    }
+
+    /// Host mode: ends the session on purpose. Every connected client
+    /// receives `Ended` and further joins are denied. Client mode: nothing —
+    /// leaving is the caller dropping the net.
+    pub fn end_session(&mut self) {
+        if let Self::Host { host, .. } = self {
+            host.lock().expect("session host lock").end_session();
+        }
+    }
+
+    /// True once the session ended on purpose (host side decided, client
+    /// learned `Ended`). A rejoin never runs past this.
+    pub fn session_ended(&self) -> bool {
+        match self {
+            Self::Host { host, .. } => host.lock().expect("session host lock").is_ended(),
+            Self::Client { client, .. } => client.session_ended(),
+        }
+    }
+
+    /// Client mode and dropped but not ended: the chip's `RECONNECTING…` state.
+    pub fn is_reconnecting(&self) -> bool {
+        match self {
+            Self::Host { .. } => false,
+            Self::Client { client, .. } => !client.is_connected() && !client.session_ended(),
+        }
+    }
+
+    /// The current rejoin backoff in ms (client mode, dropped, not ended).
+    /// Test exposure for the capped-backoff behavior.
+    pub fn rejoin_backoff_ms(&self) -> Option<u64> {
+        match self {
+            Self::Host { .. } => None,
+            Self::Client { client, rejoin } => {
+                if client.is_connected() || client.session_ended() {
+                    None
+                } else {
+                    Some(rejoin.backoff.as_millis() as u64)
+                }
+            }
+        }
+    }
+
+    /// The addresses a joiner should type to reach this hosted session:
+    /// every reachable non-loopback IPv4 interface first, loopback last.
+    /// Single source of truth — the panel renders these verbatim and nothing
+    /// else computes them. Client mode (and offline hosts) have no invite.
+    pub fn invite_addresses(&self) -> Vec<String> {
+        let Self::Host { port, .. } = self else {
+            return Vec::new();
+        };
+        let port = *port;
+        let mut reachable = Vec::new();
+        let mut loopback: Option<String> = None;
+        for interface in if_addrs::get_if_addrs().into_iter().flatten() {
+            let IpAddr::V4(ip) = interface.ip() else {
+                continue;
+            };
+            let address = format!("{ip}:{port}");
+            if ip.is_loopback() {
+                loopback = Some(address);
+            } else if !reachable.contains(&address) {
+                reachable.push(address);
+            }
+        }
+        reachable.extend(loopback);
+        reachable
     }
 
     pub fn user_id(&self) -> &str {
         match self {
             Self::Host { user_id, .. } => user_id,
-            Self::Client { client } => &client.user_id,
+            Self::Client { client, .. } => &client.user_id,
         }
     }
 
@@ -90,7 +192,7 @@ impl SessionNet {
                     .apply_local_record(record);
                 Ok(())
             }
-            Self::Client { client } => client
+            Self::Client { client, .. } => client
                 .send_action(record)
                 .map_err(|error| error.to_string()),
         }
@@ -121,21 +223,46 @@ impl SessionNet {
                 }
                 Ok(applied)
             }
-            Self::Client { client } => client.sync(runtime).map_err(|error| error.to_string()),
+            Self::Client { client, rejoin } => {
+                if client.session_ended() {
+                    return Err(SessionClientError::SessionEnded.to_string());
+                }
+                if !client.is_connected() {
+                    // Client-owned auto-rejoin: attempt when the backoff
+                    // window has passed; a successful rejoin rebuilds the
+                    // caller's runtime from the fresh snapshot (full-log
+                    // replay converges on the following syncs).
+                    if Instant::now() >= rejoin.next_attempt {
+                        match SessionClient::connect(&rejoin.address, rejoin.user.clone()) {
+                            Ok((fresh, snapshot)) => {
+                                *runtime = SharedDocumentRuntime::new(snapshot);
+                                *client = fresh;
+                                rejoin.backoff = REJOIN_INITIAL_BACKOFF;
+                            }
+                            Err(_) => {
+                                rejoin.backoff = (rejoin.backoff * 2).min(REJOIN_MAX_BACKOFF);
+                            }
+                        }
+                        rejoin.next_attempt = Instant::now() + rejoin.backoff;
+                    }
+                    return Ok(0);
+                }
+                client.sync(runtime).map_err(|error| error.to_string())
+            }
         }
     }
 
     pub fn roster(&self) -> Vec<SessionUser> {
         match self {
             Self::Host { host, .. } => host.lock().expect("session host lock").roster(),
-            Self::Client { client } => client.roster().to_vec(),
+            Self::Client { client, .. } => client.roster().to_vec(),
         }
     }
 
     pub fn cursor(&self, user_id: &str) -> Option<[i32; 3]> {
         match self {
             Self::Host { .. } => None, // host presence UI rides the client side
-            Self::Client { client } => client.cursor(user_id),
+            Self::Client { client, .. } => client.cursor(user_id),
         }
     }
 
@@ -144,7 +271,7 @@ impl SessionNet {
     pub fn is_connected(&self) -> bool {
         match self {
             Self::Host { .. } => true,
-            Self::Client { client } => client.is_connected(),
+            Self::Client { client, .. } => client.is_connected(),
         }
     }
 }
@@ -316,5 +443,126 @@ mod tests {
         // Idempotent syncs: own records are never re-applied.
         assert_eq!(host_net.sync(&mut host_runtime).unwrap(), 0);
         assert_eq!(client_net.sync(&mut client_runtime).unwrap(), 0);
+    }
+
+    #[test]
+    fn client_rejoins_after_a_drop_and_converges_again() {
+        let boot_document = SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
+        let source_document = boot_document.clone();
+        let host_net = SessionNet::host(
+            Box::new(move || source_document.clone()),
+            user("host-user"),
+            0,
+        )
+        .expect("host boots");
+        let port = match &host_net {
+            SessionNet::Host { _server, .. } => _server.port,
+            SessionNet::Client { .. } => unreachable!(),
+        };
+        let (mut client_net, snapshot) =
+            SessionNet::join(&format!("127.0.0.1:{port}"), user("client-1")).expect("join");
+        let mut host_runtime = SharedDocumentRuntime::new(boot_document);
+        let mut client_runtime = SharedDocumentRuntime::new(snapshot);
+
+        // One stroke while connected, on both sides.
+        let record = stroke(&host_net, &host_runtime, "h-1", 0, (200, 0, 0));
+        host_runtime.apply_action_record(record.clone());
+        host_net.publish(record).unwrap();
+        assert_eq!(sync_for(&mut client_net, &mut client_runtime, 1), 1);
+
+        // Simulate a drop: kill the client socket; the reader thread notices.
+        if let SessionNet::Client { client, .. } = &client_net {
+            client.force_disconnect();
+        }
+        for _ in 0..100 {
+            if client_net.is_reconnecting() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(client_net.is_reconnecting());
+        assert_eq!(client_net.rejoin_backoff_ms(), Some(500));
+
+        // The host paints again while the client is down.
+        let record = stroke(&host_net, &host_runtime, "h-2", 1, (0, 0, 200));
+        host_runtime.apply_action_record(record.clone());
+        host_net.publish(record).unwrap();
+
+        // Poll sync: the rejoin fires, the runtime rebuilds from the fresh
+        // snapshot, and full-log replay converges both strokes back in.
+        let mut converged = false;
+        for _ in 0..300 {
+            let _ = client_net.sync(&mut client_runtime);
+            if canvas_len(&client_runtime) == 2 {
+                converged = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(converged, "client did not rejoin and converge");
+        assert!(!client_net.is_reconnecting());
+        assert_eq!(client_net.rejoin_backoff_ms(), None);
+    }
+
+    #[test]
+    fn host_ended_sessions_reach_the_client_and_stop_rejoin() {
+        let boot_document = SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
+        let source_document = boot_document.clone();
+        let mut host_net = SessionNet::host(
+            Box::new(move || source_document.clone()),
+            user("host-user"),
+            0,
+        )
+        .expect("host boots");
+        let port = match &host_net {
+            SessionNet::Host { _server, .. } => _server.port,
+            SessionNet::Client { .. } => unreachable!(),
+        };
+        let (mut client_net, snapshot) =
+            SessionNet::join(&format!("127.0.0.1:{port}"), user("client-1")).expect("join");
+        let mut client_runtime = SharedDocumentRuntime::new(snapshot);
+
+        assert!(!client_net.session_ended());
+        host_net.end_session();
+        assert!(host_net.session_ended());
+
+        // The client learns `Ended` on the next sync and never rejoins.
+        let mut ended = false;
+        for _ in 0..100 {
+            match client_net.sync(&mut client_runtime) {
+                Err(error) if error.to_string().contains("host ended the session") => {
+                    ended = true;
+                    break;
+                }
+                _ => thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        assert!(ended, "client never learned the session ended");
+        assert!(client_net.session_ended());
+        assert!(!client_net.is_reconnecting());
+        assert_eq!(client_net.rejoin_backoff_ms(), None);
+    }
+
+    #[test]
+    fn invite_addresses_list_reachable_interfaces_with_loopback_last() {
+        let source_document =
+            SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
+        let host_net = SessionNet::host(
+            Box::new(move || source_document.clone()),
+            user("host-user"),
+            0,
+        )
+        .expect("host boots");
+        let port = match &host_net {
+            SessionNet::Host { _server, .. } => _server.port,
+            SessionNet::Client { .. } => unreachable!(),
+        };
+        let addresses = host_net.invite_addresses();
+        // Every address carries the bound port.
+        assert!(addresses.iter().all(|a| a.ends_with(&format!(":{port}"))));
+        // Loopback, when present, is last — the honest always-works reach.
+        if let Some(position) = addresses.iter().position(|a| a.starts_with("127.0.0.1:")) {
+            assert_eq!(position, addresses.len() - 1);
+        }
     }
 }
