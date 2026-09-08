@@ -35,19 +35,20 @@ Session browser/lobby, accounts/auth (LAN trust + open perms are settled truth),
 
 ## phases
 ### phase-1 — seam truths (workers, no UI)
-- [ ] `SessionNet::invite_addresses()` via `if-addrs`: every non-loopback v4 address + the port; loopback listed last as `127.0.0.1:port`. Empty list renders as "no reachable address — check your network" (real state, not filler).
-- [ ] `HostMessage::Ended` + protocol version bump; host API `end_session()`; client marks ended vs dropped distinctly.
-- [ ] `session-client` auto-rejoin: capped exponential backoff, rejoin through the existing join path; exposure for tests.
-- [ ] socket tests: ended broadcast, rejoin after drop converges again.
+- [x] `SessionNet::invite_addresses()` via `if-addrs`: every non-loopback v4 address + the port; loopback listed last as `127.0.0.1:port`. Empty list renders as "no reachable address — check your network" (real state, not filler).
+- [x] `HostMessage::Ended` + protocol version bump; host API `end_session()`; client marks ended vs dropped distinctly.
+- [x] `session-client` auto-rejoin: capped exponential backoff, rejoin through the existing join path; exposure for tests. Rejoin rebuilds the caller's runtime from the fresh snapshot inside `sync`; `take_rejoined()` guards republish.
+- [x] socket tests: ended broadcast, rejoin after drop converges again.
+- [x] roster truth: host identity is roster entry zero (`set_host_user`); `ClientMessage::Rename` + host-side rename broadcast the roster to every client.
 
 ### phase-2 — session panel module
-- [ ] `domain/modules/individuals/session-panel/`: chip row (offline/hosting/connected/reconnecting states + click target), panel (roster list, self-name edit, invite list + [copy], join field + [connect] when offline, [leave] when in session), `SessionPanelAction` set (`HostRequested`, `JoinRequested{addr}`, `CopyInvite`, `LeaveRequested`, `SetDisplayName`), contract.md.
-- [ ] module tests: state-sync rendering per chip state, one-pending-action-per-frame, denial text passthrough.
+- [x] `domain/modules/individuals/session-panel/`: chip row (offline/hosting/connected/reconnecting states + click target), panel (roster list, self-name edit, invite list + [copy], join field + [connect] when offline, [leave] when in session), `SessionPanelAction` set (`HostRequested`, `JoinRequested{addr}`, `CopyInvite`, `LeaveRequested`, `SetDisplayName`), contract.md.
+- [x] module tests: state-sync rendering per chip state, one-pending-action-per-frame, denial text passthrough.
 
 ### phase-3 — orchestration wiring
-- [ ] Frame loop applies `SessionPanelAction` onto `SessionNet` (host/join/leave/copy/rename); `SessionPanelState::sync` fed from the same `SessionNet` each frame — one truth, one writer.
-- [ ] Clipboard via `arboard` behind the module's `CopyInvite` action result (success/failure surfaces in the panel's event line).
-- [ ] Env boot unchanged; the panel and env boot feed the same `Option<SessionNet>`, so `THAUM_SESSION_JOIN` still works for headless/CI use.
+- [x] Frame loop applies `SessionPanelAction` onto `SessionNet` (host/join/leave/copy/rename); `SessionPanelState::sync` fed from the same `SessionNet` each frame — one truth, one writer.
+- [x] Clipboard via `arboard` behind the module's `CopyInvite` action result (success/failure surfaces in the panel's event line).
+- [x] Env boot unchanged; the panel and env boot feed the same `Option<SessionNet>`, so `THAUM_SESSION_JOIN` still works for headless/CI use. Publish loop hardened to own records only (foreign records arrive via sync — the old path double-logged them on the host).
 - [ ] End-to-end manual matrix: linux↔linux, linux↔windows (cross-compile lane), mac via CI lane — same LAN, two instances, paint/sync/rejoin/leave.
 
 ## tests
