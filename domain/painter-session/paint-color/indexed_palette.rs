@@ -41,3 +41,33 @@ pub const LEGACY_INDEXED_PALETTE: [[u8; 3]; 37] = [
 pub const fn legacy_indexed_palette() -> &'static [[u8; 3]; 37] {
     &LEGACY_INDEXED_PALETTE
 }
+
+/// Returns the palette entry nearest to `rgb` in squared RGB distance.
+/// Ties retain palette order, so the result is deterministic.
+pub fn nearest_indexed_rgb(rgb: [u8; 3]) -> [u8; 3] {
+    *legacy_indexed_palette()
+        .iter()
+        .min_by_key(|candidate| {
+            candidate
+                .iter()
+                .zip(rgb)
+                .map(|(&channel, target)| {
+                    let delta = i32::from(channel) - i32::from(target);
+                    delta * delta
+                })
+                .sum::<i32>()
+        })
+        .expect("the indexed palette is non-empty")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nearest_indexed_rgb_returns_a_palette_entry_and_preserves_exact_matches() {
+        assert_eq!(nearest_indexed_rgb([0xe3, 0x63, 0x25]), [0xe3, 0x63, 0x25]);
+        let resolved = nearest_indexed_rgb([25, 50, 10]);
+        assert!(legacy_indexed_palette().contains(&resolved));
+    }
+}

@@ -39,7 +39,7 @@ pub mod lasso_stroke;
 pub mod layers_panel_module;
 #[path = "painter-document/layers/layers_runtime.rs"]
 pub mod layers_runtime;
-#[path = "modules/shared/legacy_indexed_palette.rs"]
+#[path = "painter-session/paint-color/indexed_palette.rs"]
 pub mod legacy_indexed_palette;
 #[path = "modules/individuals/material-picker/material_picker_module.rs"]
 pub mod material_picker_module;

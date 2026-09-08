@@ -963,8 +963,9 @@ impl SharedDocumentRuntime {
 
     /// The layer's RESOLVED canvas at `current_breath`: a solid raster block
     /// renders its own canvas, but an interpolating empty blends the surrounding
-    /// keyframes' canvases (color/weight lerp, discrete graphic cutoff — see
-    /// `interp_raster`). This is the render/compositing read seam; the raw block
+    /// keyframes' canvases (flat RGB lerp then indexed-palette resolution, weight
+    /// lerp, discrete graphic cutoff — see `interp_raster`). This is the
+    /// render/compositing read seam; the raw block
     /// canvas behind `canvas_for_layer` stays the edit-surface seam, so strokes
     /// still author real keyframes instead of painting into a blend.
     pub fn resolved_canvas_for_layer(
@@ -2825,6 +2826,7 @@ pub(crate) fn material_from_name(name: &str) -> Option<CellMaterialId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::legacy_indexed_palette::legacy_indexed_palette;
     use thaum_renderer_domain::CellGraphic;
 
     fn point(x: i32, y: i32) -> CellPoint {
@@ -4587,8 +4589,9 @@ mod tests {
             Some(&keyframe_b)
         );
         // Breath 12 is the middle empty's halfway crossing plus one: t = 5/9
-        // (~0.556, second half) — graphic from keyframe B, color and weight
-        // blended 5/9 of the way from A to B.
+        // (~0.556, second half) — graphic from keyframe B, flat color resolved
+        // to the indexed palette after blending, and weight blended 5/9 of the
+        // way from A to B.
         let blended = runtime
             .resolved_canvas_for_layer("layer-1", 12, None)
             .unwrap()
@@ -4596,13 +4599,9 @@ mod tests {
             .unwrap()
             .clone();
         assert_eq!(blended.graphic, CellGraphic::Glyph('B'));
-        assert_eq!(
-            blended.color,
-            PaintColor::flat_rgb(
-                (255.0_f32 * 4.0 / 9.0).round() as u8,
-                0,
-                (255.0_f32 * 5.0 / 9.0).round() as u8
-            )
+        assert!(
+            matches!(blended.color, PaintColor::FlatRgb(red, green, blue) if legacy_indexed_palette().contains(&[red, green, blue])),
+            "interpolated color must resolve to the indexed palette"
         );
         assert_eq!(blended.weight_index, (8.0_f32 * 5.0 / 9.0).round() as i64);
         // First-half breath (t = 1/9) still shows keyframe A's graphic with the
@@ -4614,9 +4613,9 @@ mod tests {
             .unwrap()
             .clone();
         assert_eq!(early.graphic, CellGraphic::Glyph('A'));
-        assert_ne!(
-            early.color, keyframe_a.color,
-            "color blends even in the first half"
+        assert!(
+            matches!(early.color, PaintColor::FlatRgb(red, green, blue) if legacy_indexed_palette().contains(&[red, green, blue])),
+            "first-half interpolated color must resolve to the indexed palette"
         );
 
         // The edit surface seam is untouched: the raw block canvas over the

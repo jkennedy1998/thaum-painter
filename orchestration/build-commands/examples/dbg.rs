@@ -55,9 +55,7 @@ fn main() {
     runtime.split_property_block("layer-1", "raster", "block-1", 8);
     runtime.set_property_block_timing_destructive("layer-1", "raster", "block-2", 16, 8);
     paint(&mut runtime, "a1", "block-2", 'B');
-    assert!(runtime.set_property_block_timing_destructive(
-        "layer-1", "raster", "block-1", 18, 4
-    ));
+    assert!(runtime.set_property_block_timing_destructive("layer-1", "raster", "block-1", 18, 4));
     for b in &runtime.property_track("layer-1", "raster").unwrap().blocks {
         println!(
             "split: {} start={} len={}",

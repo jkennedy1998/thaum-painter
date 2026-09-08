@@ -9,41 +9,49 @@ use std::{
 
 use anyhow::{Context, Result};
 use rfd::FileDialog;
-use thaum_renderer_domain::NumberFieldEdit;
 use thaum_painter_domain::{
+    apply_painter_selection_action,
+    camera_actions::{apply_painter_camera_action, apply_painter_pan_action},
     camera_viewport::{
         apply_drawing_space_scroll, apply_hud_scroll, sync_canvas_bounds_to_camera,
         INITIAL_PAINT_CANVAS_BOUNDS, INITIAL_PAINT_CANVAS_VIEWPORT,
-    }, document_locations::{
+    },
+    canvas_pointer::{CanvasPointerContext, CanvasPointerStrokes, StampHover},
+    document_locations::{
         load_document_from_root, new_unsaved_document, resolve_painter_file_root,
-    }, layers_runtime::{
+    },
+    layers_panel_module::LayersPanelAction,
+    layers_runtime::{
         apply_layers_panel_action, build_selected_layer_property_rows, resolved_active_layer_id,
-    }, layers_panel_module::LayersPanelAction, camera_actions::{apply_painter_camera_action, apply_painter_pan_action},
-    render_space::build_document_layer_cell_groups, save_shared_document_snapshot, canvas_pointer::{CanvasPointerContext, CanvasPointerStrokes, StampHover}, session_document::{
-        commit_staged_paint_stroke, apply_shared_history_action,
-        recover_snapshot_conflict, stage_text_entry_change, sync_canvas_from_active_layer,
-    }, text_entry::{cursor_overlay_group, TextEntryKey, TextEntryOutcome, TextEntryState}, Canvas, DrawingSpaceWheelMode, LayerRow, LayersPanelState,
-    PaintCanvasBoundsModule, PaintHand, PaintTool,
-    PainterSelection, PainterUserSessionState, painter_default_camera, PersistedPainterUiState,
-    SelectionMode, SharedDocumentPaths, UnsupportedFileError,
-    SessionIdentity, SharedDocumentRuntime, TimelineState, apply_painter_selection_action,
-    ToolState, CanvasBounds, DEFAULT_SELECTION_CHANNEL_ID,
+    },
+    painter_default_camera,
+    render_space::build_document_layer_cell_groups,
+    save_shared_document_snapshot,
+    session_document::{
+        apply_shared_history_action, commit_staged_paint_stroke, recover_snapshot_conflict,
+        stage_text_entry_change, sync_canvas_from_active_layer,
+    },
+    text_entry::{cursor_overlay_group, TextEntryKey, TextEntryOutcome, TextEntryState},
+    Canvas, CanvasBounds, DrawingSpaceWheelMode, LayerRow, LayersPanelState,
+    PaintCanvasBoundsModule, PaintHand, PaintTool, PainterSelection, PainterUserSessionState,
+    PersistedPainterUiState, SelectionMode, SessionIdentity, SharedDocumentPaths,
+    SharedDocumentRuntime, TimelineState, ToolState, UnsupportedFileError,
+    DEFAULT_SELECTION_CHANNEL_ID,
 };
 use thaum_renderer_boot::{
     boot_renderer, cell_clip_size_for_state, run_renderer_window_with_state_frame_provider,
     BootConfig, BootState,
 };
+use thaum_renderer_domain::NumberFieldEdit;
 use thaum_renderer_domain::{
-    camera_view_orientation_for_camera, remap_surface_units_to_active_plane_world,
-    remap_surface_units_to_flat_2d_local, shape_fade::fade::ShapeFade,
-    shape_fade::font_tiles::FontSetTiles, ActionBindingMap, ActionName, CameraDepthLink,
-    CameraLayersLink, CellPoint, GlyphFontSet, MAX_VISIBLE_PLANE_RADIUS, TooltipState,
-    tooltip_card_group,
-    CommandBar, CommandBarButton, CommandBarClickOutcome, Composition, ControlActionRow,
-    ControlsProfile, effective_bindings,
-    ModulePointerButton, ModulePointerEvent, ModuleRect, ModuleRegistry,
-    PersistedRendererUiSessionState, RawInput, TypingMode, TypingRoute, UiColorRole,
-    UiPalette,
+    camera_view_orientation_for_camera, effective_bindings,
+    remap_surface_units_to_active_plane_world, remap_surface_units_to_flat_2d_local,
+    shape_fade::fade::ShapeFade, shape_fade::font_tiles::FontSetTiles, tooltip_card_group,
+    ActionBindingMap, ActionName, CameraDepthLink, CameraLayersLink, CellPoint, CommandBar,
+    CommandBarButton, CommandBarClickOutcome, Composition, ControlActionRow, ControlsProfile,
+    GlyphFontSet, ModulePointerButton, ModulePointerEvent, ModuleRect, ModuleRegistry,
+    PersistedRendererUiSessionState, RawInput, TooltipState, TypingMode, TypingRoute, UiColorRole,
+    UiPalette, MAX_VISIBLE_PLANE_RADIUS,
 };
 use winit::keyboard::KeyCode;
 
@@ -116,7 +124,11 @@ fn append_interaction_log(lines: &[String]) {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         for line in lines {
             let _ = writeln!(file, "{line}");
         }
@@ -423,9 +435,7 @@ fn route_drag(
     if chrome_hit {
         return DragRoute::Chrome;
     }
-    if paint_surface.contains(screen.x, screen.y)
-        && bounds.contains(position)
-        && !typing_owns_input
+    if paint_surface.contains(screen.x, screen.y) && bounds.contains(position) && !typing_owns_input
     {
         DragRoute::Canvas(position)
     } else {
@@ -446,11 +456,10 @@ fn session_identity() -> SessionIdentity {
     let os_name = env::var("USER")
         .or_else(|_| env::var("USERNAME")) // Windows
         .ok();
-    SessionIdentity::load_or_create(&path, os_name.as_deref())
-        .unwrap_or_else(|error| {
-            eprintln!("failed to load session identity ({error}); using an ephemeral one");
-            SessionIdentity::generate(None)
-        })
+    SessionIdentity::load_or_create(&path, os_name.as_deref()).unwrap_or_else(|error| {
+        eprintln!("failed to load session identity ({error}); using an ephemeral one");
+        SessionIdentity::generate(None)
+    })
 }
 
 fn painter_session_state_path(user_id: &str) -> PathBuf {
@@ -624,9 +633,7 @@ fn save_as_root_from_dialog_path(path: &Path) -> PathBuf {
         .map(slugify_file_stem)
         .filter(|stem| !stem.is_empty())
         .unwrap_or_else(|| "untitled-document".to_string());
-    path.parent()
-        .unwrap_or(path)
-        .join(stem)
+    path.parent().unwrap_or(path).join(stem)
 }
 
 /// Quick-save target for a document with no file path yet: the slugified
@@ -789,7 +796,8 @@ fn handle_command_bar_button(
     match button_id {
         "file:new" => {
             *shared_document = new_unsaved_document();
-            *shared_document_paths = painter_shared_document_paths(&shared_document.document.document_id);
+            *shared_document_paths =
+                painter_shared_document_paths(&shared_document.document.document_id);
             *current_document_root = None;
             *active_layer_id = resolved_active_layer_id(shared_document, None);
             *selected_property_id = None;
@@ -822,7 +830,12 @@ fn handle_command_bar_button(
                 *active_layer_id = resolved_active_layer_id(shared_document, Some(active_layer_id));
                 *selected_property_id = None;
                 *shared_action_counter = shared_document.actions.len() as u64;
-                sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
+                sync_canvas_from_active_layer(
+                    shared_document,
+                    active_layer_id,
+                    current_breath,
+                    canvas,
+                );
                 selection.borrow_mut().clear_plane();
             }
         }
@@ -841,7 +854,9 @@ fn handle_command_bar_button(
                 *shared_document_paths = SharedDocumentPaths::new(next_root.clone());
                 *current_document_root = Some(next_root);
             }
-            if let Err(error) = save_shared_document_snapshot(shared_document_paths, shared_document) {
+            if let Err(error) =
+                save_shared_document_snapshot(shared_document_paths, shared_document)
+            {
                 recover_snapshot_conflict(
                     &error,
                     shared_document,
@@ -855,7 +870,9 @@ fn handle_command_bar_button(
             }
         }
         "file:save-as" => {
-            if let Some(next_root) = prompt_save_document_root(&file_root, &shared_document.document.title) {
+            if let Some(next_root) =
+                prompt_save_document_root(&file_root, &shared_document.document.title)
+            {
                 let next_paths = SharedDocumentPaths::new(next_root.clone());
                 if let Err(error) = save_shared_document_snapshot(&next_paths, shared_document) {
                     recover_snapshot_conflict(
@@ -940,8 +957,7 @@ mod tests {
         let bindings = thaum_painter_domain::tai::painter_bindings();
         let mut typing_mode = TypingMode::default();
         typing_mode.begin(typing_reserved_inputs(&bindings));
-        let orientation =
-            camera_view_orientation_for_camera(CameraSwing::PosZ, CameraRoll::Deg0);
+        let orientation = camera_view_orientation_for_camera(CameraSwing::PosZ, CameraRoll::Deg0);
         let brush = thaum_painter_domain::brush::PaintedCell {
             graphic: thaum_renderer_domain::CellGraphic::Glyph('?'),
             color: thaum_painter_domain::paint_color::PaintColor::flat_rgb(255, 255, 255),
@@ -961,8 +977,7 @@ mod tests {
             (KeyCode::ArrowUp, CellPoint { x: 5, y: 5, z: 0 }),
         ];
         for (key, want) in steps {
-            let route = raw_key_label(*key)
-                .map(|label| typing_mode.route(&RawInput::Key(label)));
+            let route = raw_key_label(*key).map(|label| typing_mode.route(&RawInput::Key(label)));
             assert_eq!(route, Some(TypingRoute::Owned), "{key:?} must be owned");
             let entry_key = text_entry_key_for_key(*key, false)
                 .unwrap_or_else(|| panic!("{key:?} must translate"));
@@ -1012,7 +1027,14 @@ mod tests {
     fn canvas_route_requires_surface_bounds_and_no_typing() {
         let inside = (world_cell(50, 50), world_cell(1, 1));
         assert_eq!(
-            route_drag(inside.0, inside.1, false, surface_rect(), canvas_bounds(), false),
+            route_drag(
+                inside.0,
+                inside.1,
+                false,
+                surface_rect(),
+                canvas_bounds(),
+                false
+            ),
             DragRoute::Canvas(inside.1)
         );
         // Outside the screen surface: ignored even if the world cell is valid.
@@ -1029,7 +1051,14 @@ mod tests {
         );
         // Typing owns the input surface: the canvas receives nothing.
         assert_eq!(
-            route_drag(inside.0, inside.1, false, surface_rect(), canvas_bounds(), true),
+            route_drag(
+                inside.0,
+                inside.1,
+                false,
+                surface_rect(),
+                canvas_bounds(),
+                true
+            ),
             DragRoute::Ignored
         );
     }
@@ -1183,10 +1212,8 @@ mod tests {
     #[test]
     fn live_painter_actions_stay_in_sync_with_the_registry() {
         let bindings = thaum_painter_domain::tai::painter_bindings();
-        let registry_names: Vec<&str> = bindings
-            .actions()
-            .map(|action| action.0.as_str())
-            .collect();
+        let registry_names: Vec<&str> =
+            bindings.actions().map(|action| action.0.as_str()).collect();
         for name in LIVE_PAINTER_ACTIONS {
             assert!(
                 registry_names.contains(name),
@@ -1243,9 +1270,7 @@ mod tests {
             "painter_select_lasso",
         ] {
             assert!(
-                !bindings
-                    .bindings_for(&ActionName::new(name))
-                    .is_empty(),
+                !bindings.bindings_for(&ActionName::new(name)).is_empty(),
                 "dispatch action {name} must stay registered in painter_bindings()"
             );
         }
@@ -1452,11 +1477,7 @@ fn typing_reserved_inputs(bindings: &ActionBindingMap) -> Vec<RawInput> {
     ];
     TYPING_RESERVED_ACTIONS
         .iter()
-        .flat_map(|action| {
-            bindings
-                .bindings_for(&ActionName::new(*action))
-                .to_vec()
-        })
+        .flat_map(|action| bindings.bindings_for(&ActionName::new(*action)).to_vec())
         .collect()
 }
 
@@ -1559,16 +1580,36 @@ pub(crate) fn painter_control_rows() -> Vec<ControlActionRow> {
         ("camera", "Swing Right", "painter_swing_right"),
         ("camera", "Swing Up", "painter_swing_up"),
         ("camera", "Swing Down", "painter_swing_down"),
-        ("camera", "Roll Counter-Clockwise", "painter_roll_counter_clockwise"),
+        (
+            "camera",
+            "Roll Counter-Clockwise",
+            "painter_roll_counter_clockwise",
+        ),
         ("camera", "Roll Clockwise", "painter_roll_clockwise"),
         ("camera", "Focus Depth Toward", "painter_focus_depth_toward"),
         ("camera", "Focus Depth Away", "painter_focus_depth_away"),
         ("camera", "Zoom Out", "painter_zoom_out"),
         ("camera", "Zoom In", "painter_zoom_in"),
-        ("selection", "Mode: Replace", "painter_selection_mode_replace"),
-        ("selection", "Mode: Additive", "painter_selection_mode_additive"),
-        ("selection", "Mode: Subtract", "painter_selection_mode_subtract"),
-        ("selection", "Mode: Intersect", "painter_selection_mode_intersect"),
+        (
+            "selection",
+            "Mode: Replace",
+            "painter_selection_mode_replace",
+        ),
+        (
+            "selection",
+            "Mode: Additive",
+            "painter_selection_mode_additive",
+        ),
+        (
+            "selection",
+            "Mode: Subtract",
+            "painter_selection_mode_subtract",
+        ),
+        (
+            "selection",
+            "Mode: Intersect",
+            "painter_selection_mode_intersect",
+        ),
         ("selection", "Clear Plane", "painter_selection_clear"),
         ("selection", "Invert Plane", "painter_selection_invert"),
         ("selection", "Select All Plane", "painter_selection_all"),
@@ -1603,8 +1644,7 @@ fn main() -> Result<()> {
     let mut config = BootConfig::default();
     config.asset_root = resolve_asset_root();
     config.window.title = "thaum-painter".to_string();
-    config.window.performance_log_path =
-        run_log_dir.as_ref().map(|dir| dir.join("perf.jsonl"));
+    config.window.performance_log_path = run_log_dir.as_ref().map(|dir| dir.join("perf.jsonl"));
 
     let session_identity = session_identity();
     let session_user_id = session_identity.user_id.clone();
@@ -1614,7 +1654,8 @@ fn main() -> Result<()> {
     // the last document from session state once pinned boot to a legacy file that
     // would break silently on schema changes.
     let mut shared_document = new_unsaved_document();
-    let mut shared_document_paths = painter_shared_document_paths(&shared_document.document.document_id);
+    let mut shared_document_paths =
+        painter_shared_document_paths(&shared_document.document.document_id);
 
     // Multiplayer boot (env-driven v1; the session-module UI is the next
     // slice): THAUM_SESSION_HOST[=port] hosts a LAN session, or
@@ -1651,9 +1692,8 @@ fn main() -> Result<()> {
             match net {
                 Ok((net, snapshot)) => {
                     shared_document = SharedDocumentRuntime::new(snapshot);
-                    shared_document_paths = painter_shared_document_paths(
-                        &shared_document.document.document_id,
-                    );
+                    shared_document_paths =
+                        painter_shared_document_paths(&shared_document.document.document_id);
                     eprintln!("joined session at {address} as {}", net.user_id());
                     session_net = Some(net);
                 }
@@ -1674,7 +1714,11 @@ fn main() -> Result<()> {
     let shape_fade: Option<ShapeFade> =
         GlyphFontSet::load_from_asset_root(&state.config.asset_root)
             .ok()
-            .map(|font_set| ShapeFade::build(&FontSetTiles { font_set: &font_set }));
+            .map(|font_set| {
+                ShapeFade::build(&FontSetTiles {
+                    font_set: &font_set,
+                })
+            });
     if let Some(session) = &persisted_session {
         session.renderer.camera.apply_to_runtime(&mut state.camera);
     } else {
@@ -1722,9 +1766,9 @@ fn main() -> Result<()> {
     )));
     // Restore the document-owned 3D selection into the UI cache at boot. The set is
     // not plane-pruned, so cells at other depths/planes survive camera moves.
-    selection.borrow_mut().restore_points(
-        shared_document.selection_points(DEFAULT_SELECTION_CHANNEL_ID),
-    );
+    selection
+        .borrow_mut()
+        .restore_points(shared_document.selection_points(DEFAULT_SELECTION_CHANNEL_ID));
 
     // Shared in-place number-field edit state for the hand-settings panel:
     // the module opens it on a field click, the typing seam routes the keys,
@@ -1795,7 +1839,9 @@ fn main() -> Result<()> {
             .first_breath_with_raster_block(&active_layer_id)
             .unwrap_or(0)
     });
-    timeline_state.borrow_mut().set_current_breath(initial_breath);
+    timeline_state
+        .borrow_mut()
+        .set_current_breath(initial_breath);
     let mut selected_property_id: Option<String> = None;
     let mut canvas = shared_document
         .canvas_for_layer(&active_layer_id, timeline_state.borrow().current_breath)
@@ -1866,8 +1912,8 @@ fn main() -> Result<()> {
             || frame.input.right_pointer_down != last_right_pointer_down;
         let playback_due = timeline_state.borrow().playing
             && last_playback_step.elapsed() >= PLAYBACK_BREATH_INTERVAL;
-        let blink_due = typing_mode.is_active()
-            && cursor_blink_at.elapsed() >= CURSOR_BLINK_INTERVAL;
+        let blink_due =
+            typing_mode.is_active() && cursor_blink_at.elapsed() >= CURSOR_BLINK_INTERVAL;
         // Multiplayer frame seam: publish this frame's new local records
         // (strokes, undo/redo, selections — everything that appended to the
         // runtime's action log), then pull foreign ones in host order. Runs
@@ -1904,17 +1950,16 @@ fn main() -> Result<()> {
             // (canvas, active layer, selection cache) the same way the
             // snapshot-conflict recovery path does.
             let current_breath = timeline_state.borrow().current_breath;
-            active_layer_id =
-                resolved_active_layer_id(&shared_document, Some(&active_layer_id));
+            active_layer_id = resolved_active_layer_id(&shared_document, Some(&active_layer_id));
             sync_canvas_from_active_layer(
                 &shared_document,
                 &active_layer_id,
                 current_breath,
                 &mut canvas,
             );
-            selection.borrow_mut().replace_points(
-                shared_document.selection_points(DEFAULT_SELECTION_CHANNEL_ID),
-            );
+            selection
+                .borrow_mut()
+                .replace_points(shared_document.selection_points(DEFAULT_SELECTION_CHANNEL_ID));
         }
         last_frame_cursor = frame.input.cursor_position;
         last_pointer_down = frame.input.pointer_down;
@@ -1998,66 +2043,66 @@ fn main() -> Result<()> {
                             .expect("typing mode active without a typing session")
                             .handle_key(entry_key)
                         {
-                    TextEntryOutcome::Applied { point, cell } => {
-                        if let Some((_, block_id)) = text_stroke_start.as_ref() {
-                            stage_text_entry_change(
-                                &mut shared_document,
-                                &mut canvas,
-                                (point, cell),
-                                &active_layer_id,
-                                block_id,
-                            );
-                        }
-                    }
-                    TextEntryOutcome::Committed => {
-                        // Enter: the pending segment becomes one 'Type Text'
-                        // record; typing continues on the next line as a new
-                        // undo segment.
-                        if let Err(err) = commit_staged_paint_stroke(
-                            &mut shared_document,
-                            &shared_document_paths,
-                            &mut shared_action_counter,
-                            &session_user_id,
-                            &active_layer_id,
-                            &mut canvas,
-                            text_stroke_start.take(),
-                        ) {
-                            eprintln!("text commit failed (kept in memory): {err:#}");
-                        }
-                        let current_breath = timeline_state.borrow().current_breath;
-                        text_stroke_start = shared_document
-                            .active_raster_block_id(&active_layer_id, current_breath)
-                            .map(|block_id| (canvas.clone(), block_id.clone()));
-                    }
-                    TextEntryOutcome::Finished => {
-                        if let Err(err) = commit_staged_paint_stroke(
-                            &mut shared_document,
-                            &shared_document_paths,
-                            &mut shared_action_counter,
-                            &session_user_id,
-                            &active_layer_id,
-                            &mut canvas,
-                            text_stroke_start.take(),
-                        ) {
-                            eprintln!("text commit failed (kept in memory): {err:#}");
-                        }
-                        text_entry = None;
-                        typing_mode.end();
-                    }
-                    TextEntryOutcome::Idle | TextEntryOutcome::Ignored => {
-                        if matches!(
-                            entry_key,
-                            TextEntryKey::ArrowLeft
-                                | TextEntryKey::ArrowRight
-                                | TextEntryKey::ArrowUp
-                                | TextEntryKey::ArrowDown
-                        ) {
-                            eprintln!(
-                                "[input-debug]   cursor now {:?}",
-                                text_entry.as_ref().map(|e| e.cursor_point())
-                            );
-                        }
-                    }
+                            TextEntryOutcome::Applied { point, cell } => {
+                                if let Some((_, block_id)) = text_stroke_start.as_ref() {
+                                    stage_text_entry_change(
+                                        &mut shared_document,
+                                        &mut canvas,
+                                        (point, cell),
+                                        &active_layer_id,
+                                        block_id,
+                                    );
+                                }
+                            }
+                            TextEntryOutcome::Committed => {
+                                // Enter: the pending segment becomes one 'Type Text'
+                                // record; typing continues on the next line as a new
+                                // undo segment.
+                                if let Err(err) = commit_staged_paint_stroke(
+                                    &mut shared_document,
+                                    &shared_document_paths,
+                                    &mut shared_action_counter,
+                                    &session_user_id,
+                                    &active_layer_id,
+                                    &mut canvas,
+                                    text_stroke_start.take(),
+                                ) {
+                                    eprintln!("text commit failed (kept in memory): {err:#}");
+                                }
+                                let current_breath = timeline_state.borrow().current_breath;
+                                text_stroke_start = shared_document
+                                    .active_raster_block_id(&active_layer_id, current_breath)
+                                    .map(|block_id| (canvas.clone(), block_id.clone()));
+                            }
+                            TextEntryOutcome::Finished => {
+                                if let Err(err) = commit_staged_paint_stroke(
+                                    &mut shared_document,
+                                    &shared_document_paths,
+                                    &mut shared_action_counter,
+                                    &session_user_id,
+                                    &active_layer_id,
+                                    &mut canvas,
+                                    text_stroke_start.take(),
+                                ) {
+                                    eprintln!("text commit failed (kept in memory): {err:#}");
+                                }
+                                text_entry = None;
+                                typing_mode.end();
+                            }
+                            TextEntryOutcome::Idle | TextEntryOutcome::Ignored => {
+                                if matches!(
+                                    entry_key,
+                                    TextEntryKey::ArrowLeft
+                                        | TextEntryKey::ArrowRight
+                                        | TextEntryKey::ArrowUp
+                                        | TextEntryKey::ArrowDown
+                                ) {
+                                    eprintln!(
+                                        "[input-debug]   cursor now {:?}",
+                                        text_entry.as_ref().map(|e| e.cursor_point())
+                                    );
+                                }
+                            }
                         }
                         // The owned key belongs to the session alone: it must
                         // not also reach module key capture or live dispatch,
@@ -2081,8 +2126,7 @@ fn main() -> Result<()> {
             // effective map (declared defaults + user profile), one live
             // behavior per action, so a remap moves the behavior with it.
             // Unbound keys do nothing: there are no hidden live-only arms.
-            let binding_actions =
-                painter_key_actions(&effective_painter_bindings.borrow(), *key);
+            let binding_actions = painter_key_actions(&effective_painter_bindings.borrow(), *key);
             for action in &binding_actions {
                 if let Some(tool) = painter_tool_for_action(action) {
                     let hand = tool_state.borrow().active_hand;
@@ -2092,10 +2136,7 @@ fn main() -> Result<()> {
                     // the OS clipboard); the stamp then works from the own
                     // buffer only.
                     if action.0.as_str() == "painter_select_stamp" {
-                        import_os_clipboard_into_own_buffer(
-                            &mut user_clipboards,
-                            &session_user_id,
-                        );
+                        import_os_clipboard_into_own_buffer(&mut user_clipboards, &session_user_id);
                     }
                     continue;
                 }
@@ -2234,10 +2275,8 @@ fn main() -> Result<()> {
         // under the cursor once the render path re-applies the move shift.
         // The offset is constant across a frame, so move-drag deltas are
         // unaffected — only the aim point is corrected.
-        let active_move_offset = shared_document.move_offset_for_layer(
-            &active_layer_id,
-            timeline_state.borrow().current_breath,
-        );
+        let active_move_offset = shared_document
+            .move_offset_for_layer(&active_layer_id, timeline_state.borrow().current_breath);
         let to_world = move |surface_units: [f32; 2]| {
             let world =
                 remap_surface_units_to_active_plane_world(camera, surface_units, cell_clip_size);
@@ -2362,20 +2401,19 @@ fn main() -> Result<()> {
                 None
             } else {
                 let hit = modules.dispatch_pointer_event_at(
-                        screen.x,
-                        screen.y,
-                        ModulePointerEvent::Click {
-                            x: screen.x,
-                            y: screen.y,
-                            button: ModulePointerButton::Left,
-                        },
-                    );
+                    screen.x,
+                    screen.y,
+                    ModulePointerEvent::Click {
+                        x: screen.x,
+                        y: screen.y,
+                        button: ModulePointerButton::Left,
+                    },
+                );
                 eprintln!(
                     "[click-debug] surface=({:?}) screen=({},{}) hit={:?}",
                     click, screen.x, screen.y, hit
                 );
-                hit
-                    .map(str::to_string)
+                hit.map(str::to_string)
             };
             // The drawing-space module sits under the whole paint surface, so its hit
             // must not swallow canvas clicks: only clicks on its gizmo bar or wheel
@@ -2493,9 +2531,7 @@ fn main() -> Result<()> {
             // A number-field click just began an in-place edit; typing mode
             // owns the keyboard until a click or Escape ends the session.
             if !typing_mode.is_active() && number_edit.borrow().is_some() {
-                typing_mode.begin(typing_reserved_inputs(
-                    &effective_painter_bindings.borrow(),
-                ));
+                typing_mode.begin(typing_reserved_inputs(&effective_painter_bindings.borrow()));
             }
         } else if frame.input.pointer_down || frame.input.right_pointer_down {
             // One held-pointer path per hand: both buttons behave identically
@@ -2766,13 +2802,13 @@ fn main() -> Result<()> {
             if last_saved_session_text.as_ref() != Some(&session_text) {
                 if last_save_at.elapsed() >= Duration::from_millis(150)
                     && save_painter_user_session_state(&session_state_path, &session_state).is_ok()
-                    {
-                        last_saved_session_text = Some(session_text);
-                        last_save_at = Instant::now();
-                        session_dirty = false;
-                    }
-                    // Save failed or throttled: stay dirty so a later idle
-                    // frame still comes back to persist the change.
+                {
+                    last_saved_session_text = Some(session_text);
+                    last_save_at = Instant::now();
+                    session_dirty = false;
+                }
+                // Save failed or throttled: stay dirty so a later idle
+                // frame still comes back to persist the change.
             } else {
                 session_dirty = false;
             }
@@ -2797,7 +2833,9 @@ fn main() -> Result<()> {
                 if !hovering_canvas_bounds {
                     return None;
                 }
-                let data = user_clipboards.clipboard_for_user(&session_user_id)?.clone();
+                let data = user_clipboards
+                    .clipboard_for_user(&session_user_id)?
+                    .clone();
                 let cursor = frame.input.cursor_position?;
                 let anchor_world = remap_surface_units_to_active_plane_world(
                     state.camera,

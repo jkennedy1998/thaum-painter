@@ -29,12 +29,13 @@ Own editing-facing property-block views over painter file state.
 - `interp_move.rs`
   - the move channel's real resolver: hold / interpolate (with ease-bent lerped offset) / edge-locked loops, plus the shared `empty_progress` ease model the raster channel reuses
 - `interp_raster.rs`
-  - the raster channel's real resolver: hold / interpolate / edge-locked loops over keyframe canvases. Blending matches cells by grid position; flat RGB and weight lerp continuously, the discrete graphic (and material colors) hard-cutoff at the halfway crossing, and one-sided cells show during the half their side is active with their weight fading toward Zero (a fade approximation — weight Zero still renders)
+  - the raster channel's real resolver: hold / interpolate / edge-locked loops over keyframe canvases. Blending matches cells by grid position; flat RGB lerps then resolves to the nearest indexed palette color, weight lerps continuously, the discrete graphic (and material colors) hard-cutoff at the halfway crossing, and one-sided cells show during the half their side is active with their weight fading toward Zero (a fade approximation — weight Zero still renders)
 - `pieces/`
   - bar-piece classification: `BarPiece` (single / left head / right head / center) × `CellType` (empty/solid) per breath, the `BreathBar` shape trait, and the covering `BarCell` lookup
 
 ## dependencies
 - `thaum-painter/domain/file/`
+- `thaum-painter/domain/painter-session/paint-color/`
 
 ## exposed interfaces
 ### block lookup
@@ -66,7 +67,7 @@ via: `span_end_breath`, `breath_in_span`, `pushed_breath_span`, `destructive_bre
   - validates mode/ease cycling, edge locking, glyphs, and the move resolver's hold/interpolate/loop behavior over authored tracks
 - inline `#[cfg(test)]` in `interp_raster.rs`
   - light
-  - validates canvas blending (color/weight lerp, halfway graphic cutoff, half-span one-sided cells, authored blanks as absent), the per-mode resolution over authored tracks, and loop replay
+  - validates canvas blending (flat-color palette resolution after RGB lerp, weight lerp, halfway graphic cutoff, half-span one-sided cells, authored blanks as absent), the per-mode resolution over authored tracks, and loop replay
 
 ## data
 - none

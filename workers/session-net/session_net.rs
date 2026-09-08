@@ -15,9 +15,9 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::session_client::{SessionClient, SessionClientError};
 use crate::session_host::{SessionHost, SessionUser};
 use crate::session_host_tcp::{spawn_session_host_server, SessionHostServer};
-use crate::session_client::{SessionClient, SessionClientError};
 use thaum_painter_domain::storage::{
     SharedDocumentActionRecord, SharedDocumentFile, SharedDocumentRuntime,
 };
@@ -60,7 +60,10 @@ impl SessionNet {
 
     /// Joins a host. Returns the net seam plus the host's snapshot document —
     /// the caller rebuilds its runtime from it before the first sync.
-    pub fn join(address: &str, user: SessionUser) -> Result<(Self, SharedDocumentFile), SessionClientError> {
+    pub fn join(
+        address: &str,
+        user: SessionUser,
+    ) -> Result<(Self, SharedDocumentFile), SessionClientError> {
         let (client, snapshot) = SessionClient::connect(address, user)?;
         Ok((Self::Client { client }, snapshot))
     }
@@ -82,7 +85,9 @@ impl SessionNet {
     pub fn publish(&self, record: SharedDocumentActionRecord) -> Result<(), String> {
         match self {
             Self::Host { host, .. } => {
-                host.lock().expect("session host lock").apply_local_record(record);
+                host.lock()
+                    .expect("session host lock")
+                    .apply_local_record(record);
                 Ok(())
             }
             Self::Client { client } => client
@@ -97,7 +102,12 @@ impl SessionNet {
     /// side effect on the client side.
     pub fn sync(&mut self, runtime: &mut SharedDocumentRuntime) -> Result<usize, String> {
         match self {
-            Self::Host { host, user_id, consumed, .. } => {
+            Self::Host {
+                host,
+                user_id,
+                consumed,
+                ..
+            } => {
                 let host = host.lock().expect("session host lock");
                 let records = host.records();
                 let mut applied = 0;
@@ -111,9 +121,7 @@ impl SessionNet {
                 }
                 Ok(applied)
             }
-            Self::Client { client } => {
-                client.sync(runtime).map_err(|error| error.to_string())
-            }
+            Self::Client { client } => client.sync(runtime).map_err(|error| error.to_string()),
         }
     }
 
@@ -175,7 +183,8 @@ pub fn session_net_boot_from_env() -> SessionNetBoot {
         let port = if host.is_empty() || host == "1" {
             crate::session_host_tcp::DEFAULT_SESSION_HOST_PORT
         } else {
-            host.parse().unwrap_or(crate::session_host_tcp::DEFAULT_SESSION_HOST_PORT)
+            host.parse()
+                .unwrap_or(crate::session_host_tcp::DEFAULT_SESSION_HOST_PORT)
         };
         return SessionNetBoot::Host(port);
     }
@@ -188,7 +197,10 @@ pub fn join_address(raw: &str) -> String {
     if raw.contains(':') {
         raw.to_string()
     } else {
-        format!("{raw}:{}", crate::session_host_tcp::DEFAULT_SESSION_HOST_PORT)
+        format!(
+            "{raw}:{}",
+            crate::session_host_tcp::DEFAULT_SESSION_HOST_PORT
+        )
     }
 }
 
@@ -203,7 +215,11 @@ mod tests {
     use thaum_renderer_domain::{CellGraphic, CellPoint};
 
     fn user(id: &str) -> SessionUser {
-        SessionUser { user_id: id.into(), display_name: id.into(), presence_color: [1, 2, 3] }
+        SessionUser {
+            user_id: id.into(),
+            display_name: id.into(),
+            presence_color: [1, 2, 3],
+        }
     }
 
     fn paint(color: (u8, u8, u8)) -> PaintedCell {
@@ -214,14 +230,24 @@ mod tests {
         }
     }
 
-    fn stroke(net: &SessionNet, runtime: &SharedDocumentRuntime, action_id: &str, x: i32, color: (u8, u8, u8)) -> SharedDocumentActionRecord {
+    fn stroke(
+        net: &SessionNet,
+        runtime: &SharedDocumentRuntime,
+        action_id: &str,
+        x: i32,
+        color: (u8, u8, u8),
+    ) -> SharedDocumentActionRecord {
         SharedDocumentActionRecord::cell_patch_set(
             action_id.to_string(),
             runtime.document.document_id.clone(),
             "layer-1".to_string(),
             net.user_id().to_string(),
             "t".to_string(),
-            vec![SharedCellPatch::new(CellPoint { x, y: 0, z: 0 }, None, Some(&paint(color)))],
+            vec![SharedCellPatch::new(
+                CellPoint { x, y: 0, z: 0 },
+                None,
+                Some(&paint(color)),
+            )],
             None,
         )
     }
@@ -235,7 +261,11 @@ mod tests {
     }
 
     /// Wire hops are async; poll sync until the expected count lands.
-    fn sync_for(net: &mut SessionNet, runtime: &mut SharedDocumentRuntime, expected: usize) -> usize {
+    fn sync_for(
+        net: &mut SessionNet,
+        runtime: &mut SharedDocumentRuntime,
+        expected: usize,
+    ) -> usize {
         let mut applied = 0;
         for _ in 0..100 {
             applied += net.sync(runtime).unwrap();

@@ -27,9 +27,8 @@ const KEEP_RUN_LOG_DIRS: usize = 5;
 pub fn boot(painter_root: &Path) -> Option<PathBuf> {
     let run_dir = prepare_run_log_dir(painter_root).ok();
 
-    let mut config = debug_log::DebugLogConfig::from_env_value(
-        std::env::var("THAUM_DEBUG").ok().as_deref(),
-    );
+    let mut config =
+        debug_log::DebugLogConfig::from_env_value(std::env::var("THAUM_DEBUG").ok().as_deref());
     if !config.enabled {
         // Always-on run log: Info floor to the file when no env override asks
         // for something else. Warn/Error still reach the console either way.
@@ -119,8 +118,7 @@ fn is_run_log_stamp(name: &str) -> bool {
     let [year, month, day, hour, minute, second] = fields.as_slice() else {
         return false;
     };
-    let (year, month, day, hour, minute, second) =
-        (*year, *month, *day, *hour, *minute, *second);
+    let (year, month, day, hour, minute, second) = (*year, *month, *day, *hour, *minute, *second);
     let base_valid = year >= 1000
         && (1..=12).contains(&month)
         && (1..=31).contains(&day)
@@ -182,10 +180,7 @@ fn install_panic_hook() {
             "unknown panic payload".to_string()
         };
         let backtrace = std::backtrace::Backtrace::force_capture();
-        debug_log::error(
-            "panic",
-            &format!("{payload} at {location}\n{backtrace}"),
-        );
+        debug_log::error("panic", &format!("{payload} at {location}\n{backtrace}"));
     }));
 }
 

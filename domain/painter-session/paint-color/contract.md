@@ -5,6 +5,7 @@ Own painter's live color choice shape so hand state and painted cells can carry 
 
 ## owns
 - the `PaintColor` type
+- painter's indexed palette and nearest-indexed-color resolution
 - conversion from painter color choice into renderer `CellColor`
 - painter-side preview rgb for UI swatches and labels
 
@@ -19,6 +20,8 @@ Own painter's live color choice shape so hand state and painted cells can carry 
 ## contents
 - `paint_color.rs`
   - `PaintColor` and conversion helpers
+- `indexed_palette.rs`
+  - painter's 37-color indexed palette plus deterministic nearest-color resolution
 
 ## dependencies
 - `thaum-renderer/domain/cell-color/`
@@ -26,6 +29,8 @@ Own painter's live color choice shape so hand state and painted cells can carry 
 
 ## exposed interfaces
 - `PaintColor::flat_rgb(red, green, blue)`
+- `legacy_indexed_palette()`
+- `nearest_indexed_rgb(rgb)`
 - `PaintColor::material(material)`
 - `PaintColor::to_cell_color()`
 - `PaintColor::preview_rgb()`
@@ -35,6 +40,7 @@ Own painter's live color choice shape so hand state and painted cells can carry 
 - `thaum-painter/domain/painter-session/tool-state/`
 - `thaum-painter/domain/painter-operations/`
 - painter UI modules needing a live color preview
+- `thaum-painter/domain/painter-document/properties/` for indexed raster interpolation
 
 ## artifacts
 - none

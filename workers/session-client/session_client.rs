@@ -78,8 +78,7 @@ impl SessionClient {
     pub fn connect(
         address: &str,
         user: SessionUser,
-    ) -> Result<(Self, thaum_painter_domain::storage::SharedDocumentFile), SessionClientError>
-    {
+    ) -> Result<(Self, thaum_painter_domain::storage::SharedDocumentFile), SessionClientError> {
         Self::connect_inner(address, user).map_err(|error| match error {
             JoinError::Io(error) => SessionClientError::Io(error),
             JoinError::Denied(reason) => SessionClientError::Denied(reason),
@@ -88,12 +87,13 @@ impl SessionClient {
         })
     }
 
-    fn connect_inner(address: &str, user: SessionUser) -> Result<(Self, thaum_painter_domain::storage::SharedDocumentFile), JoinError> {
+    fn connect_inner(
+        address: &str,
+        user: SessionUser,
+    ) -> Result<(Self, thaum_painter_domain::storage::SharedDocumentFile), JoinError> {
         let stream = TcpStream::connect(address)?;
         stream.set_nodelay(true).ok();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .ok();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
 
         // Handshake: synchronous, loud, and finished before any threads spawn.
         let mut reader = BufReader::new(stream.try_clone()?);
@@ -112,9 +112,11 @@ impl SessionClient {
         let (snapshot, _log_length, roster) = loop {
             let message: HostMessage = read_message(&mut reader)?;
             match message {
-                HostMessage::Welcome { snapshot, log_length, roster } => {
-                    break (snapshot, log_length, roster)
-                }
+                HostMessage::Welcome {
+                    snapshot,
+                    log_length,
+                    roster,
+                } => break (snapshot, log_length, roster),
                 HostMessage::Denied { reason } => {
                     let _ = stream.shutdown(Shutdown::Both);
                     return Err(JoinError::Denied(reason));
@@ -126,8 +128,7 @@ impl SessionClient {
         stream.set_read_timeout(None).ok();
 
         let connected = Arc::new(AtomicBool::new(true));
-        let inbound: Arc<Mutex<VecDeque<HostMessage>>> =
-            Arc::new(Mutex::new(VecDeque::new()));
+        let inbound: Arc<Mutex<VecDeque<HostMessage>>> = Arc::new(Mutex::new(VecDeque::new()));
 
         // Reader thread: wire -> inbound queue. It takes over the handshake's
         // BufReader itself — a fresh reader could lose lines the handshake
@@ -146,9 +147,10 @@ impl SessionClient {
                         Ok(_) => {}
                     }
                     match serde_json::from_str::<HostMessage>(line.trim()) {
-                        Ok(message) => {
-                            reader_inbound.lock().expect("inbound lock").push_back(message)
-                        }
+                        Ok(message) => reader_inbound
+                            .lock()
+                            .expect("inbound lock")
+                            .push_back(message),
                         Err(_) => break, // garbage on the wire: lose the connection loudly
                     }
                 }
@@ -199,8 +201,12 @@ impl SessionClient {
             return Err(SessionClientError::Disconnected);
         }
         let mut applied = 0;
-        let messages: Vec<HostMessage> =
-            self.inbound.lock().expect("inbound lock").drain(..).collect();
+        let messages: Vec<HostMessage> = self
+            .inbound
+            .lock()
+            .expect("inbound lock")
+            .drain(..)
+            .collect();
         for message in messages {
             match message {
                 HostMessage::Record { record } => {
@@ -232,7 +238,10 @@ impl SessionClient {
     /// Ship one record the caller already applied locally and appended to its
     /// own log (the canonical apply-then-ship flow — revert records included;
     /// the caller's history stacks were mutated by the undo/redo itself).
-    pub fn send_action(&self, record: SharedDocumentActionRecord) -> Result<(), SessionClientError> {
+    pub fn send_action(
+        &self,
+        record: SharedDocumentActionRecord,
+    ) -> Result<(), SessionClientError> {
         self.send(ClientMessage::Action { record })
     }
 
@@ -330,7 +339,9 @@ mod tests {
     use std::sync::{Arc, Mutex as StdMutex};
     use thaum_painter_domain::brush::PaintedCell;
     use thaum_painter_domain::paint_color::PaintColor;
-    use thaum_painter_domain::storage::{SharedCellPatch, SharedDocumentFile, SharedDocumentActionRecord};
+    use thaum_painter_domain::storage::{
+        SharedCellPatch, SharedDocumentActionRecord, SharedDocumentFile,
+    };
     use thaum_renderer_domain::{CellGraphic, CellPoint};
 
     fn spawn_host() -> (Arc<StdMutex<SessionHost>>, SessionHostServer) {
@@ -339,8 +350,7 @@ mod tests {
             SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1")
         }));
         let host = Arc::new(StdMutex::new(host));
-        let server =
-            spawn_session_host_server(Arc::clone(&host), 0).expect("bind ephemeral port");
+        let server = spawn_session_host_server(Arc::clone(&host), 0).expect("bind ephemeral port");
         (host, server)
     }
 
@@ -360,12 +370,13 @@ mod tests {
 
     impl TestPeer {
         fn connect(port: u16, id: &str) -> Self {
-            let (client, snapshot) = SessionClient::connect(
-                &format!("127.0.0.1:{port}"),
-                session_user(id),
-            )
-            .expect("client joins");
-            Self { client, runtime: SharedDocumentRuntime::new(snapshot) }
+            let (client, snapshot) =
+                SessionClient::connect(&format!("127.0.0.1:{port}"), session_user(id))
+                    .expect("client joins");
+            Self {
+                client,
+                runtime: SharedDocumentRuntime::new(snapshot),
+            }
         }
 
         /// The canonical apply-then-ship publish flow.
@@ -399,7 +410,12 @@ mod tests {
                 .len()
         }
 
-        fn stroke(&self, action_id: &str, position: CellPoint, color: (u8, u8, u8)) -> SharedDocumentActionRecord {
+        fn stroke(
+            &self,
+            action_id: &str,
+            position: CellPoint,
+            color: (u8, u8, u8),
+        ) -> SharedDocumentActionRecord {
             SharedDocumentActionRecord::cell_patch_set(
                 action_id.to_string(),
                 self.runtime.document.document_id.clone(),
@@ -515,7 +531,8 @@ mod tests {
     fn duplicate_identity_join_is_denied_loudly() {
         let (_host, server) = spawn_host();
         let alice = TestPeer::connect(server.port, "alice");
-        let result = SessionClient::connect(&format!("127.0.0.1:{}", server.port), session_user("alice"));
+        let result =
+            SessionClient::connect(&format!("127.0.0.1:{}", server.port), session_user("alice"));
         match result {
             Err(SessionClientError::Denied(reason)) => assert_eq!(reason, "user-id-in-use"),
             Err(other) => panic!("expected denied, got {other}"),

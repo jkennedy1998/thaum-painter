@@ -37,13 +37,20 @@ pub struct SessionUser {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum ClientMessage {
-    Hello { user: SessionUser, protocol_version: u32 },
+    Hello {
+        user: SessionUser,
+        protocol_version: u32,
+    },
     /// Any `SharedDocumentActionRecord`. Opaque to the host: it is appended at
     /// arrival order and broadcast verbatim.
-    Action { record: SharedDocumentActionRecord },
+    Action {
+        record: SharedDocumentActionRecord,
+    },
     /// Presence rides this channel, never the record log. Cursor is in cell
     /// space, matching `CellPoint` (x, y, z).
-    Presence { cursor: Option<[i32; 3]> },
+    Presence {
+        cursor: Option<[i32; 3]>,
+    },
     Ping,
 }
 
@@ -52,11 +59,24 @@ pub enum ClientMessage {
 pub enum HostMessage {
     /// Fresh copy of the document + how many records predate the joiner. The
     /// joiner resets its runtime from the snapshot, then applies live records.
-    Welcome { snapshot: SharedDocumentFile, log_length: u64, roster: Vec<SessionUser> },
-    Record { record: SharedDocumentActionRecord },
-    Presence { user_id: String, cursor: Option<[i32; 3]> },
-    Roster { users: Vec<SessionUser> },
-    Denied { reason: String },
+    Welcome {
+        snapshot: SharedDocumentFile,
+        log_length: u64,
+        roster: Vec<SessionUser>,
+    },
+    Record {
+        record: SharedDocumentActionRecord,
+    },
+    Presence {
+        user_id: String,
+        cursor: Option<[i32; 3]>,
+    },
+    Roster {
+        users: Vec<SessionUser>,
+    },
+    Denied {
+        reason: String,
+    },
     Pong,
 }
 
@@ -106,10 +126,7 @@ impl SessionHost {
 
     /// The owning painter app supplies the current document at join time; the
     /// host itself never touches document semantics.
-    pub fn set_snapshot_source(
-        &mut self,
-        source: Box<dyn Fn() -> SharedDocumentFile + Send>,
-    ) {
+    pub fn set_snapshot_source(&mut self, source: Box<dyn Fn() -> SharedDocumentFile + Send>) {
         self.snapshot_source = Some(source);
     }
 
@@ -118,11 +135,16 @@ impl SessionHost {
     }
 
     pub fn roster(&self) -> Vec<SessionUser> {
-        self.clients.iter().map(|client| client.user.clone()).collect()
+        self.clients
+            .iter()
+            .map(|client| client.user.clone())
+            .collect()
     }
 
     pub fn is_connected(&self, user_id: &str) -> bool {
-        self.clients.iter().any(|client| client.user.user_id == user_id)
+        self.clients
+            .iter()
+            .any(|client| client.user.user_id == user_id)
     }
 
     pub fn cursor(&self, user_id: &str) -> Option<[i32; 3]> {
@@ -137,7 +159,10 @@ impl SessionHost {
         message: ClientMessage,
     ) -> Result<(), ClientRejection> {
         match message {
-            ClientMessage::Hello { user, protocol_version } => {
+            ClientMessage::Hello {
+                user,
+                protocol_version,
+            } => {
                 if protocol_version != SESSION_PROTOCOL_VERSION {
                     return Err(ClientRejection::ProtocolVersion);
                 }
@@ -157,11 +182,14 @@ impl SessionHost {
                     outgoing: VecDeque::new(),
                 });
                 self.cursors.insert(user.user_id.clone(), None);
-                self.queue_to(&user.user_id, HostMessage::Welcome {
-                    snapshot,
-                    log_length,
-                    roster: self.roster(),
-                });
+                self.queue_to(
+                    &user.user_id,
+                    HostMessage::Welcome {
+                        snapshot,
+                        log_length,
+                        roster: self.roster(),
+                    },
+                );
                 // Full-log replay: the joiner's snapshot is the document as of
                 // host-log start, so it applies every historical record from
                 // cursor 0 (Figma's fresh-copy-plus-replay convergence).
@@ -171,7 +199,9 @@ impl SessionHost {
                 }
                 self.broadcast_others(
                     &user.user_id,
-                    HostMessage::Roster { users: self.roster() },
+                    HostMessage::Roster {
+                        users: self.roster(),
+                    },
                 );
                 Ok(())
             }
@@ -192,7 +222,10 @@ impl SessionHost {
                 self.cursors.insert(user_id.to_string(), cursor);
                 self.broadcast_others(
                     user_id,
-                    HostMessage::Presence { user_id: user_id.to_string(), cursor },
+                    HostMessage::Presence {
+                        user_id: user_id.to_string(),
+                        cursor,
+                    },
                 );
                 Ok(())
             }
@@ -211,7 +244,12 @@ impl SessionHost {
     pub fn disconnect(&mut self, user_id: &str) {
         self.clients.retain(|client| client.user.user_id != user_id);
         self.cursors.remove(user_id);
-        self.broadcast_others(user_id, HostMessage::Roster { users: self.roster() });
+        self.broadcast_others(
+            user_id,
+            HostMessage::Roster {
+                users: self.roster(),
+            },
+        );
     }
 
     /// The host user's own edits: the local app already applied the record
@@ -220,21 +258,29 @@ impl SessionHost {
     pub fn apply_local_record(&mut self, record: SharedDocumentActionRecord) {
         self.records.push(record.clone());
         for client in &mut self.clients {
-            client.outgoing.push_back(HostMessage::Record { record: record.clone() });
+            client.outgoing.push_back(HostMessage::Record {
+                record: record.clone(),
+            });
         }
     }
 
     /// Drains one client's queued messages (the transport's read side).
     pub fn take_outgoing(&mut self, user_id: &str) -> Vec<HostMessage> {
-        match self.clients.iter_mut().find(|client| client.user.user_id == user_id) {
+        match self
+            .clients
+            .iter_mut()
+            .find(|client| client.user.user_id == user_id)
+        {
             Some(client) => client.outgoing.drain(..).collect(),
             None => Vec::new(),
         }
     }
 
     fn queue_to(&mut self, user_id: &str, message: HostMessage) {
-        if let Some(client) =
-            self.clients.iter_mut().find(|client| client.user.user_id == user_id)
+        if let Some(client) = self
+            .clients
+            .iter_mut()
+            .find(|client| client.user.user_id == user_id)
         {
             client.outgoing.push_back(message);
         }
@@ -274,10 +320,13 @@ mod tests {
     }
 
     fn hello(host: &mut SessionHost, id: &str) {
-        host.handle_client_message(id, ClientMessage::Hello {
-            user: user(id),
-            protocol_version: SESSION_PROTOCOL_VERSION,
-        })
+        host.handle_client_message(
+            id,
+            ClientMessage::Hello {
+                user: user(id),
+                protocol_version: SESSION_PROTOCOL_VERSION,
+            },
+        )
         .expect("hello accepted");
     }
 
@@ -288,7 +337,11 @@ mod tests {
             "layer-1".to_string(),
             user_id.to_string(),
             "t".to_string(),
-            vec![SharedCellPatch::new(CellPoint { x, y: 0, z: 0 }, None, None)],
+            vec![SharedCellPatch::new(
+                CellPoint { x, y: 0, z: 0 },
+                None,
+                None,
+            )],
             None,
         )
     }
@@ -303,7 +356,11 @@ mod tests {
         let bob_out = host.take_outgoing("bob");
         assert_eq!(bob_out.len(), 1);
         match &bob_out[0] {
-            HostMessage::Welcome { snapshot, log_length, roster } => {
+            HostMessage::Welcome {
+                snapshot,
+                log_length,
+                roster,
+            } => {
                 assert_eq!(snapshot.document_id, snapshot_document().document_id);
                 assert_eq!(*log_length, 0);
                 assert_eq!(roster.len(), 2);
@@ -312,7 +369,12 @@ mod tests {
         }
 
         let alice_out = host.take_outgoing("alice");
-        assert_eq!(alice_out, vec![HostMessage::Roster { users: host.roster() }]);
+        assert_eq!(
+            alice_out,
+            vec![HostMessage::Roster {
+                users: host.roster()
+            }]
+        );
     }
 
     #[test]
@@ -323,12 +385,27 @@ mod tests {
         host.take_outgoing("alice");
         host.take_outgoing("bob");
 
-        host.handle_client_message("alice", ClientMessage::Action { record: stroke("a-1", "alice", 0) })
-            .unwrap();
-        host.handle_client_message("bob", ClientMessage::Action { record: stroke("b-1", "bob", 1) })
-            .unwrap();
-        host.handle_client_message("alice", ClientMessage::Action { record: stroke("a-2", "alice", 2) })
-            .unwrap();
+        host.handle_client_message(
+            "alice",
+            ClientMessage::Action {
+                record: stroke("a-1", "alice", 0),
+            },
+        )
+        .unwrap();
+        host.handle_client_message(
+            "bob",
+            ClientMessage::Action {
+                record: stroke("b-1", "bob", 1),
+            },
+        )
+        .unwrap();
+        host.handle_client_message(
+            "alice",
+            ClientMessage::Action {
+                record: stroke("a-2", "alice", 2),
+            },
+        )
+        .unwrap();
 
         assert_eq!(host.records().len(), 3);
         assert_eq!(host.records()[0].action_id, "a-1");
@@ -338,12 +415,24 @@ mod tests {
         let alice_out = host.take_outgoing("alice");
         assert_eq!(
             alice_out,
-            vec![HostMessage::Record { record: stroke("b-1", "bob", 1) }]
+            vec![HostMessage::Record {
+                record: stroke("b-1", "bob", 1)
+            }]
         );
         let bob_out = host.take_outgoing("bob");
         assert_eq!(bob_out.len(), 2);
-        assert_eq!(bob_out[0], HostMessage::Record { record: stroke("a-1", "alice", 0) });
-        assert_eq!(bob_out[1], HostMessage::Record { record: stroke("a-2", "alice", 2) });
+        assert_eq!(
+            bob_out[0],
+            HostMessage::Record {
+                record: stroke("a-1", "alice", 0)
+            }
+        );
+        assert_eq!(
+            bob_out[1],
+            HostMessage::Record {
+                record: stroke("a-2", "alice", 2)
+            }
+        );
     }
 
     #[test]
@@ -354,13 +443,21 @@ mod tests {
         host.take_outgoing("alice");
         host.take_outgoing("bob");
 
-        host.handle_client_message("alice", ClientMessage::Presence { cursor: Some([3, 4, 0]) })
-            .unwrap();
+        host.handle_client_message(
+            "alice",
+            ClientMessage::Presence {
+                cursor: Some([3, 4, 0]),
+            },
+        )
+        .unwrap();
         assert!(host.records().is_empty());
         assert_eq!(host.cursor("alice"), Some([3, 4, 0]));
         assert_eq!(
             host.take_outgoing("bob"),
-            vec![HostMessage::Presence { user_id: "alice".into(), cursor: Some([3, 4, 0]) }]
+            vec![HostMessage::Presence {
+                user_id: "alice".into(),
+                cursor: Some([3, 4, 0])
+            }]
         );
     }
 
@@ -370,7 +467,10 @@ mod tests {
         assert_eq!(
             host.handle_client_message(
                 "alice",
-                ClientMessage::Hello { user: user("alice"), protocol_version: 0 }
+                ClientMessage::Hello {
+                    user: user("alice"),
+                    protocol_version: 0
+                }
             ),
             Err(ClientRejection::ProtocolVersion)
         );
@@ -378,7 +478,10 @@ mod tests {
         assert_eq!(
             host.handle_client_message(
                 "alice",
-                ClientMessage::Hello { user: user("alice"), protocol_version: SESSION_PROTOCOL_VERSION }
+                ClientMessage::Hello {
+                    user: user("alice"),
+                    protocol_version: SESSION_PROTOCOL_VERSION
+                }
             ),
             Err(ClientRejection::DuplicateUserId)
         );
@@ -387,7 +490,12 @@ mod tests {
             Err(ClientRejection::NotJoined)
         );
         assert_eq!(
-            host.handle_client_message("ghost", ClientMessage::Action { record: stroke("g-1", "ghost", 0) }),
+            host.handle_client_message(
+                "ghost",
+                ClientMessage::Action {
+                    record: stroke("g-1", "ghost", 0)
+                }
+            ),
             Err(ClientRejection::NotJoined)
         );
     }
@@ -398,7 +506,10 @@ mod tests {
         assert_eq!(
             host.handle_client_message(
                 "alice",
-                ClientMessage::Hello { user: user("bob"), protocol_version: SESSION_PROTOCOL_VERSION }
+                ClientMessage::Hello {
+                    user: user("bob"),
+                    protocol_version: SESSION_PROTOCOL_VERSION
+                }
             ),
             Err(ClientRejection::NotJoined)
         );
@@ -410,7 +521,10 @@ mod tests {
         assert_eq!(
             host.handle_client_message(
                 "alice",
-                ClientMessage::Hello { user: user("alice"), protocol_version: SESSION_PROTOCOL_VERSION }
+                ClientMessage::Hello {
+                    user: user("alice"),
+                    protocol_version: SESSION_PROTOCOL_VERSION
+                }
             ),
             Err(ClientRejection::SnapshotUnavailable)
         );
@@ -423,8 +537,13 @@ mod tests {
         hello(&mut host, "bob");
         host.take_outgoing("alice");
         host.take_outgoing("bob");
-        host.handle_client_message("bob", ClientMessage::Action { record: stroke("b-1", "bob", 1) })
-            .unwrap();
+        host.handle_client_message(
+            "bob",
+            ClientMessage::Action {
+                record: stroke("b-1", "bob", 1),
+            },
+        )
+        .unwrap();
         assert_eq!(host.take_outgoing("alice").len(), 1); // the Record
 
         host.disconnect("bob");
@@ -433,7 +552,9 @@ mod tests {
         assert_eq!(host.records().len(), 1);
         assert_eq!(
             host.take_outgoing("alice"),
-            vec![HostMessage::Roster { users: host.roster() }]
+            vec![HostMessage::Roster {
+                users: host.roster()
+            }]
         );
     }
 
@@ -450,11 +571,15 @@ mod tests {
         assert_eq!(host.records()[0].action_id, "host-1");
         assert_eq!(
             host.take_outgoing("alice"),
-            vec![HostMessage::Record { record: stroke("host-1", "host-user", 3) }]
+            vec![HostMessage::Record {
+                record: stroke("host-1", "host-user", 3)
+            }]
         );
         assert_eq!(
             host.take_outgoing("bob"),
-            vec![HostMessage::Record { record: stroke("host-1", "host-user", 3) }]
+            vec![HostMessage::Record {
+                record: stroke("host-1", "host-user", 3)
+            }]
         );
     }
 
@@ -463,18 +588,27 @@ mod tests {
         let mut host = host();
         hello(&mut host, "alice");
         host.take_outgoing("alice");
-        host.handle_client_message("alice", ClientMessage::Ping).unwrap();
+        host.handle_client_message("alice", ClientMessage::Ping)
+            .unwrap();
         assert_eq!(host.take_outgoing("alice"), vec![HostMessage::Pong]);
     }
 
     #[test]
     fn protocol_round_trips_through_json() {
-        let message = ClientMessage::Hello { user: user("alice"), protocol_version: SESSION_PROTOCOL_VERSION };
+        let message = ClientMessage::Hello {
+            user: user("alice"),
+            protocol_version: SESSION_PROTOCOL_VERSION,
+        };
         let text = serde_json::to_string(&message).unwrap();
-        assert_eq!(serde_json::from_str::<ClientMessage>(&text).unwrap(), message);
+        assert_eq!(
+            serde_json::from_str::<ClientMessage>(&text).unwrap(),
+            message
+        );
 
         let record = stroke("a-1", "alice", 5);
-        let message = HostMessage::Record { record: record.clone() };
+        let message = HostMessage::Record {
+            record: record.clone(),
+        };
         let text = serde_json::to_string(&message).unwrap();
         assert_eq!(serde_json::from_str::<HostMessage>(&text).unwrap(), message);
     }

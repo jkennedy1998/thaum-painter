@@ -9,7 +9,8 @@
 //!   one from the loaded typeface), matched cells' graphics resolve through the
 //!   renderer's gradient tour instead of the halfway cutoff — see
 //!   `thaum-renderer/domain/cell-graphic/shape-fade`. Per cell, matched by grid position:
-//!   - **color** (flat RGB) lerps channel-by-channel — continuous, the easy part.
+//!   - **color** (flat RGB) lerps channel-by-channel, then resolves to the
+//!     nearest indexed palette color.
 //!   - **weight** lerps numerically — continuous, the other easy part.
 //!   - **graphic** (the character / sprite) is discrete: a hard cutoff at the halfway
 //!     crossing. The first half of the transition shows the previous keyframe's
@@ -34,6 +35,7 @@ use thaum_renderer_domain::CellGraphic;
 
 use crate::brush::{effective_cell, Canvas, PaintedCell};
 use crate::interp_move;
+use crate::legacy_indexed_palette::nearest_indexed_rgb;
 use crate::paint_color::PaintColor;
 use crate::storage::SharedDocumentPropertyBlock;
 
@@ -171,9 +173,15 @@ fn resolve_loop(
 /// Blends two keyframe canvases at `progress` (0 = fully `from`, 1 = fully
 /// `to`). Cells match by grid position; authored blanks count as absent via
 /// the unified empty-cell read seam. See the module header for per-channel
-/// rules: continuous color/weight lerp, discrete graphic/material cutoff at
-/// the halfway crossing, and half-span appear/disappear for one-sided cells.
-pub fn blend_canvases(from: &Canvas, to: &Canvas, progress: f32, graphic_fade: Option<&ShapeFade>) -> Canvas {
+/// rules: flat RGB lerp then palette resolution, continuous weight lerp,
+/// discrete graphic/material cutoff at the halfway crossing, and half-span
+/// appear/disappear for one-sided cells.
+pub fn blend_canvases(
+    from: &Canvas,
+    to: &Canvas,
+    progress: f32,
+    graphic_fade: Option<&ShapeFade>,
+) -> Canvas {
     let progress = progress.clamp(0.0, 1.0);
     let from_active = progress < 0.5;
     let mut blended = Canvas::new();
@@ -183,7 +191,10 @@ pub fn blend_canvases(from: &Canvas, to: &Canvas, progress: f32, graphic_fade: O
         let to_cell = effective_cell(to.get(position));
         match (from_cell, to_cell) {
             (Some(a), Some(b)) => {
-                blended.insert(*position, blend_cells(a, b, progress, from_active, graphic_fade));
+                blended.insert(
+                    *position,
+                    blend_cells(a, b, progress, from_active, graphic_fade),
+                );
             }
             (Some(a), None) if from_active => {
                 let mut faded = a.clone();
@@ -260,15 +271,20 @@ fn resolve_graphic(
     }
 }
 
-/// Flat RGB lerps channel-by-channel; anything else (material colors) is
-/// discrete and rides the graphic's halfway cutoff.
+/// Flat RGB lerps channel-by-channel, then snaps to the indexed palette so
+/// interpolated raster content never creates a color outside that system.
+/// Anything else (material colors) is discrete and rides the graphic's halfway
+/// cutoff.
 fn blend_colors(from: PaintColor, to: PaintColor, progress: f32, from_active: bool) -> PaintColor {
     match (from, to) {
-        (PaintColor::FlatRgb(r1, g1, b1), PaintColor::FlatRgb(r2, g2, b2)) => PaintColor::FlatRgb(
-            lerp_channel(r1, r2, progress),
-            lerp_channel(g1, g2, progress),
-            lerp_channel(b1, b2, progress),
-        ),
+        (PaintColor::FlatRgb(r1, g1, b1), PaintColor::FlatRgb(r2, g2, b2)) => {
+            let [red, green, blue] = nearest_indexed_rgb([
+                lerp_channel(r1, r2, progress),
+                lerp_channel(g1, g2, progress),
+                lerp_channel(b1, b2, progress),
+            ]);
+            PaintColor::FlatRgb(red, green, blue)
+        }
         (from, to) => {
             if from_active {
                 from
@@ -293,6 +309,7 @@ fn lerp_weight(from: i64, to: i64, progress: f32) -> i64 {
 mod tests {
     use super::*;
     use crate::brush::write_cell;
+    use crate::legacy_indexed_palette::legacy_indexed_palette;
     use crate::paint_color::PaintColor;
     use serde_json::json;
     use thaum_renderer_domain::{CellGraphic, CellMaterialId, CellPoint};
@@ -351,25 +368,38 @@ mod tests {
     }
 
     #[test]
-    fn matched_cells_lerp_color_and_weight_but_cut_the_graphic_at_the_halfway_crossing() {
-        let from = canvas_with(&[(point(1, 1), cell('a', PaintColor::flat_rgb(0, 0, 0), 0))]);
+    fn matched_cells_snap_interpolated_color_to_the_palette_and_cut_the_graphic_at_halfway() {
+        let [from_red, from_green, from_blue] = legacy_indexed_palette()[0];
+        let [to_red, to_green, to_blue] = legacy_indexed_palette()[24];
+        let from = canvas_with(&[(
+            point(1, 1),
+            cell(
+                'a',
+                PaintColor::flat_rgb(from_red, from_green, from_blue),
+                0,
+            ),
+        )]);
         let to = canvas_with(&[(
             point(1, 1),
-            cell('b', PaintColor::flat_rgb(100, 200, 40), 4),
+            cell('b', PaintColor::flat_rgb(to_red, to_green, to_blue), 4),
         )]);
-        // First half: previous keyframe's graphic, color/weight already blending.
+        // First half: previous keyframe's graphic, a palette color, and blended weight.
         let first_half = blend_canvases(&from, &to, 0.25, None);
         let blended = first_half.get(&point(1, 1)).unwrap();
         assert_eq!(blended.graphic, CellGraphic::Glyph('a'));
-        assert_eq!(blended.color, PaintColor::flat_rgb(25, 50, 10));
+        assert!(
+            matches!(blended.color, PaintColor::FlatRgb(red, green, blue) if legacy_indexed_palette().contains(&[red, green, blue]))
+        );
         assert_eq!(blended.weight_index, 1);
-        // Second half: next keyframe's graphic, blend continues.
+        // Second half: next keyframe's graphic, still a palette color.
         let second_half = blend_canvases(&from, &to, 0.75, None);
         let blended = second_half.get(&point(1, 1)).unwrap();
         assert_eq!(blended.graphic, CellGraphic::Glyph('b'));
-        assert_eq!(blended.color, PaintColor::flat_rgb(75, 150, 30));
+        assert!(
+            matches!(blended.color, PaintColor::FlatRgb(red, green, blue) if legacy_indexed_palette().contains(&[red, green, blue]))
+        );
         assert_eq!(blended.weight_index, 3);
-        // The ends resolve exactly.
+        // Palette endpoints still resolve exactly.
         assert_eq!(blend_canvases(&from, &to, 0.0, None), from);
         assert_eq!(blend_canvases(&from, &to, 1.0, None), to);
     }
@@ -505,7 +535,10 @@ mod tests {
         let cell4 = breath4.get(&point(1, 1)).unwrap();
         assert_eq!(cell4.graphic, CellGraphic::Glyph('a'));
         assert_eq!(cell4.weight_index, 2);
-        assert_eq!(cell4.color, PaintColor::flat_rgb(16, 16, 16));
+        assert!(
+            matches!(cell4.color, PaintColor::FlatRgb(red, green, blue) if legacy_indexed_palette().contains(&[red, green, blue])),
+            "interpolated color must resolve to the indexed palette"
+        );
         // Breath 5 (t=0.4): weight 8*0.4 = 3.2 -> 3.
         assert_eq!(
             resolve(5).unwrap().get(&point(1, 1)).unwrap().weight_index,
@@ -659,6 +692,9 @@ mod tests {
             resolve_raster_canvas(&blocks, 5, |_| Some(Canvas::new()), None),
             None
         );
-        assert_eq!(resolve_raster_canvas(&[], 0, |_| Some(Canvas::new()), None), None);
+        assert_eq!(
+            resolve_raster_canvas(&[], 0, |_| Some(Canvas::new()), None),
+            None
+        );
     }
 }

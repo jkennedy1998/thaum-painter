@@ -5,7 +5,6 @@ Own painter-only shared module helpers that don't belong in `thaum-renderer/doma
 
 ## owns
 - painter-specific shared chrome or behavior reused across more than one of painter's own individual modules
-- painter-owned indexed palette data shared by more than one painter module
 
 ## does not own
 - generic gizmo/chrome/registry logic reusable by any consumer, owned by `thaum-renderer/domain/modules/shared/`
@@ -17,8 +16,6 @@ Own painter-only shared module helpers that don't belong in `thaum-renderer/doma
 ## contents
 - `contract.md`
   - shared contract
-- `legacy_indexed_palette.rs`
-  - painter's old 37-color indexed palette, reused by the indexed swatch picker and RGB block
 
 ## dependencies
 - `thaum-renderer/domain/modules/shared/`

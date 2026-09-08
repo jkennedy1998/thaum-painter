@@ -120,7 +120,11 @@ pub fn spawn_session_host_server(
             }
         })?;
 
-    Ok(SessionHostServer { port: bound_port, shutdown, accept_thread: Some(accept_thread) })
+    Ok(SessionHostServer {
+        port: bound_port,
+        shutdown,
+        accept_thread: Some(accept_thread),
+    })
 }
 
 fn serve_connection(
@@ -177,7 +181,10 @@ fn serve_connection(
         // must find the sender, or the messages are silently dropped.
         if joined_user_id.is_none() {
             if let ClientMessage::Hello { .. } = &message {
-                senders.lock().expect("senders lock").insert(user_id.clone(), outbound_tx.clone());
+                senders
+                    .lock()
+                    .expect("senders lock")
+                    .insert(user_id.clone(), outbound_tx.clone());
             }
         }
 
@@ -314,14 +321,21 @@ mod tests {
         }
     }
 
-    fn stroke(action_id: &str, user_id: &str) -> thaum_painter_domain::storage::SharedDocumentActionRecord {
+    fn stroke(
+        action_id: &str,
+        user_id: &str,
+    ) -> thaum_painter_domain::storage::SharedDocumentActionRecord {
         thaum_painter_domain::storage::SharedDocumentActionRecord::cell_patch_set(
             action_id.to_string(),
             "doc-1".to_string(),
             "layer-1".to_string(),
             user_id.to_string(),
             "t".to_string(),
-            vec![SharedCellPatch::new(CellPoint { x: 1, y: 2, z: 0 }, None, None)],
+            vec![SharedCellPatch::new(
+                CellPoint { x: 1, y: 2, z: 0 },
+                None,
+                None,
+            )],
             None,
         )
     }
@@ -333,7 +347,9 @@ mod tests {
         let (alice_stream, mut alice_reader) = connect(server.port);
         send(&alice_stream, &hello_for("alice"));
         match read_message(&mut alice_reader) {
-            HostMessage::Welcome { roster, log_length, .. } => {
+            HostMessage::Welcome {
+                roster, log_length, ..
+            } => {
                 assert_eq!(roster.len(), 1);
                 assert_eq!(log_length, 0);
             }
@@ -352,7 +368,12 @@ mod tests {
         }
 
         // Bob draws; alice receives the record verbatim, bob does not.
-        send(&bob_stream, &ClientMessage::Action { record: stroke("b-1", "bob") });
+        send(
+            &bob_stream,
+            &ClientMessage::Action {
+                record: stroke("b-1", "bob"),
+            },
+        );
         match read_message(&mut alice_reader) {
             HostMessage::Record { record } => assert_eq!(record.action_id, "b-1"),
             other => panic!("expected record, got {other:?}"),
@@ -360,7 +381,12 @@ mod tests {
         assert_eq!(host.lock().unwrap().records().len(), 1);
 
         // Presence rides the side channel.
-        send(&alice_stream, &ClientMessage::Presence { cursor: Some([7, 9, 0]) });
+        send(
+            &alice_stream,
+            &ClientMessage::Presence {
+                cursor: Some([7, 9, 0]),
+            },
+        );
         match read_message(&mut bob_reader) {
             HostMessage::Presence { user_id, cursor } => {
                 assert_eq!(user_id, "alice");

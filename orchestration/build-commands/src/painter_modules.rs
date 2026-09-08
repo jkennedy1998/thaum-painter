@@ -11,10 +11,10 @@ use thaum_painter_domain::{
     PaintTool, PainterSelection, ToolDef, ToolState, ToolboxModule,
 };
 use thaum_renderer_domain::{
-    conflicting_actions, effective_bindings, format_raw_input, ActionBindingMap,
-    CameraDepthLink, CameraLayersLink, CameraPerspectiveModule, ControlsProfile, ControlsPanelModule, ModuleRect,
-    ModuleRegistry, NumberFieldEdit, PersistedModuleUiState, ParallaxProfile,
-    PerspectiveProfile, UiCustomizationModule, UiPalette,
+    conflicting_actions, effective_bindings, format_raw_input, ActionBindingMap, CameraDepthLink,
+    CameraLayersLink, CameraPerspectiveModule, ControlsPanelModule, ControlsProfile, ModuleRect,
+    ModuleRegistry, NumberFieldEdit, ParallaxProfile, PersistedModuleUiState, PerspectiveProfile,
+    UiCustomizationModule, UiPalette,
 };
 
 /// Registers every painter module and returns the registry. Shared handles
@@ -27,9 +27,7 @@ pub(crate) fn build_painter_modules(
     number_edit: &Rc<RefCell<Option<NumberFieldEdit>>>,
     layers_panel_state: &Rc<RefCell<LayersPanelState>>,
     paint_canvas_viewport: &Rc<RefCell<ModuleRect>>,
-    drawing_space_wheel_mode: &Rc<RefCell<
-        thaum_painter_domain::DrawingSpaceWheelMode,
-    >>,
+    drawing_space_wheel_mode: &Rc<RefCell<thaum_painter_domain::DrawingSpaceWheelMode>>,
     controls_profile: &Rc<RefCell<ControlsProfile>>,
     effective_painter_bindings: &Rc<RefCell<ActionBindingMap>>,
     painter_bindings: &ActionBindingMap,

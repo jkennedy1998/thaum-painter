@@ -33,6 +33,7 @@ Bar-size mapping: 1 breath = single head only; 2 breaths = left + right heads; 3
 - `GapFill`/`resolve_gap_fill`/`surrounding_items` die as-is (they existed only for voids).
 - ~~Interim behavior: a playhead over an **empty displays nothing** (stub).~~ SUPERSEDED — real interpolation has landed for the move channel (see the landed passes below). Raster alone keeps the no-show-over-empties rule until its own channel pass.
 - Future interpolation shape: each property row has its **own custom interpolation** (you cannot interpolate raster like you interpolate move). Empties fire in **one standard way**; the per-row difference lives in how a row's content resolves. The user will eventually set the interpolative mode of empty bars — that UX is not worked out yet.
+- J-quote (2026-09-07): "it should stayt within the indexed color system regardless of what those indexed colors are."
 
 ## infinity truth (J 2026-09-07, after the operator's out_mode proposal was rejected)
 - The track extends to **infinity on the right** (positive breaths). Left/negative is deferred on purpose — build asymmetrically right-first, but keep the architecture from kicking us later.
