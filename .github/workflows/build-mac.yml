@@ -14,8 +14,12 @@ on:
         required: true
         type: string
 
+permissions: {}
+
 jobs:
   build-mac:
+    permissions:
+      contents: read
     runs-on: macos-latest # Apple Silicon; Intel Macs use Rosetta 2
     steps:
       - name: checkout thaum-painter
@@ -28,7 +32,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: jkennedy1998/thaum-renderer
-          token: ${{ secrets.REPO_PAT }}
           path: thaum-renderer
           ref: ${{ inputs.renderer_ref }}
 

@@ -2,6 +2,20 @@
 **/target
 Cargo.lock
 
+# credentials are machine-local; provide only deliberately redacted examples
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+
+# maintainer-local launchers and release orchestration stay on the release machine
+/orchestration/build-commands/*.desktop
+/orchestration/build-commands/release-thaum-painter
+
 # build-commands cargo cache + built binaries (never version these)
 orchestration/builds/
 

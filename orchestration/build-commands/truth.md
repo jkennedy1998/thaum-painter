@@ -14,3 +14,7 @@
 
 ### 26-09-08-08-08-57-03
 - j-quote: "lets develop this now, i like this."
+
+### 26-09-08-10-00-00-04
+- j-quote: "use best practices for a front facing repo. this is open source like blender is, and will need to be mainatined well overtime. id like to not run into anything that is exposed that shouldnt for proffessional sake."
+- j-quote: "im not too worried about directories being shared, but those do look messy"

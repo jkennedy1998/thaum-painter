@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=thaum-painter (build + run)
-Comment=Rebuilds the linux lane and boots the built exe
-Exec=sh -c "$HOME/Repos/thaum-painter/orchestration/build-commands/run-and-build-linux"
-Terminal=true
-Icon=utilities-terminal
-Categories=Development;

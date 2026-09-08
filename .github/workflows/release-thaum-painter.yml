@@ -1,8 +1,7 @@
 name: release-thaum-painter
 
-# Called only by orchestration/build-commands/release-thaum-painter after it
-# has pushed the version tag. Every job receives immutable painter and renderer
-# commit IDs so the three public archives are one coherent release.
+# Maintainer-dispatched release workflow. Every job receives immutable painter
+# and renderer commit IDs so the three public archives are one coherent release.
 on:
   workflow_dispatch:
     inputs:
@@ -19,11 +18,12 @@ on:
         required: true
         type: string
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
   build-linux:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,7 +33,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: jkennedy1998/thaum-renderer
-          token: ${{ secrets.REPO_PAT }}
           path: thaum-renderer
           ref: ${{ inputs.renderer_ref }}
       - uses: dtolnay/rust-toolchain@stable
@@ -52,6 +51,8 @@ jobs:
           path: thaum-painter-linux.tar.gz
 
   build-windows:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,7 +62,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: jkennedy1998/thaum-renderer
-          token: ${{ secrets.REPO_PAT }}
           path: thaum-renderer
           ref: ${{ inputs.renderer_ref }}
       - uses: dtolnay/rust-toolchain@stable
@@ -84,6 +84,8 @@ jobs:
           path: thaum-painter-windows.zip
 
   build-mac:
+    permissions:
+      contents: read
     runs-on: macos-latest # Apple Silicon; Intel Macs use Rosetta 2
     steps:
       - uses: actions/checkout@v4
@@ -93,7 +95,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: jkennedy1998/thaum-renderer
-          token: ${{ secrets.REPO_PAT }}
           path: thaum-renderer
           ref: ${{ inputs.renderer_ref }}
       - uses: dtolnay/rust-toolchain@stable
@@ -114,6 +115,8 @@ jobs:
 
   publish-release:
     needs: [build-linux, build-windows, build-mac]
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

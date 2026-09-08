@@ -1,7 +1,7 @@
 # thaum-painter/orchestration/build-commands
 
 ## purpose
-Own the three human-facing build and release commands for thaum-painter plus the entrypoint binary crate they build. One lane layout is shared by local and GitHub builds, producing replaceable per-environment folders and deliberate public releases.
+Own the public build commands and entrypoint binary crate for thaum-painter. One lane layout is shared by local and GitHub builds, producing replaceable per-environment folders and deliberate public releases.
 
 ## source-of-truth (from J)
 - `orchestration/builds/<environment>/thaum painter/` is the only place builds land. One build path per environment; more environments (android etc.) extend the same shape later.
@@ -9,7 +9,7 @@ Own the three human-facing build and release commands for thaum-painter plus the
 - A lane folder is deleted and rebuilt in full on every build — no version churn, the folder is always current.
 - `build-all-environments` builds lanes and never runs them. Default: every known environment; Linux and Windows build locally, while Mac is built by GitHub Actions from exact pushed painter and renderer commits, then downloaded into the mac lane.
 - `run-and-build-linux` rebuilds the linux lane through the same shared pipeline and boots the built lane exe. There is exactly one linux build path — no separate dev lane.
-- `release-thaum-painter` is the only public-release action: it tags exact pushed painter and renderer commits, starts the three-platform GitHub release workflow, waits for its GitHub Release, then moves the website source to stable latest-release URLs when needed.
+- The manual GitHub release workflow is the public-release action: it packages exact painter and renderer commits into a three-platform GitHub Release. Maintainer-local tagging and website publication stay outside this public repository.
 - The linux lane is the source of truth: what run-and-build-linux boots is byte-identical to what gets sent to someone.
 - The renderer never builds standalone: it is a library, open-sourced later, packaged along inside every painter lane (as `renderer-assets/` plus the linked static code). Renderer "releases" are source tags only.
 - All cargo build output lives under `orchestration/builds/.cargo-cache/` (via repo-root `.cargo/config.toml`), never in the repo root and never nested inside other encapsulations.
@@ -18,7 +18,6 @@ Own the three human-facing build and release commands for thaum-painter plus the
 - the `thaum-painter-entrypoint` binary crate and its `main.rs`
 - `build-all-environments` — build every (or selected) environment lane, never runs
 - `run-and-build-linux` — rebuild linux lane + boot the built exe
-- `release-thaum-painter` — deliberate tag, remote three-platform release, and one-time website latest-link publication
 - GitHub Actions workflows for remote Mac builds and public three-platform releases
 - the per-environment lane layout and replacement behavior
 - the lane-assembly tail shared by both commands (exe + renderer-assets + licenses)
@@ -26,6 +25,7 @@ Own the three human-facing build and release commands for thaum-painter plus the
 
 ## does not own
 - renderer domain truth or boot internals, owned by `thaum-renderer`
+- maintainer-local release, website-publication, or desktop-launcher commands
 - painter domain modules, owned by `domain/modules/individuals/`
 - GitHub Release hosting semantics beyond uploading the three built archives
 
@@ -40,8 +40,6 @@ Own the three human-facing build and release commands for thaum-painter plus the
 - `truth.md` — durable J source-of-truth decisions for the build and release workflow
 - `build-all-environments` — build lanes under `orchestration/builds/<env>/thaum painter/`; shared pipeline, replace-per-build
 - `run-and-build-linux` — build linux lane (same pipeline) + exec the lane exe
-- `release-thaum-painter` — explicit public-release command
-- `run-and-build-linux.desktop`, `build-all-environments.desktop`, `release-thaum-painter.desktop` — double-click launchers
 - `.github/workflows/build-mac.yml` — exact-commit remote Mac lane workflow for build-all
 - `.github/workflows/release-thaum-painter.yml` — exact-commit three-platform public-release workflow
 - repo-root `.cargo/config.toml` — redirect all workspace cargo output to `orchestration/builds/.cargo-cache/`
@@ -82,6 +80,6 @@ Own the three human-facing build and release commands for thaum-painter plus the
 - Cross-repo path deps use relative sibling paths (`../../../thaum-renderer/...` from here); no compiled-in absolute machine paths.
 - `run-and-build-linux` replaced the old `run.sh`; `build-all-environments` replaced `package.sh`. The old `orchestration/entrypoint/` name is retired — this encapsulation now owns building, not just booting.
 - The GitHub Mac workflow reuses this lane layout (exe + `renderer-assets/` + both LICENSE files, zipped lane folder) and accepts immutable painter and renderer commit IDs. The release workflow uses those same immutable inputs to assemble and publish all three platform archives. Ordinary builds never publish a release.
-- `release-thaum-painter vMAJOR.MINOR.PATCH` requires clean, fully pushed painter and renderer repositories plus jobo's `tools/github/` capability with the canonical `GITHUB_TOKEN` runtime secret. It does not expose ordinary commits: its version tag is the deliberate public-facing boundary. Its first successful use updates the website source to version-independent `releases/latest/download/thaum-painter-<platform>.<ext>` URLs; subsequent releases change the site downloads automatically through GitHub's `latest` release alias.
+- The manual release workflow consumes explicit immutable painter and renderer commit IDs and its version tag is the deliberate public-facing boundary. It never publishes ordinary commits.
 - The mac lane binary is unsigned; recipients must bypass Gatekeeper once (`xattr -cr "thaum painter"` or right-click → Open on first launch).
 - Session-bridge borrow discipline: never pass `timeline_state.borrow().<field>` (or any `RefCell.borrow()` temporary) directly in a call whose body drains the layers-panel queue or `borrow_mut()`s the same state — argument temporaries live until the end of the full call statement, so the held `Ref` turns the inner `borrow_mut()` into a `RefCell already borrowed` panic (the scrub-then-release timeline crash: `finish_canvas_release` drains queued `SetCurrentBreath` actions). Read the field into a binding first.
