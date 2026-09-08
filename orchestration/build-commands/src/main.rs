@@ -35,8 +35,9 @@ use thaum_renderer_boot::{
 };
 use thaum_renderer_domain::{
     camera_view_orientation_for_camera, remap_surface_units_to_active_plane_world,
-    remap_surface_units_to_flat_2d_local, ActionBindingMap, ActionName, CameraDepthLink,
-    CameraLayersLink, CellPoint, MAX_VISIBLE_PLANE_RADIUS, TooltipState,
+    remap_surface_units_to_flat_2d_local, shape_fade::fade::ShapeFade,
+    shape_fade::font_tiles::FontSetTiles, ActionBindingMap, ActionName, CameraDepthLink,
+    CameraLayersLink, CellPoint, GlyphFontSet, MAX_VISIBLE_PLANE_RADIUS, TooltipState,
     tooltip_card_group,
     CommandBar, CommandBarButton, CommandBarClickOutcome, Composition, ControlActionRow,
     ControlsProfile, effective_bindings,
@@ -1665,6 +1666,15 @@ fn main() -> Result<()> {
     let mut current_document_root: Option<PathBuf> = None;
 
     let mut state = boot_renderer(config)?;
+    // The shape-fade graph over the loaded typeface (J 2026-09-07): built
+    // once at boot at the fade's canonical weight, then moved into the frame
+    // loop and injected into the render path so the raster interpolate mode
+    // walks matched cells' graphics through the gradient tour instead of the
+    // halfway cutoff. `None` (no loadable font set) keeps the cutoff.
+    let shape_fade: Option<ShapeFade> =
+        GlyphFontSet::load_from_asset_root(&state.config.asset_root)
+            .ok()
+            .map(|font_set| ShapeFade::build(&FontSetTiles { font_set: &font_set }));
     if let Some(session) = &persisted_session {
         session.renderer.camera.apply_to_runtime(&mut state.camera);
     } else {
@@ -2825,6 +2835,7 @@ fn main() -> Result<()> {
             pending_move_offset
                 .as_ref()
                 .map(|(layer_id, delta)| (layer_id.as_str(), *delta)),
+            shape_fade.as_ref(),
         );
         groups.extend(modules.iter().map(|module| module.draw()));
         // In-progress stroke overlays live on the seam: plane selection

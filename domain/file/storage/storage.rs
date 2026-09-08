@@ -967,7 +967,12 @@ impl SharedDocumentRuntime {
     /// `interp_raster`). This is the render/compositing read seam; the raw block
     /// canvas behind `canvas_for_layer` stays the edit-surface seam, so strokes
     /// still author real keyframes instead of painting into a blend.
-    pub fn resolved_canvas_for_layer(&self, layer_id: &str, current_breath: u32) -> Option<Canvas> {
+    pub fn resolved_canvas_for_layer(
+        &self,
+        layer_id: &str,
+        current_breath: u32,
+        graphic_fade: Option<&thaum_renderer_domain::shape_fade::fade::ShapeFade>,
+    ) -> Option<Canvas> {
         let track = self
             .document
             .layers
@@ -977,11 +982,16 @@ impl SharedDocumentRuntime {
             .iter()
             .find(|track| track.property_id == "raster")?;
         let canvases = &self.block_canvases;
-        crate::interp_raster::resolve_raster_canvas(&track.blocks, current_breath, |block| {
-            canvases
-                .get(&(layer_id.to_string(), block.id.clone()))
-                .cloned()
-        })
+        crate::interp_raster::resolve_raster_canvas(
+            &track.blocks,
+            current_breath,
+            |block| {
+                canvases
+                    .get(&(layer_id.to_string(), block.id.clone()))
+                    .cloned()
+            },
+            graphic_fade,
+        )
     }
 
     /// The first breath the layer's raster track covers, preferring the earliest
@@ -2131,11 +2141,15 @@ impl SharedDocumentRuntime {
     /// Flattens every visible layer's RESOLVED canvas for the breath into one canvas, in document
     /// layer order (later layers win on overlap). Interpolating raster empties resolve their
     /// blend (see `resolved_canvas_for_layer`), not the raw block canvas.
-    pub fn composited_canvas_in_layer_order(&self, current_breath: u32) -> Canvas {
+    pub fn composited_canvas_in_layer_order(
+        &self,
+        current_breath: u32,
+        graphic_fade: Option<&thaum_renderer_domain::shape_fade::fade::ShapeFade>,
+    ) -> Canvas {
         let mut canvas = Canvas::new();
         for layer in self.document.layers.iter().filter(|layer| layer.visible) {
             if let Some(layer_canvas) =
-                self.resolved_canvas_for_layer(&layer.layer_id, current_breath)
+                self.resolved_canvas_for_layer(&layer.layer_id, current_breath, graphic_fade)
             {
                 for (position, painted_cell) in &layer_canvas {
                     canvas.insert(*position, painted_cell.clone());
@@ -2985,7 +2999,7 @@ mod tests {
             Some("block-1".to_string()),
         ));
 
-        let composited = runtime.composited_canvas_in_layer_order(0);
+        let composited = runtime.composited_canvas_in_layer_order(0, None);
 
         assert_eq!(composited.get(&point(0, 0)), Some(&cell('B')));
     }
@@ -3794,12 +3808,12 @@ mod tests {
         ));
 
         assert!(runtime.set_layer_visible("layer-1", false));
-        assert!(runtime.composited_canvas_in_layer_order(0).is_empty());
+        assert!(runtime.composited_canvas_in_layer_order(0, None).is_empty());
 
         assert!(runtime.set_layer_visible("layer-1", true));
         assert_eq!(
             runtime
-                .composited_canvas_in_layer_order(0)
+                .composited_canvas_in_layer_order(0, None)
                 .get(&point(0, 0)),
             Some(&cell('A'))
         );
@@ -4494,14 +4508,14 @@ mod tests {
         // The painted keyframe keeps its content.
         assert_eq!(
             runtime
-                .resolved_canvas_for_layer("layer-1", 56)
+                .resolved_canvas_for_layer("layer-1", 56, None)
                 .unwrap()
                 .len(),
             1
         );
         // Far past the new edge, resolution stays sane (nothing or held, never
         // a panic or a vaporized track).
-        let _ = runtime.resolved_canvas_for_layer("layer-1", 10_000);
+        let _ = runtime.resolved_canvas_for_layer("layer-1", 10_000, None);
     }
 
     #[test]
@@ -4560,14 +4574,14 @@ mod tests {
         // Solids resolve their own canvases exactly.
         assert_eq!(
             runtime
-                .resolved_canvas_for_layer("layer-1", 0)
+                .resolved_canvas_for_layer("layer-1", 0, None)
                 .unwrap()
                 .get(&point(0, 0)),
             Some(&keyframe_a)
         );
         assert_eq!(
             runtime
-                .resolved_canvas_for_layer("layer-1", 16)
+                .resolved_canvas_for_layer("layer-1", 16, None)
                 .unwrap()
                 .get(&point(0, 0)),
             Some(&keyframe_b)
@@ -4576,7 +4590,7 @@ mod tests {
         // (~0.556, second half) — graphic from keyframe B, color and weight
         // blended 5/9 of the way from A to B.
         let blended = runtime
-            .resolved_canvas_for_layer("layer-1", 12)
+            .resolved_canvas_for_layer("layer-1", 12, None)
             .unwrap()
             .get(&point(0, 0))
             .unwrap()
@@ -4594,7 +4608,7 @@ mod tests {
         // First-half breath (t = 1/9) still shows keyframe A's graphic with the
         // color already blending.
         let early = runtime
-            .resolved_canvas_for_layer("layer-1", 9)
+            .resolved_canvas_for_layer("layer-1", 9, None)
             .unwrap()
             .get(&point(0, 0))
             .unwrap()
@@ -5161,10 +5175,11 @@ mod tests {
         seed: u64,
         op: usize,
         breaths: &[u32],
+        graphic_fade: Option<&thaum_renderer_domain::shape_fade::fade::ShapeFade>,
     ) {
         let track = runtime.property_track("layer-1", "raster").unwrap();
         for breath in breaths {
-            let resolved = runtime.resolved_canvas_for_layer("layer-1", *breath);
+            let resolved = runtime.resolved_canvas_for_layer("layer-1", *breath, graphic_fade);
             let covering = track
                 .blocks
                 .iter()
@@ -5374,6 +5389,7 @@ mod tests {
                                 seed,
                                 op,
                                 &[0, 1, breath, layer_window_end, layer_window_end * 2],
+                                None,
                             );
                         }
                     }));

@@ -308,7 +308,7 @@ mod tests {
         );
         runtime.add_move_offset("layer-1", 0, WorldPoint { x: 2, y: 0, z: 3 });
 
-        let groups = build_document_layer_cell_groups(&runtime, 0, None);
+        let groups = build_document_layer_cell_groups(&runtime, 0, None, None);
         assert_eq!(groups.len(), 1);
         assert!(groups[0]
             .iter_cells()
@@ -319,6 +319,7 @@ mod tests {
             &runtime,
             0,
             Some(("layer-1", WorldPoint { x: 1, y: 1, z: 0 })),
+            None,
         );
         assert!(groups[0]
             .iter_cells()
@@ -362,6 +363,7 @@ pub fn build_document_layer_cell_groups(
     runtime: &SharedDocumentRuntime,
     current_breath: u32,
     pending_move_offset: Option<(&str, WorldPoint)>,
+    graphic_fade: Option<&thaum_renderer_domain::shape_fade::fade::ShapeFade>,
 ) -> Vec<CellGroup> {
     runtime
         .layers()
@@ -370,7 +372,11 @@ pub fn build_document_layer_cell_groups(
             // The render path resolves raster interpolation: an interpolating
             // empty blends its surrounding keyframes' canvases instead of
             // rendering nothing (the edit surface still sees the raw block).
-            let canvas = runtime.resolved_canvas_for_layer(&layer.layer_id, current_breath)?;
+            // The injected shape-fade resolver walks matched cells' glyphs
+            // through the renderer's gradient tour; `None` falls back to the
+            // halfway cutoff.
+            let canvas =
+                runtime.resolved_canvas_for_layer(&layer.layer_id, current_breath, graphic_fade)?;
             let mut offset = runtime.move_offset_for_layer(&layer.layer_id, current_breath);
             if let Some((pending_layer, pending)) = pending_move_offset {
                 if pending_layer == layer.layer_id {

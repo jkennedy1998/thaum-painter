@@ -5,7 +5,10 @@
 //! - **hold** — carries the previous keyframe's canvas through the empty.
 //! - **interpolate** — blends the previous keyframe's canvas into the next one across
 //!   the empty's span, with the empty's ease ends bending progress exactly like the
-//!   move channel's. Per cell, matched by grid position:
+//!   move channel's. When a shape-fade resolver is injected (the live app builds
+//!   one from the loaded typeface), matched cells' graphics resolve through the
+//!   renderer's gradient tour instead of the halfway cutoff — see
+//!   `thaum-renderer/domain/cell-graphic/shape-fade`. Per cell, matched by grid position:
 //!   - **color** (flat RGB) lerps channel-by-channel — continuous, the easy part.
 //!   - **weight** lerps numerically — continuous, the other easy part.
 //!   - **graphic** (the character / sprite) is discrete: a hard cutoff at the halfway
@@ -26,6 +29,9 @@
 
 use std::collections::BTreeSet;
 
+use thaum_renderer_domain::shape_fade::fade::ShapeFade;
+use thaum_renderer_domain::CellGraphic;
+
 use crate::brush::{effective_cell, Canvas, PaintedCell};
 use crate::interp_move;
 use crate::paint_color::PaintColor;
@@ -40,6 +46,7 @@ pub fn resolve_raster_canvas(
     blocks: &[SharedDocumentPropertyBlock],
     breath: u32,
     canvas_of: impl Fn(&SharedDocumentPropertyBlock) -> Option<Canvas>,
+    graphic_fade: Option<&ShapeFade>,
 ) -> Option<Canvas> {
     let index = blocks
         .iter()
@@ -53,7 +60,7 @@ pub fn resolve_raster_canvas(
                 .filter(|block| block.is_blank)
                 .map(|_| blocks.len() - 1)
         })?;
-    resolve_block(blocks, index, breath, canvas_of)
+    resolve_block(blocks, index, breath, canvas_of, graphic_fade)
 }
 
 /// Resolves one block at `breath` (the breath is always inside the block's span
@@ -63,17 +70,18 @@ fn resolve_block(
     index: usize,
     breath: u32,
     canvas_of: impl Fn(&SharedDocumentPropertyBlock) -> Option<Canvas>,
+    graphic_fade: Option<&ShapeFade>,
 ) -> Option<Canvas> {
     let block = &blocks[index];
     if !block.is_blank {
         return canvas_of(block);
     }
     match crate::interp_mode::resolve_mode(block.interpretation.as_deref()) {
-        "loop_out" => resolve_loop(blocks, index, breath, false, canvas_of),
-        "loop_in" => resolve_loop(blocks, index, breath, true, canvas_of),
+        "loop_out" => resolve_loop(blocks, index, breath, false, canvas_of, graphic_fade),
+        "loop_in" => resolve_loop(blocks, index, breath, true, canvas_of, graphic_fade),
         "hold" => solid_canvas_before(blocks, index, &canvas_of)
             .or_else(|| solid_canvas_after(blocks, index, &canvas_of)),
-        _ => resolve_interpolate(blocks, index, breath, canvas_of),
+        _ => resolve_interpolate(blocks, index, breath, canvas_of, graphic_fade),
     }
 }
 
@@ -112,13 +120,14 @@ fn resolve_interpolate(
     index: usize,
     breath: u32,
     canvas_of: impl Fn(&SharedDocumentPropertyBlock) -> Option<Canvas>,
+    graphic_fade: Option<&ShapeFade>,
 ) -> Option<Canvas> {
     let previous = solid_canvas_before(blocks, index, &canvas_of);
     let next = solid_canvas_after(blocks, index, &canvas_of);
     match (previous, next) {
         (Some(from), Some(to)) => {
             let progress = interp_move::empty_progress(&blocks[index], breath);
-            Some(blend_canvases(&from, &to, progress))
+            Some(blend_canvases(&from, &to, progress, graphic_fade))
         }
         (only, None) => only,
         (None, only) => only,
@@ -134,6 +143,7 @@ fn resolve_loop(
     breath: u32,
     mirror: bool,
     canvas_of: impl Fn(&SharedDocumentPropertyBlock) -> Option<Canvas>,
+    graphic_fade: Option<&ShapeFade>,
 ) -> Option<Canvas> {
     let blank = &blocks[index];
     let first_solid = blocks.iter().position(|block| !block.is_blank)?;
@@ -155,7 +165,7 @@ fn resolve_loop(
     let mapped_index = blocks.iter().position(|block| {
         crate::properties::breath_in_span(mapped, block.start_breath, block.length_breaths)
     })?;
-    resolve_block(blocks, mapped_index, mapped, canvas_of)
+    resolve_block(blocks, mapped_index, mapped, canvas_of, graphic_fade)
 }
 
 /// Blends two keyframe canvases at `progress` (0 = fully `from`, 1 = fully
@@ -163,7 +173,7 @@ fn resolve_loop(
 /// the unified empty-cell read seam. See the module header for per-channel
 /// rules: continuous color/weight lerp, discrete graphic/material cutoff at
 /// the halfway crossing, and half-span appear/disappear for one-sided cells.
-pub fn blend_canvases(from: &Canvas, to: &Canvas, progress: f32) -> Canvas {
+pub fn blend_canvases(from: &Canvas, to: &Canvas, progress: f32, graphic_fade: Option<&ShapeFade>) -> Canvas {
     let progress = progress.clamp(0.0, 1.0);
     let from_active = progress < 0.5;
     let mut blended = Canvas::new();
@@ -173,7 +183,7 @@ pub fn blend_canvases(from: &Canvas, to: &Canvas, progress: f32) -> Canvas {
         let to_cell = effective_cell(to.get(position));
         match (from_cell, to_cell) {
             (Some(a), Some(b)) => {
-                blended.insert(*position, blend_cells(a, b, progress, from_active));
+                blended.insert(*position, blend_cells(a, b, progress, from_active, graphic_fade));
             }
             (Some(a), None) if from_active => {
                 let mut faded = a.clone();
@@ -196,14 +206,15 @@ fn blend_cells(
     to: &PaintedCell,
     progress: f32,
     from_active: bool,
+    graphic_fade: Option<&ShapeFade>,
 ) -> PaintedCell {
     PaintedCell {
-        // Discrete: hard cutoff at the halfway crossing, shaped by the eases.
-        graphic: if from_active {
-            from.graphic.clone()
-        } else {
-            to.graphic.clone()
-        },
+        // Discrete channel. With an injected shape-fade resolver and two
+        // glyph-backed cells, the graphic walks the renderer's gradient tour
+        // (image-only, monotone toward the target). Without one — and for
+        // sprite-backed cells, whose tours would need sprite-identity keys —
+        // the hard cutoff at the halfway crossing stands, shaped by the eases.
+        graphic: resolve_graphic(from, to, progress, from_active, graphic_fade),
         color: blend_colors(from.color, to.color, progress, from_active),
         weight_index: lerp_weight(from.weight_index, to.weight_index, progress),
     }
@@ -217,6 +228,36 @@ fn blend_cells(
 fn fade_one_sided_weight(authored: i64, progress: f32) -> i64 {
     let scaled = authored as f32 * (2.0 * progress - 1.0).abs();
     scaled.round().clamp(0.0, (authored.abs() as f32).max(0.0)) as i64 * authored.signum()
+}
+
+/// The graphic for one matched cell at `progress`. With an injected fade
+/// resolver and glyph-backed cells on both sides, the renderer's gradient tour
+/// picks the glyph (image-only, monotone toward the target); any fallback —
+/// no resolver, sprite-backed cells, an unresolvable pair — keeps the
+/// halfway hard cutoff, shaped by the eases.
+fn resolve_graphic(
+    from: &PaintedCell,
+    to: &PaintedCell,
+    progress: f32,
+    from_active: bool,
+    graphic_fade: Option<&ShapeFade>,
+) -> CellGraphic {
+    let hard_cutoff = || {
+        if from_active {
+            from.graphic.clone()
+        } else {
+            to.graphic.clone()
+        }
+    };
+    let (Some(fade), CellGraphic::Glyph(from_glyph), CellGraphic::Glyph(to_glyph)) =
+        (graphic_fade, &from.graphic, &to.graphic)
+    else {
+        return hard_cutoff();
+    };
+    match fade.resolve_shape_fade(*from_glyph, *to_glyph, progress) {
+        Some(resolved) => CellGraphic::Glyph(resolved),
+        None => hard_cutoff(),
+    }
 }
 
 /// Flat RGB lerps channel-by-channel; anything else (material colors) is
@@ -317,27 +358,27 @@ mod tests {
             cell('b', PaintColor::flat_rgb(100, 200, 40), 4),
         )]);
         // First half: previous keyframe's graphic, color/weight already blending.
-        let first_half = blend_canvases(&from, &to, 0.25);
+        let first_half = blend_canvases(&from, &to, 0.25, None);
         let blended = first_half.get(&point(1, 1)).unwrap();
         assert_eq!(blended.graphic, CellGraphic::Glyph('a'));
         assert_eq!(blended.color, PaintColor::flat_rgb(25, 50, 10));
         assert_eq!(blended.weight_index, 1);
         // Second half: next keyframe's graphic, blend continues.
-        let second_half = blend_canvases(&from, &to, 0.75);
+        let second_half = blend_canvases(&from, &to, 0.75, None);
         let blended = second_half.get(&point(1, 1)).unwrap();
         assert_eq!(blended.graphic, CellGraphic::Glyph('b'));
         assert_eq!(blended.color, PaintColor::flat_rgb(75, 150, 30));
         assert_eq!(blended.weight_index, 3);
         // The ends resolve exactly.
-        assert_eq!(blend_canvases(&from, &to, 0.0), from);
-        assert_eq!(blend_canvases(&from, &to, 1.0), to);
+        assert_eq!(blend_canvases(&from, &to, 0.0, None), from);
+        assert_eq!(blend_canvases(&from, &to, 1.0, None), to);
     }
 
     #[test]
     fn one_sided_cells_show_only_during_their_side_active_half_and_fade_toward_zero_weight() {
         let from = canvas_with(&[(point(0, 0), cell('x', PaintColor::flat_rgb(1, 2, 3), 4))]);
         let to = canvas_with(&[(point(2, 2), cell('y', PaintColor::flat_rgb(4, 5, 6), 4))]);
-        let first_half = blend_canvases(&from, &to, 0.25);
+        let first_half = blend_canvases(&from, &to, 0.25, None);
         let fading = first_half.get(&point(0, 0)).unwrap();
         assert!(
             fading.weight_index < 4 && fading.weight_index > 0,
@@ -348,13 +389,13 @@ mod tests {
             !first_half.contains_key(&point(2, 2)),
             "to-side cell hidden early"
         );
-        let near_midpoint = blend_canvases(&from, &to, 0.49);
+        let near_midpoint = blend_canvases(&from, &to, 0.49, None);
         assert_eq!(
             near_midpoint.get(&point(0, 0)).unwrap().weight_index,
             0,
             "the from-side cell bottoms out at Zero right before vanishing"
         );
-        let second_half = blend_canvases(&from, &to, 0.75);
+        let second_half = blend_canvases(&from, &to, 0.75, None);
         assert!(
             !second_half.contains_key(&point(0, 0)),
             "from-side cell hidden late"
@@ -367,11 +408,11 @@ mod tests {
         );
         // The ends resolve exactly.
         assert_eq!(
-            blend_canvases(&from, &to, 0.0).get(&point(0, 0)),
+            blend_canvases(&from, &to, 0.0, None).get(&point(0, 0)),
             from.get(&point(0, 0))
         );
         assert_eq!(
-            blend_canvases(&from, &to, 1.0).get(&point(2, 2)),
+            blend_canvases(&from, &to, 1.0, None).get(&point(2, 2)),
             to.get(&point(2, 2))
         );
     }
@@ -381,9 +422,9 @@ mod tests {
         let from = canvas_with(&[(point(0, 0), cell('x', PaintColor::flat_rgb(1, 2, 3), 1))]);
         let to = canvas_with(&[(point(0, 0), cell(' ', PaintColor::flat_rgb(9, 9, 9), 1))]);
         // The `to` cell is an authored blank: the position resolves as from-only.
-        let blended = blend_canvases(&from, &to, 0.25);
+        let blended = blend_canvases(&from, &to, 0.25, None);
         assert_eq!(blended.get(&point(0, 0)), from.get(&point(0, 0)));
-        let blended = blend_canvases(&from, &to, 0.75);
+        let blended = blend_canvases(&from, &to, 0.75, None);
         assert!(blended.is_empty(), "authored blank erases the cell late");
     }
 
@@ -394,12 +435,12 @@ mod tests {
             cell('a', PaintColor::material(CellMaterialId::GrayScale), 1),
         )]);
         let to = canvas_with(&[(point(0, 0), cell('b', PaintColor::flat_rgb(10, 20, 30), 1))]);
-        let first_half = blend_canvases(&from, &to, 0.25);
+        let first_half = blend_canvases(&from, &to, 0.25, None);
         assert_eq!(
             first_half.get(&point(0, 0)).unwrap().color,
             PaintColor::material(CellMaterialId::GrayScale)
         );
-        let second_half = blend_canvases(&from, &to, 0.75);
+        let second_half = blend_canvases(&from, &to, 0.75, None);
         assert_eq!(
             second_half.get(&point(0, 0)).unwrap().color,
             PaintColor::flat_rgb(10, 20, 30)
@@ -412,12 +453,17 @@ mod tests {
         let canvas = canvas_with(&[(point(1, 1), cell('a', PaintColor::flat_rgb(1, 2, 3), 1))]);
         let canvases = [("a", canvas.clone()), ("tail", Canvas::new())];
         let resolve = |breath: u32| {
-            resolve_raster_canvas(&blocks, breath, |block| {
-                canvases
-                    .iter()
-                    .find(|(id, _)| *id == block.id)
-                    .map(|(_, canvas)| canvas.clone())
-            })
+            resolve_raster_canvas(
+                &blocks,
+                breath,
+                |block| {
+                    canvases
+                        .iter()
+                        .find(|(id, _)| *id == block.id)
+                        .map(|(_, canvas)| canvas.clone())
+                },
+                None,
+            )
         };
         assert_eq!(resolve(0), Some(canvas));
         assert_eq!(resolve(3).unwrap().len(), 1);
@@ -441,12 +487,17 @@ mod tests {
             ("tail", Canvas::new()),
         ];
         let resolve = |breath: u32| {
-            resolve_raster_canvas(&blocks, breath, |block| {
-                canvases
-                    .iter()
-                    .find(|(id, _)| *id == block.id)
-                    .map(|(_, canvas)| canvas.clone())
-            })
+            resolve_raster_canvas(
+                &blocks,
+                breath,
+                |block| {
+                    canvases
+                        .iter()
+                        .find(|(id, _)| *id == block.id)
+                        .map(|(_, canvas)| canvas.clone())
+                },
+                None,
+            )
         };
         // Same linear walk as the move channel: 4 empty breaths -> t = 1/5..4/5.
         // Breath 4 (t=0.2, first half): graphic 'a', weight 8*0.2 = 1.6 -> 2.
@@ -479,12 +530,17 @@ mod tests {
             blank("tail", 12, 1, None, None, None),
         ];
         let resolve = |breath: u32| {
-            resolve_raster_canvas(&blocks, breath, |block| {
-                canvases
-                    .iter()
-                    .find(|(id, _)| *id == block.id)
-                    .map(|(_, canvas)| canvas.clone())
-            })
+            resolve_raster_canvas(
+                &blocks,
+                breath,
+                |block| {
+                    canvases
+                        .iter()
+                        .find(|(id, _)| *id == block.id)
+                        .map(|(_, canvas)| canvas.clone())
+                },
+                None,
+            )
         };
         let eased = resolve(4).unwrap().get(&point(1, 1)).unwrap().weight_index;
         assert!(
@@ -510,12 +566,17 @@ mod tests {
             ("tail", Canvas::new()),
         ];
         let resolve = |blocks: &[SharedDocumentPropertyBlock], breath: u32| {
-            resolve_raster_canvas(blocks, breath, |block| {
-                canvases
-                    .iter()
-                    .find(|(id, _)| *id == block.id)
-                    .map(|(_, canvas)| canvas.clone())
-            })
+            resolve_raster_canvas(
+                blocks,
+                breath,
+                |block| {
+                    canvases
+                        .iter()
+                        .find(|(id, _)| *id == block.id)
+                        .map(|(_, canvas)| canvas.clone())
+                },
+                None,
+            )
         };
         assert_eq!(resolve(&blocks, 6), Some(canvas_a.clone()));
         // A leading empty with only a next solid holds it (nothing behind): the
@@ -538,12 +599,17 @@ mod tests {
         let canvas_a = canvas_with(&[(point(0, 0), cell('a', PaintColor::flat_rgb(1, 1, 1), 1))]);
         let canvases = [("a", canvas_a.clone()), ("tail", Canvas::new())];
         let resolve = |breath: u32| {
-            resolve_raster_canvas(&blocks, breath, |block| {
-                canvases
-                    .iter()
-                    .find(|(id, _)| *id == block.id)
-                    .map(|(_, canvas)| canvas.clone())
-            })
+            resolve_raster_canvas(
+                &blocks,
+                breath,
+                |block| {
+                    canvases
+                        .iter()
+                        .find(|(id, _)| *id == block.id)
+                        .map(|(_, canvas)| canvas.clone())
+                },
+                None,
+            )
         };
         assert_eq!(resolve(4), Some(canvas_a.clone()));
         assert_eq!(resolve(5), Some(canvas_a));
@@ -565,12 +631,17 @@ mod tests {
             ("tail", Canvas::new()),
         ];
         let resolve = |breath: u32| {
-            resolve_raster_canvas(&blocks, breath, |block| {
-                canvases
-                    .iter()
-                    .find(|(id, _)| *id == block.id)
-                    .map(|(_, canvas)| canvas.clone())
-            })
+            resolve_raster_canvas(
+                &blocks,
+                breath,
+                |block| {
+                    canvases
+                        .iter()
+                        .find(|(id, _)| *id == block.id)
+                        .map(|(_, canvas)| canvas.clone())
+                },
+                None,
+            )
         };
         // Region 0..12: breath 12 wraps to 0 (solid a), 16 wraps into the hold
         // blank (also a), 20 wraps to solid c.
@@ -585,9 +656,9 @@ mod tests {
     fn a_track_with_no_solids_resolves_nothing() {
         let blocks = vec![blank("tail", 0, 24, None, None, None)];
         assert_eq!(
-            resolve_raster_canvas(&blocks, 5, |_| Some(Canvas::new())),
+            resolve_raster_canvas(&blocks, 5, |_| Some(Canvas::new()), None),
             None
         );
-        assert_eq!(resolve_raster_canvas(&[], 0, |_| Some(Canvas::new())), None);
+        assert_eq!(resolve_raster_canvas(&[], 0, |_| Some(Canvas::new()), None), None);
     }
 }
