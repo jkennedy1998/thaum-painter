@@ -18,6 +18,7 @@
 //! presence with plain queues — no sockets.
 
 use std::collections::{HashMap, VecDeque};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -119,6 +120,11 @@ pub struct SessionHost {
     records: Vec<SharedDocumentActionRecord>,
     clients: Vec<HostClient>,
     cursors: HashMap<String, Option<[i32; 3]>>,
+    /// Last time each connected client sent anything (keepalive included).
+    /// The transport prunes clients silent past the seen timeout, so a
+    /// half-open dead connection cannot squat its user_id forever — that
+    /// denial loop is what left the chip stuck on RECONNECTING.
+    last_seen: HashMap<String, Instant>,
     snapshot_source: Option<Box<dyn Fn() -> SharedDocumentFile + Send>>,
     ended: bool,
 }
@@ -136,6 +142,7 @@ impl SessionHost {
             records: Vec::new(),
             clients: Vec::new(),
             cursors: HashMap::new(),
+            last_seen: HashMap::new(),
             snapshot_source: None,
             ended: false,
         }
@@ -155,6 +162,15 @@ impl SessionHost {
 
     pub fn records(&self) -> &[SharedDocumentActionRecord] {
         &self.records
+    }
+
+    /// Seeds the log with the hosting app's pre-host action history (the
+    /// serialized truth: squash baselines + unfolded records). The Welcome
+    /// snapshot is structure-only — canvas content rebuilds purely through
+    /// log replay — so without the seed, joiners would see layers but blank
+    /// cells for everything painted before hosting started.
+    pub fn seed_log(&mut self, records: Vec<SharedDocumentActionRecord>) {
+        self.records = records;
     }
 
     pub fn roster(&self) -> Vec<SessionUser> {
@@ -202,6 +218,12 @@ impl SessionHost {
         user_id: &str,
         message: ClientMessage,
     ) -> Result<(), ClientRejection> {
+        // Every non-Hello message counts as a liveness signal from a joined
+        // identity (Hello seeds its own entry below).
+        if !matches!(message, ClientMessage::Hello { .. }) {
+            self.last_seen
+                .insert(user_id.to_string(), Instant::now());
+        }
         match message {
             ClientMessage::Hello {
                 user,
@@ -234,6 +256,7 @@ impl SessionHost {
                     outgoing: VecDeque::new(),
                 });
                 self.cursors.insert(user.user_id.clone(), None);
+                self.last_seen.insert(user.user_id.clone(), Instant::now());
                 self.queue_to(
                     &user.user_id,
                     HostMessage::Welcome {
@@ -313,12 +336,34 @@ impl SessionHost {
     pub fn disconnect(&mut self, user_id: &str) {
         self.clients.retain(|client| client.user.user_id != user_id);
         self.cursors.remove(user_id);
+        self.last_seen.remove(user_id);
         self.broadcast_others(
             user_id,
             HostMessage::Roster {
                 users: self.roster(),
             },
         );
+    }
+
+    /// Prunes clients that have sent nothing past `timeout` (keepalive pings
+    /// every couple of seconds keep live clients comfortably inside it). A
+    /// half-open dead connection otherwise holds its user_id forever, and
+    /// every honest rejoin of that identity is denied as a duplicate. Pruned
+    /// clients go through the normal teardown — roster shrink broadcast
+    /// included — so survivors and rejoins both see the honest state.
+    pub fn prune_stale_clients(&mut self, timeout: Duration) {
+        let now = Instant::now();
+        let stale: Vec<String> = self
+            .clients
+            .iter()
+            .map(|client| client.user.user_id.clone())
+            .filter(|id| {
+                now.duration_since(self.last_seen.get(id).copied().unwrap_or(now)) >= timeout
+            })
+            .collect();
+        for user_id in stale {
+            self.disconnect(&user_id);
+        }
     }
 
     /// The host ends the session on purpose: every connected client learns
@@ -699,6 +744,24 @@ mod tests {
             ),
             Err(ClientRejection::SessionEnded)
         );
+    }
+
+    #[test]
+    fn stale_clients_are_pruned_and_their_identity_frees_up() {
+        let mut host = host();
+        hello(&mut host, "alice");
+        assert!(host.is_connected("alice"));
+
+        // Silent past the seen timeout: pruned through normal teardown.
+        std::thread::sleep(Duration::from_millis(30));
+        host.prune_stale_clients(Duration::from_millis(20));
+        assert!(!host.is_connected("alice"));
+        assert_eq!(host.cursor("alice"), None);
+
+        // The freed identity rejoins honestly instead of being denied as a
+        // duplicate forever (the stuck-RECONNECTING bug).
+        hello(&mut host, "alice");
+        assert!(host.is_connected("alice"));
     }
 
     #[test]

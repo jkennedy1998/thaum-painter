@@ -239,15 +239,19 @@ fn apply_session_panel_action(
     let mut panel = session_panel_state.borrow_mut();
     match action {
         SessionPanelAction::HostRequested => {
-            // Snapshot source freezes the CURRENT document: the host log
-            // starts empty at hosting time, so joiners rebuild exactly via
-            // snapshot + full-record replay of everything after.
+            // Snapshot source freezes the CURRENT structure; the host log is
+            // seeded with the pre-host action history (the serialized truth:
+            // baselines + unfolded records). Canvas content rebuilds purely
+            // through log replay, so without the seed joiners would see
+            // layers but blank cells for everything painted before hosting.
             let snapshot_document = shared_document.document.clone();
+            let seed_records = shared_document.actions_for_file();
             let port = thaum_painter_workers::host_port_from_env();
             let net = thaum_painter_workers::SessionNet::host(
                 Box::new(move || snapshot_document.clone()),
                 thaum_painter_workers::session_user_from_identity(session_identity),
                 port,
+                seed_records,
             );
             match net {
                 Ok(net) => {
@@ -1813,15 +1817,18 @@ fn main() -> Result<()> {
     let mut session_net: Option<thaum_painter_workers::SessionNet> = None;
     match thaum_painter_workers::session_net_boot_from_env() {
         thaum_painter_workers::SessionNetBoot::Host(port) => {
-            // Snapshot source freezes the boot document: the host log starts
-            // empty at boot, so joiners rebuild exactly via snapshot + full
-            // record replay. (Structure edits that still bypass the record
-            // log are not replayed — closed by the structure-record slice.)
+            // Snapshot source freezes the boot structure; the host log is
+            // seeded with the pre-host action history so joiners rebuild
+            // content through full record replay. (Structure edits that
+            // still bypass the record log are not replayed — closed by the
+            // structure-record slice.)
             let boot_document = shared_document.document.clone();
+            let seed_records = shared_document.actions_for_file();
             let net = thaum_painter_workers::SessionNet::host(
                 Box::new(move || boot_document.clone()),
                 thaum_painter_workers::session_user_from_identity(&session_identity),
                 port,
+                seed_records,
             );
             match net {
                 Ok(net) => {

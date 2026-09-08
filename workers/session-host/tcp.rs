@@ -24,6 +24,12 @@ use crate::session_host::{ClientMessage, HostMessage, SessionHost};
 /// Default LAN listen port for hosted sessions.
 pub const DEFAULT_SESSION_HOST_PORT: u16 = 4747;
 
+/// How long a client may stay silent before the host prunes it. Live clients
+/// keepalive-ping every couple of seconds, so this only ever fires on a
+/// half-open dead connection — the case that would otherwise squat the
+/// client's user_id forever and deny every honest rejoin of that identity.
+const CLIENT_SEEN_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// `THAUM_SESSION_HOST_PORT` overrides the default listen port.
 pub fn host_port_from_env() -> u16 {
     std::env::var("THAUM_SESSION_HOST_PORT")
@@ -94,6 +100,7 @@ pub fn spawn_session_host_server(
                         }
                         {
                             let mut host = host.lock().expect("session host lock");
+                            host.prune_stale_clients(CLIENT_SEEN_TIMEOUT);
                             drain_and_route(&mut host, &senders);
                         }
                         thread::sleep(Duration::from_millis(10));

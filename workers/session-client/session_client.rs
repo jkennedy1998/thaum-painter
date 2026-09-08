@@ -67,6 +67,9 @@ pub struct SessionClient {
     cursors: HashMap<String, Option<[i32; 3]>>,
     inbound: Arc<Mutex<VecDeque<HostMessage>>>,
     connected: Arc<AtomicBool>,
+    /// Set when the writer thread fails a wire write — a half-dead socket
+    /// must not keep looking connected just because the reader still blocks.
+    writer_broken: Arc<AtomicBool>,
     /// Set when the host says `Ended` — a purposeful end, never rejoined.
     ended: Arc<AtomicBool>,
     outbound: mpsc::Sender<String>,
@@ -134,6 +137,7 @@ impl SessionClient {
 
         let connected = Arc::new(AtomicBool::new(true));
         let ended = Arc::new(AtomicBool::new(false));
+        let writer_broken = Arc::new(AtomicBool::new(false));
         let inbound: Arc<Mutex<VecDeque<HostMessage>>> = Arc::new(Mutex::new(VecDeque::new()));
 
         // Reader thread: wire -> inbound queue. It takes over the handshake's
@@ -163,18 +167,46 @@ impl SessionClient {
                 reader_connected.store(false, Ordering::SeqCst);
             })?;
 
-        // Writer thread: channel -> wire.
+        // Writer thread: channel -> wire. A failed write sets writer_broken
+        // so is_connected() stops claiming a link the publishes cannot use.
         let (outbound, outbound_rx) = mpsc::channel::<String>();
         let writer_stream = stream.try_clone()?;
+        let writer_broken_flag = Arc::clone(&writer_broken);
         let writer_thread = thread::Builder::new()
             .name("session-client-writer".into())
             .spawn(move || {
                 for line in outbound_rx {
                     if write_line(&writer_stream, &line).is_err() {
+                        writer_broken_flag.store(true, Ordering::SeqCst);
                         break;
                     }
                 }
             })?;
+
+        // Keepalive thread: one Ping every couple of seconds. This is what
+        // keeps the host's seen-timeout from pruning a live-but-idle client,
+        // and what unblocks the rejoin path after any unclean drop — without
+        // it a dead connection squats the user_id and every rejoin is denied.
+        {
+            let keepalive_connected = Arc::clone(&connected);
+            let keepalive_ended = Arc::clone(&ended);
+            let keepalive_outbound = outbound.clone();
+            thread::Builder::new()
+                .name("session-client-keepalive".into())
+                .spawn(move || loop {
+                    thread::sleep(Duration::from_secs(2));
+                    if !keepalive_connected.load(Ordering::SeqCst)
+                        || keepalive_ended.load(Ordering::SeqCst)
+                    {
+                        return;
+                    }
+                    let ping = serde_json::to_string(&ClientMessage::Ping)
+                        .unwrap_or_else(|_| "{\"type\":\"ping\"}".to_string());
+                    if keepalive_outbound.send(ping).is_err() {
+                        return;
+                    }
+                })?;
+        }
 
         let mut cursors = HashMap::new();
         for member in &roster {
@@ -187,6 +219,7 @@ impl SessionClient {
             cursors,
             inbound,
             connected,
+            writer_broken,
             ended,
             outbound,
             reader_thread: Some(reader_thread),
@@ -278,7 +311,7 @@ impl SessionClient {
     }
 
     pub fn is_connected(&self) -> bool {
-        self.connected.load(Ordering::SeqCst)
+        self.connected.load(Ordering::SeqCst) && !self.writer_broken.load(Ordering::SeqCst)
     }
 
     /// True once the host said `Ended` — a purposeful session end, distinct

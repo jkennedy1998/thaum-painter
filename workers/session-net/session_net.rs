@@ -7,11 +7,14 @@
 //! a `SessionClient`. Neither mode owns the runtime — the app's live runtime
 //! stays the single source of truth it applies to.
 //!
-//! Convergence model (Figma's): the host's snapshot source must capture the
-//! document as it was when the server started (the log starts empty then);
-//! joiners rebuild by fresh snapshot + full-log replay. Structure edits that
-//! still bypass the record log (`document.json` path) are not replayed — that
-//! gap closes with the structure-edit record variants in `domain/file/storage/`.
+//! Convergence model (Figma's): the host's snapshot captures the document
+//! structure as it was when the server started, and the host log is seeded
+//! with the host's pre-host action history — canvas content is runtime state
+//! rebuilt purely through replay, so the seed is what lets joiners see
+//! everything painted before hosting began. Joiners rebuild by fresh
+//! snapshot + full-log replay. Structure edits that still bypass the record
+//! log (`document.json` path) are not replayed — that gap closes with the
+//! structure-edit record variants in `domain/file/storage/`.
 
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
@@ -33,8 +36,11 @@ pub enum SessionNet {
         /// The bound listen port — the `invite_addresses()` truth source.
         port: u16,
         /// How many host-log records the local app has consumed into its own
-        /// runtime. Own records are skipped (applied at publish); foreign
-        /// records (from clients) are applied here.
+        /// runtime. Starts at the seed length: the pre-host history was
+        /// loaded from disk into the local runtime already (that is where
+        /// the seed came from), so host sync skips straight past it. Own
+        /// records are skipped (applied at publish); foreign records (from
+        /// clients) are applied here.
         consumed: usize,
     },
     Client {
@@ -64,16 +70,21 @@ const REJOIN_INITIAL_BACKOFF: Duration = Duration::from_millis(500);
 const REJOIN_MAX_BACKOFF: Duration = Duration::from_secs(8);
 
 impl SessionNet {
-    /// Starts hosting: binds the TCP server and registers the snapshot
-    /// source. The source should return the document as of server start.
+    /// Starts hosting: binds the TCP server, registers the snapshot source,
+    /// and seeds the host log with the pre-host action history (`runtime
+    /// .actions_for_file()` at the call site). The seed is what joiners
+    /// replay to rebuild content painted before hosting started.
     pub fn host(
         snapshot_source: Box<dyn Fn() -> SharedDocumentFile + Send>,
         user: SessionUser,
         port: u16,
+        seed_records: Vec<SharedDocumentActionRecord>,
     ) -> std::io::Result<Self> {
         let mut host = SessionHost::new();
         host.set_snapshot_source(snapshot_source);
         host.set_host_user(user.clone());
+        let consumed = seed_records.len();
+        host.seed_log(seed_records);
         let host = Arc::new(Mutex::new(host));
         let server = spawn_session_host_server(Arc::clone(&host), port)?;
         let port = server.port;
@@ -82,7 +93,7 @@ impl SessionNet {
             _server: server,
             user_id: user.user_id,
             port,
-            consumed: 0,
+            consumed,
         })
     }
 
@@ -465,6 +476,7 @@ mod tests {
             Box::new(move || source_document.clone()),
             user("host-user"),
             0,
+            Vec::new(),
         )
         .expect("host boots");
         // The test host binds port 0; read the bound port from the server.
@@ -498,6 +510,56 @@ mod tests {
         assert_eq!(client_net.sync(&mut client_runtime).unwrap(), 0);
     }
 
+    /// The blank-cells regression: the Welcome snapshot is structure-only
+    /// (canvases are replay-built runtime state), so a joiner only sees
+    /// pre-host content if the host log was seeded with the pre-host action
+    /// history. Without the seed the joiner gets layers with blank cells.
+    #[test]
+    fn joiner_replays_the_seeded_prehost_log_into_visible_cells() {
+        let boot_document = SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
+        let source_document = boot_document.clone();
+        // One pre-host stroke — from a foreign identity, as persisted logs
+        // legitimately carry (ids are per-machine). The seed must reach
+        // joiners as replay truth while the host's own sync cursor skips it.
+        let seed_record = SharedDocumentActionRecord::cell_patch_set(
+            "pre-1".to_string(),
+            "doc-1".to_string(),
+            "layer-1".to_string(),
+            "earlier-machine".to_string(),
+            "t".to_string(),
+            vec![SharedCellPatch::new(
+                CellPoint { x: 0, y: 0, z: 0 },
+                None,
+                Some(&paint((200, 0, 0))),
+            )],
+            None,
+        );
+        let mut host_net = SessionNet::host(
+            Box::new(move || source_document.clone()),
+            user("host-user"),
+            0,
+            vec![seed_record],
+        )
+        .expect("host boots");
+        let port = match &host_net {
+            SessionNet::Host { _server, .. } => _server.port,
+            SessionNet::Client { .. } => unreachable!(),
+        };
+
+        let (mut client_net, snapshot) =
+            SessionNet::join(&format!("127.0.0.1:{port}"), user("client-1")).expect("join");
+        let mut client_runtime = SharedDocumentRuntime::new(snapshot);
+        assert_eq!(canvas_len(&client_runtime), 0); // snapshot is structure-only
+        assert_eq!(sync_for(&mut client_net, &mut client_runtime, 1), 1);
+        assert_eq!(canvas_len(&client_runtime), 1); // seed replay rebuilt the cell
+
+        // The host's cursor starts past the seed: it must not re-apply the
+        // pre-host history it already holds in its own runtime.
+        let mut host_runtime = SharedDocumentRuntime::new(boot_document);
+        assert_eq!(host_net.sync(&mut host_runtime).unwrap(), 0);
+        assert_eq!(canvas_len(&host_runtime), 0);
+    }
+
     #[test]
     fn client_rejoins_after_a_drop_and_converges_again() {
         let boot_document = SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
@@ -506,6 +568,7 @@ mod tests {
             Box::new(move || source_document.clone()),
             user("host-user"),
             0,
+            Vec::new(),
         )
         .expect("host boots");
         let port = match &host_net {
@@ -565,6 +628,7 @@ mod tests {
             Box::new(move || source_document.clone()),
             user("host-user"),
             0,
+            Vec::new(),
         )
         .expect("host boots");
         let port = match &host_net {
@@ -604,6 +668,7 @@ mod tests {
             Box::new(move || source_document.clone()),
             user("host-user"),
             0,
+            Vec::new(),
         )
         .expect("host boots");
         let port = match &host_net {
