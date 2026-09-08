@@ -203,10 +203,20 @@ where
     }
 }
 
+/// Per-address connect budget. Bounds each dial so one resolved family that
+/// silently drops SYNs (a published AAAA behind a closed inbound IPv6
+/// firewall, seen live) cannot blackhole the whole dial past the client's
+/// handshake window.
+const DIAL_ADDRESS_TIMEOUT: Duration = Duration::from_secs(3);
+
 fn dial_socket(target: &str) -> std::io::Result<TcpStream> {
+    let mut addresses: Vec<_> = target.to_socket_addrs()?.collect();
+    // IPv4 first: the relay is published behind an IPv4 port-forward; an
+    // unreachable AAAA must be the fallback attempt, not the first one.
+    addresses.sort_by_key(|address| !address.is_ipv4());
     let mut last = None;
-    for address in target.to_socket_addrs()? {
-        match TcpStream::connect(address) {
+    for address in &addresses {
+        match TcpStream::connect_timeout(address, DIAL_ADDRESS_TIMEOUT) {
             Ok(socket) => return Ok(socket),
             Err(error) => last = Some(error),
         }
