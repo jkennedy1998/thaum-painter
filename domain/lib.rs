@@ -57,6 +57,8 @@ pub mod painter_tools;
 pub mod pieces;
 #[path = "painter-document/properties/properties.rs"]
 pub mod properties;
+#[path = "painter-document/properties/raster-smear/raster_smear.rs"]
+pub mod raster_smear;
 #[path = "rendering/render-space/render_space.rs"]
 pub mod render_space;
 #[path = "painter-session/selection/selection_actions.rs"]

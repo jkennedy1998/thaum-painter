@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=thaum-painter (release)
+Comment=Publish a deliberate three-platform Thaum Painter release
+Exec=sh -c "$HOME/Repos/thaum-painter/orchestration/build-commands/release-thaum-painter"
+Terminal=true
+Icon=utilities-terminal
+Categories=Development;

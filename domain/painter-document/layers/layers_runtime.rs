@@ -407,6 +407,15 @@ pub fn apply_layers_panel_action(
         }
     }
     if document_mutated {
+        // Structure rides the record log: any panel-driven structure edit
+        // (layers, tracks, timing, visibility) appends a full-structure sync
+        // record so replay and multiplayer peers converge. Content-only edits
+        // (paint strokes) never route through here.
+        shared_document.push_structure_set_record(
+            next_action_id(shared_action_counter, session_user_id),
+            session_user_id,
+            action_timestamp_string(),
+        );
         if let Err(error) = save_shared_document_snapshot(shared_document_paths, shared_document) {
             recover_snapshot_conflict(
                 &error,

@@ -44,4 +44,4 @@ Own the minimal boot/composition seam for standing up thaum-painter usage, wirin
 - none
 
 ## notes
-- `build-commands/` is the first real boot-composition surface here — the runnable app plus its two build commands (`build-all-environments`, `run-and-build-linux`) and the per-environment lanes under `orchestration/builds/`. This parent stays a pure boundary; concrete boot code lives in the child, matching `thaum-renderer/orchestration/`'s own boot/asset-root split.
+- `build-commands/` is the first real boot-composition surface here — the runnable app plus its three commands (`run-and-build-linux`, `build-all-environments`, `release-thaum-painter`) and the per-environment lanes under `orchestration/builds/`. This parent stays a pure boundary; concrete boot code lives in the child, matching `thaum-renderer/orchestration/`'s own boot/asset-root split.

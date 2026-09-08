@@ -25,8 +25,10 @@ use serde::{Deserialize, Serialize};
 use thaum_painter_domain::storage::{SharedDocumentActionRecord, SharedDocumentFile};
 
 /// Bumped on any wire-shape change; a `Hello` with a mismatched version is
-/// denied so old clients fail loudly instead of corrupting sessions.
-pub const SESSION_PROTOCOL_VERSION: u32 = 2;
+/// denied so old clients fail loudly instead of corrupting sessions. v3:
+/// `StructureSet` records join the log — a v2 peer would fail to deserialize
+/// them (unknown action variant) and silently lose every structure edit.
+pub const SESSION_PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionUser {

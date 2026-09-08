@@ -22,6 +22,11 @@
 //!     also walks the shape-fade system toward/from `▪`, the deliberately
 //!     low-coverage clear-transition glyph, before the cell vanishes or
 //!     appears at the halfway crossing.
+//! - **smear** — interior-only raster mode: conservatively matches compatible
+//!   cells across the two keyframes, transports them along discrete 3D paths, and
+//!   leaves a weight-tapered cell trail. Each sample uses the same weighted glyph
+//!   fade/color rules as ordinary interpolation; unmatched cells use its one-sided
+//!   fade rather than becoming speculative trails.
 //! - **loop_out / loop_in** — edge-locked modes: replay the authored region through
 //!   the trailing / leading blank, resolving each mapped breath through this module.
 //!
@@ -83,6 +88,7 @@ fn resolve_block(
         "loop_in" => resolve_loop(blocks, index, breath, true, canvas_of, graphic_fade),
         "hold" => solid_canvas_before(blocks, index, &canvas_of)
             .or_else(|| solid_canvas_after(blocks, index, &canvas_of)),
+        "smear" => resolve_smear(blocks, index, breath, canvas_of, graphic_fade),
         _ => resolve_interpolate(blocks, index, breath, canvas_of, graphic_fade),
     }
 }
@@ -130,6 +136,33 @@ fn resolve_interpolate(
         (Some(from), Some(to)) => {
             let progress = interp_move::empty_progress(&blocks[index], breath);
             Some(blend_canvases(&from, &to, progress, graphic_fade))
+        }
+        (only, None) => only,
+        (None, only) => only,
+    }
+}
+
+/// Smear: the raster-only interior-empty mode. The smear encapsulation owns
+/// correspondence and trail construction; this channel resolver retains
+/// keyframe lookup, eased progress, and the ordinary missing-side fallback.
+fn resolve_smear(
+    blocks: &[SharedDocumentPropertyBlock],
+    index: usize,
+    breath: u32,
+    canvas_of: impl Fn(&SharedDocumentPropertyBlock) -> Option<Canvas>,
+    graphic_fade: Option<&ShapeFade>,
+) -> Option<Canvas> {
+    let previous = solid_canvas_before(blocks, index, &canvas_of);
+    let next = solid_canvas_after(blocks, index, &canvas_of);
+    match (previous, next) {
+        (Some(from), Some(to)) => {
+            let progress = interp_move::empty_progress(&blocks[index], breath);
+            Some(crate::raster_smear::smear_canvases(
+                &from,
+                &to,
+                progress,
+                graphic_fade,
+            ))
         }
         (only, None) => only,
         (None, only) => only,
@@ -221,7 +254,22 @@ fn blend_cells(
     from_active: bool,
     graphic_fade: Option<&ShapeFade>,
 ) -> PaintedCell {
-    let weight_index = lerp_weight(from.weight_index, to.weight_index, progress);
+    blend_cells_with_weight_scale(from, to, progress, from_active, 1.0, graphic_fade)
+}
+
+/// Shared raster-cell appearance resolution. Smear supplies a decreasing
+/// `weight_scale` for its trail samples before glyph selection, so ShapeFade
+/// selects a glyph that is actually available at the rendered trail weight.
+pub(crate) fn blend_cells_with_weight_scale(
+    from: &PaintedCell,
+    to: &PaintedCell,
+    progress: f32,
+    from_active: bool,
+    weight_scale: f32,
+    graphic_fade: Option<&ShapeFade>,
+) -> PaintedCell {
+    let interpolated_weight = lerp_weight(from.weight_index, to.weight_index, progress);
+    let weight_index = scale_weight(interpolated_weight, weight_scale);
     PaintedCell {
         // Discrete channel. With an injected shape-fade resolver and two
         // glyph-backed cells, the graphic walks the renderer's gradient tour
@@ -241,6 +289,10 @@ fn blend_cells(
         color: blend_colors(from.color, to.color, progress, from_active),
         weight_index,
     }
+}
+
+fn scale_weight(weight_index: i64, scale: f32) -> i64 {
+    (weight_index as f32 * scale.clamp(0.0, 1.0)).round() as i64
 }
 
 /// The shape-fade endpoint used in place of a truly absent cell. `▪` is a
@@ -690,6 +742,44 @@ mod tests {
             eased < 2,
             "ease-out must start slower than linear ({eased} < 2)"
         );
+    }
+
+    #[test]
+    fn an_interior_smear_empty_resolves_transported_cell_trails() {
+        let blocks = vec![
+            solid("a", 0, 4),
+            blank("b", 4, 4, Some("smear"), None, None),
+            solid("c", 8, 4),
+            blank("tail", 12, 1, None, None, None),
+        ];
+        let source = canvas_with(&[(point(0, 0), cell('x', PaintColor::flat_rgb(1, 2, 3), 4))]);
+        let target = canvas_with(&[(point(4, 0), cell('x', PaintColor::flat_rgb(1, 2, 3), 4))]);
+        let canvases = [
+            ("a", source.clone()),
+            ("b", Canvas::new()),
+            ("c", target.clone()),
+            ("tail", Canvas::new()),
+        ];
+        let resolve = |breath: u32| {
+            resolve_raster_canvas(
+                &blocks,
+                breath,
+                |block| {
+                    canvases
+                        .iter()
+                        .find(|(id, _)| *id == block.id)
+                        .map(|(_, canvas)| canvas.clone())
+                },
+                None,
+            )
+        };
+
+        let smeared = resolve(6).unwrap();
+        assert!(smeared.contains_key(&point(0, 0)), "visible trail");
+        assert!(smeared.contains_key(&point(1, 0)), "discrete trail cell");
+        assert!(smeared.contains_key(&point(2, 0)), "transported head");
+        assert_eq!(resolve(0), Some(source));
+        assert_eq!(resolve(8), Some(target));
     }
 
     #[test]

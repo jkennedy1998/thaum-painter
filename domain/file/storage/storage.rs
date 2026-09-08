@@ -52,8 +52,9 @@ pub struct SharedDocumentPropertyBlock {
     /// Interpretation-mode slot for the END blank keyframes (J 2026-09-07): the
     /// trailing blank's mode is what happens at infinity (e.g. loop out), the
     /// leading blank's is the mirror for negative time. Vocabulary and cycling
-    /// live in `properties/interp_mode.rs` (interpolate / hold / loop_out /
-    /// loop_in). `serde(default)` keeps existing files loading unchanged.
+    /// live in `properties/interp_mode.rs`: interpolate / hold / loop modes on
+    /// every channel, with `smear` restricted to interior raster blanks.
+    /// `serde(default)` keeps existing files loading unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interpretation: Option<String>,
     /// Ease-out strength on the empty's left end (J 2026-09-07), percent of the
@@ -574,6 +575,17 @@ pub enum SharedDocumentAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reverts: Option<String>,
     },
+    /// Full structure truth: the complete layer list plus the document loop
+    /// window. Structure edits (add/remove/rename/visibility/timing/tracks)
+    /// mutate `document.json` truth that no `CellPatchSet` can express, so
+    /// every local structural seam appends one of these to carry the new
+    /// structure to replay and multiplayer peers. Wholesale-replace and
+    /// idempotent: applying it again is a no-op, and applying an older one
+    /// after a newer one still converges once the newer record also replays.
+    StructureSet {
+        layers: Vec<SharedDocumentLayer>,
+        document_window: DocumentWindow,
+    },
     /// Legacy undo/redo records from before undo became a revert record. Kept
     /// replayable so existing action logs keep loading; new code writes only
     /// `CellPatchSet` records.
@@ -640,6 +652,30 @@ impl SharedDocumentActionRecord {
                 block_id,
                 passive: true,
                 reverts: Some(reverts.into()),
+            },
+        }
+    }
+
+    /// Builds a full-structure sync record from the given layers + loop window.
+    /// `layer_id` stays empty: structure records are document-scoped, not
+    /// layer-scoped.
+    pub fn structure_set(
+        action_id: impl Into<String>,
+        document_id: impl Into<String>,
+        user_id: impl Into<String>,
+        created_at: impl Into<String>,
+        layers: Vec<SharedDocumentLayer>,
+        document_window: DocumentWindow,
+    ) -> Self {
+        Self {
+            action_id: action_id.into(),
+            document_id: document_id.into(),
+            layer_id: String::new(),
+            user_id: user_id.into(),
+            created_at: created_at.into(),
+            action: SharedDocumentAction::StructureSet {
+                layers,
+                document_window,
             },
         }
     }
@@ -1870,11 +1906,11 @@ impl SharedDocumentRuntime {
     /// Cycles an empty (blank) block's interpolation mode through the
     /// `interp_mode::INTERP_MODES` order (J 2026-09-07). The loop modes are
     /// edge-locked: `loop_out` is only reachable on the track's last blank (the
-    /// trailing blank — the right edge of time) and `loop_in` only on the first
-    /// blank (the leading blank — the left edge); the cycle SKIPS a locked mode
-    /// the empty is not allowed to carry rather than rejecting, so a middle
-    /// empty just toggles interpolate ↔ hold. Cycling onto a mode that does not
-    /// use the ease ends clears both stored ease strengths — the ends are not
+    /// trailing blank — the right edge) and `loop_in` only on the first blank
+    /// (the leading blank — the left edge). `smear` is only reachable on a
+    /// raster-track interior blank. The cycle skips unavailable modes rather
+    /// than rejecting. Cycling onto a mode that does not use the ease ends
+    /// clears both stored ease strengths — the ends are not
     /// utilizable there. Returns `false` when the block is missing or not blank.
     pub fn cycle_property_block_interp_mode(
         &mut self,
@@ -1896,7 +1932,7 @@ impl SharedDocumentRuntime {
         let is_last = index + 1 == track.blocks.len();
         let mut next = interp_mode::next_mode(block.interpretation.as_deref());
         for _ in 0..interp_mode::INTERP_MODES.len() {
-            if interp_mode::mode_allowed_at(next, is_first, is_last) {
+            if interp_mode::mode_allowed_for_property_at(next, property_id, is_first, is_last) {
                 break;
             }
             next = interp_mode::next_mode(Some(next));
@@ -2269,8 +2305,70 @@ impl SharedDocumentRuntime {
                     }
                 }
             }
+            SharedDocumentAction::StructureSet {
+                layers,
+                document_window,
+            } => {
+                self.apply_structure_set(layers.clone(), *document_window);
+            }
         }
         self.actions.push(record);
+    }
+
+    /// Replaces document structure (layer list + loop window) wholesale and
+    /// rebuilds per-layer runtime bookkeeping to match: canvases for every
+    /// raster block, fresh undo stacks for new layers, bookkeeping dropped for
+    /// removed ones. Content canvases for surviving layers are preserved.
+    fn apply_structure_set(
+        &mut self,
+        layers: Vec<SharedDocumentLayer>,
+        document_window: DocumentWindow,
+    ) {
+        self.document.layers = layers;
+        self.document.document_window = document_window;
+        let layer_ids: Vec<String> = self
+            .document
+            .layers
+            .iter()
+            .map(|layer| layer.layer_id.clone())
+            .collect();
+        self.block_canvases
+            .retain(|(layer_id, _), _| layer_ids.contains(layer_id));
+        self.applied_action_ids_by_layer
+            .retain(|layer_id, _| layer_ids.contains(layer_id));
+        self.undone_action_ids_by_layer
+            .retain(|layer_id, _| layer_ids.contains(layer_id));
+        for layer_id in &layer_ids {
+            self.applied_action_ids_by_layer
+                .entry(layer_id.clone())
+                .or_default();
+            self.undone_action_ids_by_layer
+                .entry(layer_id.clone())
+                .or_default();
+            self.ensure_block_canvas_coverage(layer_id);
+        }
+    }
+
+    /// Appends a `StructureSet` record capturing the CURRENT structure. Called
+    /// by the entrypoint/panel seams after a LOCAL structure edit so the change
+    /// reaches the saved log and multiplayer peers. The apply path never calls
+    /// this: foreign structure records apply directly, never echo.
+    pub fn push_structure_set_record(
+        &mut self,
+        action_id: impl Into<String>,
+        user_id: impl Into<String>,
+        created_at: impl Into<String>,
+    ) -> SharedDocumentActionRecord {
+        let record = SharedDocumentActionRecord::structure_set(
+            action_id,
+            self.document.document_id.clone(),
+            user_id,
+            created_at,
+            self.document.layers.clone(),
+            self.document.document_window,
+        );
+        self.actions.push(record.clone());
+        record
     }
 
     /// Paints patches onto a block canvas for live stroke preview WITHOUT creating
@@ -5458,7 +5556,7 @@ mod tests {
     }
 
     #[test]
-    fn cycling_a_middle_empty_skips_the_edge_locked_loop_modes() {
+    fn cycling_a_middle_raster_empty_includes_smear_and_skips_the_edge_locked_loop_modes() {
         let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
             "doc-1", "Doc", "layer-1", "Layer 1",
         ));
@@ -5487,8 +5585,9 @@ mod tests {
             .unwrap();
         assert!(middle_index > 0 && middle_index + 1 < shape.len());
 
-        // The cycle skips both loop modes: interpolate -> hold -> interpolate -> ...
-        for expected in ["hold", "interpolate", "hold", "interpolate"] {
+        // Raster-only smear is available between two keyframes; edge loop modes
+        // remain unavailable here: interpolate -> hold -> smear -> interpolate.
+        for expected in ["hold", "smear", "interpolate", "hold"] {
             assert!(runtime.cycle_property_block_interp_mode(
                 "layer-1",
                 "raster",

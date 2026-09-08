@@ -8,8 +8,10 @@
 //! real in `interp_move`; the raster channel in `interp_raster` (blend color
 //! and weight, hard-cutoff the discrete graphic at the halfway crossing).
 
-/// The interpolation modes an empty cycles through, in cycle order.
-pub const INTERP_MODES: [&str; 4] = ["interpolate", "hold", "loop_out", "loop_in"];
+/// The interpolation modes an empty cycles through, in cycle order. `smear` is
+/// intentionally raster-only and interior-only; `mode_allowed_for_property_at`
+/// owns that availability rule while this list remains the persisted vocabulary.
+pub const INTERP_MODES: [&str; 5] = ["interpolate", "hold", "smear", "loop_out", "loop_in"];
 
 /// Ease strength steps, in cycle order. 0% reads as linear ease.
 pub const EASE_STRENGTHS: [u8; 4] = [0, 33, 66, 100];
@@ -31,24 +33,37 @@ pub fn resolve_mode(interpretation: Option<&str>) -> &'static str {
     }
 }
 
-/// Whether a mode uses the ease ends. Hold, loop in, and loop out do not —
-/// their ends render as the fixed non-adjustable glyphs and cycling onto them
-/// clears both stored ease strengths (the ends are not utilizable there).
+/// Whether a mode uses the ease ends. Hold and loop modes do not — their ends
+/// render as fixed non-adjustable glyphs and cycling onto them clears both
+/// stored ease strengths. Smear uses the same eased transition progress as
+/// ordinary raster interpolation, so its trail envelope is adjustable too.
 pub fn mode_is_ease_adjustable(mode: &str) -> bool {
-    mode == "interpolate"
+    matches!(mode, "interpolate" | "smear")
 }
 
-/// Whether a mode is allowed on an empty at a given track position (J
-/// 2026-09-07): `loop_out` only on the track's LAST blank — the trailing blank,
-/// the right edge of time — and `loop_in` only on the FIRST blank — the leading
-/// blank, the left edge. Interpolate and hold are allowed anywhere. A track
-/// whose first and last block are the same blank allows both.
+/// Whether a mode is geometrically allowed on an empty at a given track
+/// position. `loop_out` only lives on the right edge, `loop_in` only on the
+/// left, and `smear` only on an interior empty. Channel ownership is checked by
+/// `mode_allowed_for_property_at` below.
 pub fn mode_allowed_at(mode: &str, is_first: bool, is_last: bool) -> bool {
     match mode {
         "loop_out" => is_last,
         "loop_in" => is_first,
+        "smear" => !is_first && !is_last,
         _ => true,
     }
+}
+
+/// Full authoring availability for an empty property block. Smear is a raster
+/// transition, never a move/channel-wide transform, and it requires keyframes
+/// on both sides; therefore it cannot be selected on either edge blank.
+pub fn mode_allowed_for_property_at(
+    mode: &str,
+    property_id: &str,
+    is_first: bool,
+    is_last: bool,
+) -> bool {
+    mode_allowed_at(mode, is_first, is_last) && (mode != "smear" || property_id == "raster")
 }
 
 /// The next mode in the cycle after the stored interpretation.
@@ -75,6 +90,7 @@ pub fn next_ease_percent(current: Option<u8>) -> u8 {
 pub fn mode_center_glyph(mode: &str) -> char {
     match mode {
         "hold" => '□',
+        "smear" => '≋',
         "loop_out" => '⟧',
         "loop_in" => '⟦',
         _ => '▣',
@@ -115,15 +131,17 @@ mod tests {
     #[test]
     fn modes_cycle_back_to_the_start() {
         assert_eq!(next_mode(None), "hold");
-        assert_eq!(next_mode(Some("hold")), "loop_out");
+        assert_eq!(next_mode(Some("hold")), "smear");
+        assert_eq!(next_mode(Some("smear")), "loop_out");
         assert_eq!(next_mode(Some("loop_out")), "loop_in");
         assert_eq!(next_mode(Some("loop_in")), "interpolate");
         assert_eq!(next_mode(Some("interpolate")), "hold");
     }
 
     #[test]
-    fn only_interpolate_uses_the_ease_ends() {
+    fn interpolate_and_smear_use_the_ease_ends() {
         assert!(mode_is_ease_adjustable("interpolate"));
+        assert!(mode_is_ease_adjustable("smear"));
         assert!(!mode_is_ease_adjustable("hold"));
         assert!(!mode_is_ease_adjustable("loop_out"));
         assert!(!mode_is_ease_adjustable("loop_in"));
@@ -141,6 +159,15 @@ mod tests {
         // A lone blank is both edges at once.
         assert!(mode_allowed_at("loop_out", true, true));
         assert!(mode_allowed_at("loop_in", true, true));
+        // Smear needs source and target keyframes, so it is interior-only.
+        assert!(mode_allowed_at("smear", false, false));
+        assert!(!mode_allowed_at("smear", true, false));
+        assert!(!mode_allowed_at("smear", false, true));
+        assert!(!mode_allowed_at("smear", true, true));
+        assert!(mode_allowed_for_property_at(
+            "smear", "raster", false, false
+        ));
+        assert!(!mode_allowed_for_property_at("smear", "move", false, false));
         // Interpolate and hold are allowed anywhere.
         assert!(mode_allowed_at("interpolate", false, false));
         assert!(mode_allowed_at("hold", false, false));
@@ -159,6 +186,7 @@ mod tests {
     fn mode_and_ease_glyphs_match_the_dictated_set() {
         assert_eq!(mode_center_glyph("hold"), '□');
         assert_eq!(mode_center_glyph("interpolate"), '▣');
+        assert_eq!(mode_center_glyph("smear"), '≋');
         assert_eq!(mode_center_glyph("loop_out"), '⟧');
         assert_eq!(mode_center_glyph("loop_in"), '⟦');
         assert_eq!(ease_out_glyph(None), '-');

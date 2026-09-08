@@ -18,6 +18,8 @@ Own editing-facing property-block views over painter file state.
 ## children-encapsulations
 - `pieces/`
   - default
+- `raster-smear/`
+  - default
 
 ## contents
 - `contract.md`
@@ -25,11 +27,13 @@ Own editing-facing property-block views over painter file state.
 - `properties.rs`
   - `block_covering_breath`, the lookup that finds the bar (if any) covering a given breath
 - `interp_mode.rs`
-  - the interpolation-mode vocabulary shared by every property channel: the four modes (interpolate / hold / loop_out / loop_in), the ease strength steps, edge locking, cycling, and center glyphs
+  - the interpolation-mode vocabulary: interpolate / hold / loop_out / loop_in on every property channel, plus ease-adjustable `smear` only on interior raster empties; owns availability, edge locking, cycling, and center glyphs
 - `interp_move.rs`
   - the move channel's real resolver: hold / interpolate (with ease-bent lerped offset) / edge-locked loops, plus the shared `empty_progress` ease model the raster channel reuses
 - `interp_raster.rs`
-  - the raster channel's real resolver: hold / interpolate / edge-locked loops over keyframe canvases. Blending matches cells by grid position; flat RGB lerps then resolves to the nearest indexed palette color; shape-faded glyphs score their source and target at their authored render weights and select intermediates at the current output weight; material colors hard-cut at halfway; one-sided cells fade their weight and walk toward/from the low-coverage `▪` clear-transition glyph
+  - the raster channel's real resolver: hold / interpolate / interior-only smear / edge-locked loops over keyframe canvases. Ordinary blending matches cells by grid position; flat RGB lerps then resolves to the nearest indexed palette color; shape-faded glyphs score their source and target at their authored render weights and select intermediates at the current output weight; material colors hard-cut at halfway; one-sided cells fade their weight and walk toward/from the low-coverage `▪` clear-transition glyph
+- `raster-smear/`
+  - raster-only first-pass correspondence and discrete transported cell trails; owns bounded one-to-one matching, trail envelope/path rasterization, and head/trail collision selection while consuming `interp_raster`'s shared weight-aware cell appearance resolver
 - `pieces/`
   - bar-piece classification: `BarPiece` (single / left head / right head / center) × `CellType` (empty/solid) per breath, the `BreathBar` shape trait, and the covering `BarCell` lookup
 
@@ -65,9 +69,9 @@ via: `span_end_breath`, `breath_in_span`, `pushed_breath_span`, `destructive_bre
 - inline `#[cfg(test)]` in `interp_mode.rs` and `interp_move.rs`
   - light
   - validates mode/ease cycling, edge locking, glyphs, and the move resolver's hold/interpolate/loop behavior over authored tracks
-- inline `#[cfg(test)]` in `interp_raster.rs`
+- inline `#[cfg(test)]` in `interp_raster.rs` and `raster-smear/raster_smear.rs`
   - light
-  - validates canvas blending (flat-color palette resolution after RGB lerp, weight lerp, halfway graphic cutoff, half-span one-sided cells, authored blanks as absent), the per-mode resolution over authored tracks, and loop replay
+  - validates ordinary canvas blending, smear trail/head resolution, endpoint identity, unmatched fallback, collision priority, the per-mode resolution over authored tracks, and loop replay
 
 ## data
 - none

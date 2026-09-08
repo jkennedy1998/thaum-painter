@@ -28,8 +28,9 @@ use thaum_painter_domain::{
     render_space::build_document_layer_cell_groups,
     save_shared_document_snapshot,
     session_document::{
-        apply_shared_history_action, commit_staged_paint_stroke, recover_snapshot_conflict,
-        stage_text_entry_change, sync_canvas_from_active_layer,
+        action_timestamp_string, apply_shared_history_action, commit_staged_paint_stroke,
+        next_action_id, recover_snapshot_conflict, stage_text_entry_change,
+        sync_canvas_from_active_layer,
     },
     text_entry::{cursor_overlay_group, TextEntryKey, TextEntryOutcome, TextEntryState},
     Canvas, CanvasBounds, DrawingSpaceWheelMode, LayerRow, LayersPanelState,
@@ -903,6 +904,27 @@ fn module_menu_buttons(modules: &ModuleRegistry) -> Vec<CommandBarButton> {
     buttons
 }
 
+/// Host-only structure broadcast for wholesale document swaps (file:new,
+/// file:open): appends one `StructureSet` record carrying the new structure so
+/// joiners rebuild it, then the publish cursor streams the content records.
+/// Client-side swaps are intentionally not broadcast — the host is
+/// authoritative; a client opening a file mid-session diverges locally.
+fn push_host_structure_record(
+    shared_document: &mut SharedDocumentRuntime,
+    session_user_id: &str,
+    session_hosting: bool,
+    shared_action_counter: &mut u64,
+) {
+    if !session_hosting {
+        return;
+    }
+    shared_document.push_structure_set_record(
+        next_action_id(shared_action_counter, session_user_id),
+        session_user_id,
+        action_timestamp_string(),
+    );
+}
+
 fn handle_command_bar_button(
     button_id: &str,
     modules: &mut ModuleRegistry,
@@ -915,6 +937,8 @@ fn handle_command_bar_button(
     current_breath: u32,
     canvas: &mut Canvas,
     selection: &Rc<RefCell<PainterSelection>>,
+    session_user_id: &str,
+    session_hosting: bool,
 ) -> Result<()> {
     if let Some(module_id) = button_id.strip_prefix("module:") {
         if let Some(hidden) = modules.is_hidden(module_id) {
@@ -941,6 +965,7 @@ fn handle_command_bar_button(
             *shared_action_counter = 0;
             sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
             selection.borrow_mut().clear_plane();
+            push_host_structure_record(shared_document, session_user_id, session_hosting, shared_action_counter);
         }
         "file:open" => {
             if let Some(next_root) = prompt_open_document_root(&file_root) {
@@ -974,6 +999,11 @@ fn handle_command_bar_button(
                     canvas,
                 );
                 selection.borrow_mut().clear_plane();
+                // The opened file's structure (its layers, tracks, window) is
+                // document.json truth the frozen session snapshot never held.
+                // Broadcast it so joiners rebuild structure, then receive the
+                // file's content records streaming through the publish cursor.
+                push_host_structure_record(shared_document, session_user_id, session_hosting, shared_action_counter);
             }
         }
         "file:save" => {
@@ -1896,7 +1926,17 @@ fn main() -> Result<()> {
         }
         thaum_painter_workers::SessionNetBoot::None => {}
     }
-    let mut net_published: usize = 0;
+    // Publish-cursor boot truth: an env-booted host already holds its whole
+    // pre-host log in the host seed (the panel host path sets this same
+    // cursor at host time), so the frame loop must start publishing past it —
+    // starting at 0 would re-log the entire history and double-apply undo/
+    // redo replay on every joiner. Join boot rebuilt the runtime from the
+    // snapshot, so its cursor stays 0.
+    let mut net_published: usize = if session_net.as_ref().is_some_and(|net| net.is_host()) {
+        shared_document.actions.len()
+    } else {
+        0
+    };
     let mut current_document_root: Option<PathBuf> = None;
 
     let mut state = boot_renderer(config)?;
@@ -2667,6 +2707,8 @@ fn main() -> Result<()> {
                     timeline_state.borrow().current_breath,
                     &mut canvas,
                     &selection,
+                    &session_user_id,
+                    session_net.as_ref().is_some_and(|net| net.is_host()),
                 )?;
             }
             let module_hit = if handled_command_bar {
