@@ -79,11 +79,11 @@ Deployment truth (J 2026-09-08): JOBO (always-on Linux server box, 32c/122GB, he
 - tests: none (manual bring-up checklist)
 - data: none
 
-## open questions (resolve before phase-2)
-- [ ] TLS strategy for JOBO dev relay: self-signed + TOFU pinning in the client (no domain needed) vs real cert via a domain J owns. TOFU is the lean default; confirm.
-- [ ] Transport inside TLS: raw TLS + length-prefixed NDJSON (lean, mirrors current NDJSON) vs WebSocket (heavier, proxy-friendlier). Lean default wins unless a proxy need appears.
-- [ ] Invite code shape: `thaum-<room>-<token>` single string vs room+token split. Single string is the consumer default.
-- [ ] Does the relay ever persist anything? Default: nothing on disk, rooms die with the last member. Confirm.
+## open questions (settled 2026-09-08)
+- [x] TLS strategy: real cert via a subdomain of jartanddesign.com pointed at JOBO (Let's Encrypt, certbot outside the binary; the relay takes cert/key paths). Ops step in the deploy phase: DNS A record + port-forward 443 (or the chosen port) + certbot renewal.
+- [x] Transport inside TLS: raw TLS + length-prefixed NDJSON (mirrors the current wire; no WebSocket).
+- [x] Invite code shape: ONE short field, no prefix: `<room6>-<token10>` (17 chars, ambiguous-glyph-free alphabet). The JOIN field routes by shape: contains `:` = ip:port (LAN), otherwise = relay code.
+- [x] Relay persistence: NONE. Rooms live only while connected; zero disk state. The host owns all document truth (settled model) — the relay only routes.
 
 ## phases
 ### phase-1 — architecture alignment + encapsulation ordering
@@ -95,36 +95,37 @@ Deployment truth (J 2026-09-08): JOBO (always-on Linux server box, 32c/122GB, he
 - [x] order: relay (protocol+server+lane) → session-net lane → orchestration wiring → session-panel UX → JOBO deploy → verification
 
 ### phase-2 — plan + build `workers/session-relay/`
-- [ ] write `plans/home-j-repos-thaum-painter-workers-session-relay-plan.md`
-- [ ] resolve open questions (TLS shape, transport-in-TLS, code shape, persistence)
-- [ ] relay protocol: room join with token auth, record passthrough in arrival order, presence passthrough, deny reasons, close/room-end
-- [ ] relay server bin: room registry, per-room client sets, record-size cap, room-cap, rate guard, TLS
-- [ ] relay client lane: `RelayLink` with the same line-send/recv shape as `tcp.rs`; host-role and joiner-role wrappers around the existing cores
-- [ ] tests: join/deny, passthrough order, caps, drop/reconnect
+- [x] write `plans/home-j-repos-thaum-painter-workers-session-relay-plan.md`
+- [x] resolve open questions (TLS shape, transport-in-TLS, code shape, persistence)
+- [x] relay protocol: room join with token auth, record passthrough in arrival order, presence passthrough, deny reasons, close/room-end
+- [x] relay server bin: room registry, per-room client sets, record-size cap, room-cap, rate guard, TLS
+- [x] relay client lane: `RelayLink` with the same line-send/recv shape as `tcp.rs`; host-role and joiner-role wrappers around the existing cores
+- [x] tests: join/deny, passthrough order, caps, drop/reconnect
+- [x] TLS slice (J 2026-09-08): rustls both ends — `TlsRelayServerAcceptor` (cert/key PEM, certbot output) wires the bin's real listener; client dials TLS via webpki roots, plaintext only ever loopback; handshake-appdata collision captured + replayed; in-process TLS end-to-end test green
 
 ### phase-3 — plan + edit `workers/session-net/`
-- [ ] write `plans/home-j-repos-thaum-painter-workers-session-net-plan.md`
-- [ ] `SessionNet::Relay` shape wiring host/joiner cores through the lane
-- [ ] rejoin over relay (existing backoff path), reseed over relay, invite truth returns the code
-- [ ] tests: relay-mode convergence, rejoin, reseed
+- [x] write `plans/home-j-repos-thaum-painter-workers-session-net-plan.md`
+- [x] `SessionNet::Relay` shape wiring host/joiner cores through the lane
+- [x] rejoin over relay (existing backoff path), reseed over relay, invite truth returns the code
+- [x] tests: relay-mode convergence, rejoin, reseed
 
 ### phase-4 — plan + edit `orchestration/build-commands/`
-- [ ] write `plans/home-j-repos-thaum-painter-orchestration-build-commands-plan.md`
-- [ ] env boot variants for relay
-- [ ] panel-action routing: code → relay lane, `ip:port` → direct lane
-- [ ] invite-copy format for relay sessions
-- [ ] tests: boot parsing, routing
+- [x] write `plans/home-j-repos-thaum-painter-orchestration-build-commands-plan.md`
+- [x] env boot variants for relay
+- [x] panel-action routing: code → relay lane, `ip:port` → direct lane
+- [x] invite-copy format for relay sessions
+- [x] tests: boot parsing, routing
 
 ### phase-5 — plan + edit `domain/modules/individuals/session-panel/`
-- [ ] write `plans/home-j-repos-thaum-painter-domain-modules-individuals-session-panel-plan.md`
-- [ ] code-shaped input accepted in the join field (hint text names both shapes)
-- [ ] relay invite display + copy from synced truth
-- [ ] tests: passthrough + display
+- [x] write `plans/home-j-repos-thaum-painter-domain-modules-individuals-session-panel-plan.md`
+- [x] code-shaped input accepted in the join field (hint text names both shapes)
+- [x] relay invite display + copy from synced truth
+- [x] tests: passthrough + display
 
 ### phase-6 — JOBO deployment
-- [ ] deploy notes + script under `orchestration/session-relay/deploy/`
-- [ ] systemd unit, TLS bootstrap, firewall/port checklist
-- [ ] live bring-up on JOBO + external-network smoke test (join from artinator over the relay)
+- [x] deploy notes + script under `orchestration/session-relay/deploy/`
+- [x] systemd unit, TLS bootstrap, firewall/port checklist
+- [ ] live bring-up on JOBO + external-network smoke test (join from artinator over the relay) — blocked on the DNS A record + certbot cert (runbook step "One-time: DNS + cert")
 
 ### phase-7 — final verification + repo-rule sweep + git commit
 - [ ] every touched encapsulation has a linked, satisfied encapsulation plan

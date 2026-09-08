@@ -29,7 +29,8 @@ pub const DEFAULT_SESSION_HOST_PORT: u16 = 4747;
 /// keepalive-ping every couple of seconds, so this only ever fires on a
 /// half-open dead connection — the case that would otherwise squat the
 /// client's user_id forever and deny every honest rejoin of that identity.
-const CLIENT_SEEN_TIMEOUT: Duration = Duration::from_secs(10);
+/// Shared with the relay host bridge, which drives the same core.
+pub const CLIENT_SEEN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// `THAUM_SESSION_HOST_PORT` overrides the default listen port.
 pub fn host_port_from_env() -> u16 {
@@ -273,7 +274,7 @@ fn drain_and_route(
     }
 }
 
-fn rejection_reason(rejection: crate::session_host::ClientRejection) -> String {
+pub fn rejection_reason(rejection: crate::session_host::ClientRejection) -> String {
     use crate::session_host::ClientRejection::*;
     match rejection {
         ProtocolVersion => "protocol-version".to_string(),

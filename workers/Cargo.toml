@@ -12,7 +12,16 @@ path = "lib.rs"
 serde.workspace = true
 serde_json.workspace = true
 if-addrs.workspace = true
+getrandom.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+webpki-roots.workspace = true
 thaum-painter-domain = { path = "../domain" }
 
 [dev-dependencies]
 thaum-renderer-domain = { path = "../../thaum-renderer/domain" }
+rcgen = "0.14"
+
+[[bin]]
+name = "thaum-session-relay"
+path = "session-relay/bin.rs"

@@ -48,8 +48,9 @@ pub struct SessionRosterRow {
 pub enum SessionPanelAction {
     /// Host a session on the current document.
     HostRequested,
-    /// Join the host at a typed `ip:port` (default port applied by the
-    /// orchestration layer through `join_address`).
+    /// Join the host at a typed `ip:port` (LAN lane) or an invite code
+    /// (relay lane; routed by shape in the orchestration layer). The panel
+    /// stays a dumb view either way.
     JoinRequested { address: String },
     /// Copy the invite addresses to the OS clipboard (orchestration-owned).
     CopyInvite,
@@ -434,7 +435,7 @@ impl Module for SessionPanelModule {
             let (join_text, join_color) = if self.focus == FieldFocus::JoinAddress {
                 (format!("{}_", self.join_draft), vivid)
             } else if self.join_draft.is_empty() {
-                ("ip:port + ENTER".to_string(), dim)
+                ("ip:port or code + ENTER".to_string(), dim)
             } else {
                 (self.join_draft.clone(), text)
             };

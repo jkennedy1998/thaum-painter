@@ -6,6 +6,8 @@ pub mod session_host;
 pub mod session_host_tcp;
 #[path = "session-net/session_net.rs"]
 pub mod session_net;
+#[path = "session-relay/mod.rs"]
+pub mod session_relay;
 
 pub use session_client::{SessionClient, SessionClientError};
 pub use session_host::{

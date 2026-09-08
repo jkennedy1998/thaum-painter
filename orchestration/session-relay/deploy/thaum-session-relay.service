@@ -1,0 +1,22 @@
+[Unit]
+Description=thaum-painter session relay (TLS room router)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# certbot fullchain/privkey for the relay hostname. Reload the unit after
+# renewal via the deploy hook (see runbook.md) — the relay loads certs at
+# boot only.
+ExecStart=/opt/thaum-session-relay/thaum-session-relay --port 443 --tls-cert /etc/letsencrypt/live/relay.jartanddesign.com/fullchain.pem --tls-key /etc/letsencrypt/live/relay.jartanddesign.com/privkey.pem
+Restart=on-failure
+RestartSec=2
+# The relay holds no secrets beyond the TLS key and no disk state at all.
+# Rooms are memory-only and die with the process by design.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/etc/letsencrypt/live/relay.jartanddesign.com /etc/letsencrypt/archive
+
+[Install]
+WantedBy=multi-user.target

@@ -245,30 +245,46 @@ fn apply_session_panel_action(
     let mut panel = session_panel_state.borrow_mut();
     match action {
         SessionPanelAction::HostRequested => {
-            // Snapshot source freezes the CURRENT structure; the host log is
-            // seeded with the pre-host action history (the serialized truth:
-            // baselines + unfolded records). Canvas content rebuilds purely
-            // through log replay, so without the seed joiners would see
-            // layers but blank cells for everything painted before hosting.
+            // Lane choice: THAUM_SESSION_RELAY set → host over the relay
+            // (invite code, works across networks); otherwise the LAN port.
+            // The same host core and seed flow runs behind either lane.
             let snapshot_document = shared_document.document.clone();
             let seed_records = shared_document.actions_for_file();
-            let port = thaum_painter_workers::host_port_from_env();
-            let net = thaum_painter_workers::SessionNet::host(
-                Box::new(move || snapshot_document.clone()),
-                thaum_painter_workers::session_user_from_identity(session_identity),
-                port,
-                seed_records,
-            );
-            match net {
-                Ok(net) => {
+            let relay = std::env::var("THAUM_SESSION_RELAY").ok().filter(|r| !r.is_empty());
+            let result = match relay {
+                Some(relay) => thaum_painter_workers::SessionNet::host_relay(
+                    &relay,
+                    Box::new(move || snapshot_document.clone()),
+                    thaum_painter_workers::session_user_from_identity(session_identity),
+                    seed_records,
+                )
+                .map(|net| (net, format!("hosting over relay {relay}"))),
+                None => {
+                    let port = thaum_painter_workers::host_port_from_env();
+                    thaum_painter_workers::SessionNet::host(
+                        Box::new(move || snapshot_document.clone()),
+                        thaum_painter_workers::session_user_from_identity(session_identity),
+                        port,
+                        seed_records,
+                    )
+                    .map(|net| (net, format!("hosting on port {port}")))
+                }
+            };
+            match result {
+                Ok((net, event)) => {
                     // Everything already in the local log is inside the
                     // frozen snapshot — never republished.
                     *net_published = shared_document.actions.len();
-                    panel.push_event(format!("hosting on port {port}"));
+                    let invite = net.invite_addresses().first().cloned();
+                    let event = match &invite {
+                        Some(invite) => format!("{event}; invite {invite}"),
+                        None => event,
+                    };
+                    panel.push_event(event.clone());
                     thaum_painter_domain::debug_log::info(
                         "session",
                         &format!(
-                            "panel: hosting on port {port}; invites {:?}",
+                            "panel: {event}; invites {:?}",
                             net.invite_addresses()
                         ),
                     );
@@ -278,19 +294,41 @@ fn apply_session_panel_action(
                     panel.push_event(format!("host failed: {error}"));
                     thaum_painter_domain::debug_log::error(
                         "session",
-                        &format!("panel: host failed on port {port}: {error}"),
+                        &format!("panel: host failed: {error}"),
                     );
                 }
             }
         }
         SessionPanelAction::JoinRequested { address } => {
-            let address = thaum_painter_workers::join_address(&address);
-            let net = thaum_painter_workers::SessionNet::join(
-                &address,
-                thaum_painter_workers::session_user_from_identity(session_identity),
-            );
-            match net {
-                Ok((net, snapshot)) => {
+            // Shape routing (settled): contains ':' → ip:port LAN join;
+            // otherwise → relay invite code, relayed through
+            // THAUM_SESSION_RELAY. The panel stays a dumb view.
+            let result = if address.contains(':') {
+                let address = thaum_painter_workers::join_address(&address);
+                thaum_painter_workers::SessionNet::join(
+                    &address,
+                    thaum_painter_workers::session_user_from_identity(session_identity),
+                )
+                .map(|(net, snapshot)| (net, snapshot, address))
+            } else {
+                // A code-shaped join without an explicit relay env dials
+                // the built-in relay — the consumer path. THAUM_SESSION_RELAY
+                // overrides.
+                let relay = std::env::var("THAUM_SESSION_RELAY")
+                    .ok()
+                    .filter(|r| !r.is_empty())
+                    .unwrap_or_else(
+                        || thaum_painter_workers::session_relay::DEFAULT_RELAY_ADDRESS.to_string(),
+                    );
+                thaum_painter_workers::SessionNet::join_relay(
+                    &relay,
+                    &address,
+                    thaum_painter_workers::session_user_from_identity(session_identity),
+                )
+                .map(|(net, snapshot)| (net, snapshot, format!("relay {relay} code {address}")))
+            };
+            match result {
+                Ok((net, snapshot, label)) => {
                     // Figma's fresh-copy model: the runtime rebuilds from the
                     // host's snapshot exactly like the env-boot join path.
                     *shared_document = SharedDocumentRuntime::new(snapshot);
@@ -305,7 +343,7 @@ fn apply_session_panel_action(
                         canvas,
                     );
                     *net_published = 0;
-                    panel.push_event(format!("joined {address}"));
+                    panel.push_event(format!("joined {label}"));
                     *session_net = Some(net);
                 }
                 Err(error) => {
@@ -2008,6 +2046,73 @@ fn main() -> Result<()> {
                     thaum_painter_domain::debug_log::error(
                         "session",
                         &format!("boot: failed to join {address}: {error} — will not retry; rejoin only covers a lost link after joining"),
+                    );
+                }
+            }
+        }
+        thaum_painter_workers::SessionNetBoot::RelayHost(relay) => {
+            // Relay lane boot: same host core, same seed, but the invite is
+            // the minted `<room6>-<token10>` code — no IP, no port forward,
+            // joiners from any network dial the relay out.
+            let boot_document = shared_document.document.clone();
+            let seed_records = shared_document.actions_for_file();
+            let net = thaum_painter_workers::SessionNet::host_relay(
+                &relay,
+                Box::new(move || boot_document.clone()),
+                thaum_painter_workers::session_user_from_identity(&session_identity),
+                seed_records,
+            );
+            match net {
+                Ok(net) => {
+                    let invite = net
+                        .invite_addresses()
+                        .first()
+                        .cloned()
+                        .unwrap_or_default();
+                    eprintln!(
+                        "session hosting over relay {relay} as {} — invite code: {invite}",
+                        net.user_id()
+                    );
+                    thaum_painter_domain::debug_log::info(
+                        "session",
+                        &format!(
+                            "boot: hosting over relay {relay} as {}; invite {invite}",
+                            net.user_id()
+                        ),
+                    );
+                    session_net = Some(net);
+                }
+                Err(error) => {
+                    eprintln!("failed to host session over relay {relay}: {error}");
+                    thaum_painter_domain::debug_log::error(
+                        "session",
+                        &format!("boot: relay host to {relay} failed: {error}"),
+                    );
+                }
+            }
+        }
+        thaum_painter_workers::SessionNetBoot::RelayJoin { relay, code } => {
+            let net = thaum_painter_workers::SessionNet::join_relay(
+                &relay,
+                &code,
+                thaum_painter_workers::session_user_from_identity(&session_identity),
+            );
+            match net {
+                Ok((net, snapshot)) => {
+                    shared_document = SharedDocumentRuntime::new(snapshot);
+                    shared_document_paths =
+                        painter_shared_document_paths(&shared_document.document.document_id);
+                    eprintln!(
+                        "joined relay session {code} at {relay} as {}",
+                        net.user_id()
+                    );
+                    session_net = Some(net);
+                }
+                Err(error) => {
+                    eprintln!("failed to join relay session {code} at {relay}: {error}");
+                    thaum_painter_domain::debug_log::error(
+                        "session",
+                        &format!("boot: relay join {code} at {relay} failed: {error} — will not retry; rejoin only covers a lost link after joining"),
                     );
                 }
             }
