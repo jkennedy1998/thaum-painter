@@ -2524,9 +2524,10 @@ fn main() -> Result<()> {
                 self_display_name,
             );
         }
-        let session_panel_open = session_panel_state.borrow().panel_open();
-        let _ = modules.set_hidden("painter_session_panel", !session_panel_open);
-        if let Some(action) = session_panel_state.borrow_mut().take_pending_action() {
+        // Take first, then apply: `apply_session_panel_action` re-borrows the
+        // state, so holding the `RefMut` here paniced on every panel action.
+        let action = session_panel_state.borrow_mut().take_pending_action();
+        if let Some(action) = action {
             apply_session_panel_action(
                 action,
                 &mut session_net,

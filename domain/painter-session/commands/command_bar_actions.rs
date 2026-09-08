@@ -40,6 +40,7 @@ pub fn module_menu_buttons(modules: &ModuleRegistry) -> Vec<CommandBarButton> {
         ("painter_graphic_picker", "GRAPHICS"),
         ("painter_hand_settings", "PROPS"),
         ("painter_ui_customization", "UI COLORS"),
+        ("painter_session_panel", "SESSION"),
     ]
     .into_iter()
     .map(|(module_id, label)| {

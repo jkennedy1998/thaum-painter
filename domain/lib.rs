@@ -120,7 +120,7 @@ pub use selection_state::{
     flood_select_points, PainterSelection, PlaneSelection, SelectionMode, WorldSelection,
 };
 pub use session_panel_module::{
-    SessionChipModule, SessionPanelAction, SessionPanelModule, SessionPanelState, SessionRosterRow,
+    SessionPanelAction, SessionPanelModule, SessionPanelState, SessionRosterRow,
 };
 pub use storage::{
     append_action_record, load_or_create_shared_document, save_shared_document_snapshot,

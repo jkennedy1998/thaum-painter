@@ -1,12 +1,15 @@
-//! Session panel: the user surface for LAN multiplayer (the session-ui plan's
-//! view + intent module). Two `Module` impls share one `SessionPanelState`:
-//! a one-row always-attached chip whose label IS the session status, and the
-//! click-open detail panel (roster, invite copy, join field, name edit).
+//! Session panel: the user surface for LAN multiplayer (the session-ui
+//! plan's view + intent module). One standard `Module` over a shared
+//! `SessionPanelState`: standard gizmo bar (move / close / resize /
+//! seamless) on `PanelChrome` chrome, recallable from the command bar via
+//! the registry's hidden flag — the same shape as every other painter
+//! panel (material-picker pattern). No chip: status lives in the panel's
+//! own synced status row, never in a fake always-attached button.
 //!
-//! Ownership rule: the modules never touch `SessionNet`/`SessionHost`/
-//! `SessionClient`/sockets. They render only what `SessionPanelState::sync`
+//! Ownership rule: the module never touches `SessionNet`/`SessionHost`/
+//! `SessionClient`/sockets. It renders only what `SessionPanelState::sync`
 //! was told — every displayed state is real synced state, never invented —
-//! and emit at most one `SessionPanelAction` per frame via
+//! and emits at most one `SessionPanelAction` per frame via
 //! `take_pending_action` for the orchestration layer to apply onto the one
 //! `Option<SessionNet>`. Swap the transport, the panel doesn't know; swap
 //! the panel, the transport doesn't know.
@@ -21,8 +24,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use thaum_renderer_domain::{
-    Cell, CellColor, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, Module,
-    ModulePointerButton, ModulePointerEvent, ModuleRect, PanelChrome, UiColorRole, UiPalette,
+    Cell, CellColor, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, GizmoBar,
+    GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module, ModulePointerButton,
+    ModulePointerEvent, ModuleRect, PanelChrome, PersistedModuleUiState, UiColorRole, UiPalette,
     WorldPoint,
 };
 
@@ -65,8 +69,8 @@ enum FieldFocus {
     DisplayName,
 }
 
-/// Shared state between the chip, the panel, and their orchestration caller.
-/// The modules only ever read/write this struct — no document or socket.
+/// Shared state between the module and its orchestration caller. The module
+/// only ever reads/writes this struct — no document or socket.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionPanelState {
     /// True while this app participates in a session (either side).
@@ -88,9 +92,6 @@ pub struct SessionPanelState {
     /// The last events (joined / left / dropped / denied / copied), oldest
     /// first. The panel renders the newest three; nothing it was not told.
     pub events: Vec<String>,
-    /// The panel's open flag, toggled by the chip click. The orchestration
-    /// layer applies it to the registry each frame (`set_hidden`).
-    panel_open: bool,
     pending_action: Option<SessionPanelAction>,
 }
 
@@ -107,18 +108,8 @@ impl SessionPanelState {
         }
     }
 
-    /// Whether the detail panel should currently be shown.
-    pub fn panel_open(&self) -> bool {
-        self.panel_open
-    }
-
-    /// Chip click: open when closed, close when open.
-    pub fn toggle_panel(&mut self) {
-        self.panel_open = !self.panel_open;
-    }
-
-    /// The chip's one-line status, derived only from synced fields.
-    pub fn chip_label(&self) -> String {
+    /// The one-line session status, derived only from synced fields.
+    pub fn status_label(&self) -> String {
         if self.session_ended {
             return "ENDED".to_string();
         }
@@ -143,8 +134,8 @@ impl SessionPanelState {
     }
 
     /// Refreshes the displayed truth from the live session. Called once per
-    /// frame by the orchestration layer; events and the panel-open flag are
-    /// the panel's own memory and are never touched here.
+    /// frame by the orchestration layer; events are the panel's own memory
+    /// and are never touched here.
     #[allow(clippy::too_many_arguments)] // one arg per synced truth field
     pub fn sync(
         &mut self,
@@ -192,129 +183,36 @@ fn push_text(cells: &mut Vec<Cell>, x: i32, y: i32, glyph: char, color: CellColo
 }
 
 fn push_line(cells: &mut Vec<Cell>, y: i32, line: &str, color: CellColor, width: usize) {
+    // Text starts one content column in, matching the roster rows' left pad.
     for (index, glyph) in truncate_to_width(line, width).chars().enumerate() {
-        push_text(cells, index as i32 + 1, y, glyph, color);
+        push_text(cells, content_x_of(index as i32 + 1), y, glyph, color);
     }
 }
 
-/// The one-row always-attached session status chip. Click opens the panel.
-pub struct SessionChipModule {
-    id: String,
-    rect: ModuleRect,
-    state: Rc<RefCell<SessionPanelState>>,
-    palette: UiPalette,
-}
-
-impl SessionChipModule {
-    pub fn new(
-        id: impl Into<String>,
-        rect: ModuleRect,
-        state: Rc<RefCell<SessionPanelState>>,
-    ) -> Self {
-        Self {
-            id: id.into(),
-            rect,
-            state,
-            palette: UiPalette::default(),
-        }
-    }
-
-    pub fn with_palette(mut self, palette: UiPalette) -> Self {
-        self.palette = palette;
-        self
-    }
-}
-
-impl Module for SessionChipModule {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
-    fn rect(&self) -> ModuleRect {
-        self.rect
-    }
-
-    fn draw(&self) -> CellGroup {
-        let state = self.state.borrow();
-        let label = state.chip_label();
-        let width = (self.rect.x1 - self.rect.x0) as usize;
-        let label = truncate_to_width(&label, width.saturating_sub(2));
-        let active = state.in_session && !state.session_ended;
-        let dot_glyph = if active { '●' } else { '○' };
-        let dot_color = if state.session_ended || state.reconnecting {
-            self.palette.get(UiColorRole::Vivid)
-        } else if active {
-            self.palette.get(UiColorRole::Bright)
-        } else {
-            self.palette.get(UiColorRole::Dimmest)
-        };
-        let text_color = self.palette.get(text_color_role());
-
-        let mut cells = Vec::new();
-        cells.push(Cell {
-            position: CellPoint { x: 0, y: 0, z: 0 },
-            graphic: CellGraphic::Glyph(dot_glyph),
-            color: dot_color,
-            ..Cell::default()
-        });
-        for (index, glyph) in format!(" {label}").chars().enumerate() {
-            cells.push(Cell {
-                position: CellPoint {
-                    x: index as i32 + 1,
-                    y: 0,
-                    z: 0,
-                },
-                graphic: CellGraphic::Glyph(glyph),
-                color: text_color,
-                ..Cell::default()
-            });
-        }
-
-        CellGroup::from_cells(
-            WorldPoint {
-                x: self.rect.x0,
-                y: self.rect.y0,
-                z: 0,
-            },
-            cells,
-        )
-        .with_intake_behavior(CellGroupIntakeBehavior::Flat2d)
-    }
-
-    fn on_pointer_event(&mut self, event: ModulePointerEvent) {
-        let ModulePointerEvent::Click {
-            button: ModulePointerButton::Left,
-            ..
-        } = event
-        else {
-            return;
-        };
-        self.state.borrow_mut().toggle_panel();
-    }
-}
-
-/// The click-open session detail panel: roster, invite copy, join field,
-/// name edit, and the log-lite event lines. Draws and hit-tests nothing
-/// while closed.
+/// The click-open session detail panel in standard module form: gizmo-bar
+/// chrome, command-bar recall, roster, invite copy, join field, name edit,
+/// and the log-lite event lines.
 pub struct SessionPanelModule {
     id: String,
     rect: ModuleRect,
     state: Rc<RefCell<SessionPanelState>>,
     palette: UiPalette,
+    gizmos: GizmoBar,
+    gizmo_state: GizmoState,
+    hidden: bool,
     focus: FieldFocus,
     join_draft: String,
     name_draft: String,
 }
 
-/// Roster rows the panel can show; the rest scroll off (v1 keeps the panel
-/// small — more users than this is past LAN-v1 honesty anyway).
-const MAX_ROSTER_ROWS: usize = 8;
-
-/// Local content rows (bottom-up) shared by draw and hit-test.
+/// Content rows (local to `PanelChrome::content_origin`, bottom-up) shared
+/// by draw and hit-test.
 const ROW_EVENTS_BASE: i32 = 0;
-const ROW_NAME: i32 = 3;
-const ROW_BUTTONS: i32 = 4;
-const ROW_ROSTER_BASE: i32 = 5;
+const ROW_NAME: i32 = 4;
+const ROW_BUTTONS: i32 = 5;
+const ROW_ROSTER_BASE: i32 = 7;
+const ROW_JOIN: i32 = 6;
+const ROW_HOST: i32 = 8;
 
 impl SessionPanelModule {
     pub fn new(
@@ -327,6 +225,9 @@ impl SessionPanelModule {
             rect,
             state,
             palette: UiPalette::default(),
+            gizmos: GizmoBar::standard(),
+            gizmo_state: GizmoState::new(),
+            hidden: false,
             focus: FieldFocus::None,
             join_draft: String::new(),
             name_draft: String::new(),
@@ -338,8 +239,39 @@ impl SessionPanelModule {
         self
     }
 
+    /// Content width in cells inside the chrome.
     fn content_width(&self) -> i32 {
-        self.rect.x1 - self.rect.x0 - 1
+        let (width, _) = PanelChrome::content_size(self.rect);
+        width
+    }
+
+    /// Content height in cells inside the chrome.
+    fn content_height(&self) -> i32 {
+        let (_, height) = PanelChrome::content_size(self.rect);
+        height
+    }
+
+    /// Converts an absolute pointer position into content-local coordinates.
+    /// `None` when the point is outside the usable content area (gizmo bar,
+    /// borders and title row are chrome, not content).
+    fn content_local(&self, x: i32, y: i32) -> Option<(i32, i32)> {
+        let (origin_x, origin_y) = PanelChrome::content_origin();
+        let local_x = x - self.rect.x0 - origin_x;
+        let local_y = y - self.rect.y0 - origin_y;
+        (local_x >= 0 && local_y >= 0 && local_y < self.content_height())
+            .then_some((local_x, local_y))
+    }
+
+    /// Roster rows the panel can show; the rest scroll off (v1 keeps the
+    /// panel small — more users than fits is past LAN-v1 honesty anyway).
+    fn visible_roster_rows(&self) -> usize {
+        let fit = (self.content_height() - 1 - ROW_ROSTER_BASE).max(0) as usize;
+        self.state.borrow().roster.len().min(fit)
+    }
+
+    fn roster_row_at(&self, count: usize, row: i32) -> Option<usize> {
+        let index = (row - ROW_ROSTER_BASE) as usize;
+        (index < count).then_some(index)
     }
 
     /// Denial/event text passthrough: the panel shows what actually happened,
@@ -354,9 +286,10 @@ impl SessionPanelModule {
         ))
     }
 
-    fn roster_row_at(&self, count: usize, row: i32) -> Option<usize> {
-        let index = (row - ROW_ROSTER_BASE) as usize;
-        (index < count).then_some(index)
+    fn blur_fields(&mut self) {
+        self.focus = FieldFocus::None;
+        self.join_draft.clear();
+        self.name_draft.clear();
     }
 }
 
@@ -369,9 +302,14 @@ impl Module for SessionPanelModule {
         self.rect
     }
 
+    /// Tooltip hotspots: the module's gizmo bar, so every gizmo-enabled
+    /// panel grows tooltips from one shared implementation.
+    fn hotspots(&self) -> Vec<Hotspot> {
+        self.gizmos.hotspots(self.rect)
+    }
+
     fn draw(&self) -> CellGroup {
-        let state = self.state.borrow();
-        if !state.panel_open {
+        if self.hidden {
             return CellGroup::new(WorldPoint {
                 x: self.rect.x0,
                 y: self.rect.y0,
@@ -380,40 +318,58 @@ impl Module for SessionPanelModule {
             .with_intake_behavior(CellGroupIntakeBehavior::Flat2d);
         }
 
-        let chrome = PanelChrome::new(self.rect, &self.palette).with_title("SESSION");
-        let mut group = CellGroup::from_cells(
-            WorldPoint {
-                x: self.rect.x0,
-                y: self.rect.y0,
-                z: 0,
-            },
-            chrome.cells(),
-        )
-        .with_intake_behavior(CellGroupIntakeBehavior::Flat2d);
+        let state = self.state.borrow();
+        let mut cells: Vec<Cell> = if self.gizmo_state.is_seamless() {
+            Vec::new()
+        } else {
+            self.gizmo_state
+                .decorate_panel_chrome(
+                    PanelChrome::new(self.rect, &self.palette)
+                        .with_title("SESSION")
+                        .with_title_start_x(self.gizmos.title_start_x()),
+                    &self.palette,
+                )
+                .cells()
+        };
+        if self.gizmo_state.should_draw_gizmo_bar() {
+            cells.extend(
+                self.gizmos
+                    .cells(self.rect, &self.gizmo_state, &self.palette),
+            );
+        }
 
         let text = self.palette.get(text_color_role());
         let bright = self.palette.get(UiColorRole::Bright);
         let vivid = self.palette.get(UiColorRole::Vivid);
         let dim = self.palette.get(UiColorRole::Dimmest);
-
-        let mut cells = Vec::new();
         let width = self.content_width() as usize;
+        let (_, content_y) = PanelChrome::content_origin();
+
+        // Status row at the top of the content area: the synced truth, never
+        // invented.
+        push_line(
+            &mut cells,
+            content_y + self.content_height() - 1,
+            &state.status_label(),
+            bright,
+            width,
+        );
 
         if state.in_session {
             // Roster rows: entry zero is the host (crowned), you marked.
-            let visible = state.roster.len().min(MAX_ROSTER_ROWS);
-            for (index, member) in state.roster.iter().take(visible).enumerate() {
-                let row_y = ROW_ROSTER_BASE + index as i32;
+            let fit = (self.content_height() - 1 - ROW_ROSTER_BASE).max(0) as usize;
+            for (index, member) in state.roster.iter().take(fit).enumerate() {
+                let row_y = content_y + ROW_ROSTER_BASE + index as i32;
                 let color = CellColor::Flat([
                     member.color[0] as f32 / 255.0,
                     member.color[1] as f32 / 255.0,
                     member.color[2] as f32 / 255.0,
                     1.0,
                 ]);
-                push_text(&mut cells, 1, row_y, '●', color);
+                push_text(&mut cells, content_x_of(1), row_y, '●', color);
                 let mut x = 3;
                 if member.is_host {
-                    push_text(&mut cells, x, row_y, '♛', bright);
+                    push_text(&mut cells, content_x_of(x), row_y, '♛', bright);
                     x += 1;
                 }
                 let mut label = member.display_name.clone();
@@ -421,7 +377,7 @@ impl Module for SessionPanelModule {
                     label.push_str(" (you)");
                 }
                 for glyph in truncate_to_width(&label, width.saturating_sub(x as usize)).chars() {
-                    push_text(&mut cells, x, row_y, glyph, text);
+                    push_text(&mut cells, content_x_of(x), row_y, glyph, text);
                     x += 1;
                 }
             }
@@ -430,13 +386,19 @@ impl Module for SessionPanelModule {
             if state.is_host {
                 push_line(
                     &mut cells,
-                    ROW_BUTTONS,
+                    content_y + ROW_BUTTONS,
                     "[COPY INVITE]  [LEAVE]",
                     bright,
                     width,
                 );
             } else {
-                push_line(&mut cells, ROW_BUTTONS, "[LEAVE]", bright, width);
+                push_line(
+                    &mut cells,
+                    content_y + ROW_BUTTONS,
+                    "[LEAVE]",
+                    bright,
+                    width,
+                );
             }
 
             // Name edit row: committed with Enter through the key-capture seam.
@@ -447,14 +409,20 @@ impl Module for SessionPanelModule {
             };
             push_line(
                 &mut cells,
-                ROW_NAME,
+                content_y + ROW_NAME,
                 &format!("NAME> {name_text}"),
                 name_color,
                 width,
             );
         } else {
             // Offline: one-click host, one-field join, name edit.
-            push_line(&mut cells, 13, "> HOST SESSION", bright, width);
+            push_line(
+                &mut cells,
+                content_y + ROW_HOST,
+                "> HOST SESSION",
+                bright,
+                width,
+            );
             let (join_text, join_color) = if self.focus == FieldFocus::JoinAddress {
                 (format!("{}_", self.join_draft), vivid)
             } else if self.join_draft.is_empty() {
@@ -464,7 +432,7 @@ impl Module for SessionPanelModule {
             };
             push_line(
                 &mut cells,
-                11,
+                content_y + ROW_JOIN,
                 &format!("JOIN> {join_text}"),
                 join_color,
                 width,
@@ -476,7 +444,7 @@ impl Module for SessionPanelModule {
             };
             push_line(
                 &mut cells,
-                8,
+                content_y + ROW_NAME,
                 &format!("NAME> {name_text}"),
                 name_color,
                 width,
@@ -486,56 +454,83 @@ impl Module for SessionPanelModule {
         // Event lines: the newest three, newest lowest.
         for row in ROW_EVENTS_BASE..ROW_EVENTS_BASE + EVENT_LINES as i32 {
             if let Some((line, color)) = self.event_text(&state.events, row) {
-                push_line(&mut cells, row, &line, color, width);
+                push_line(&mut cells, content_y + row, &line, color, width);
             }
         }
 
-        group.extend(cells);
-        group
+        CellGroup::from_cells(
+            WorldPoint {
+                x: self.rect.x0,
+                y: self.rect.y0,
+                z: 0,
+            },
+            cells,
+        )
+        .with_intake_behavior(CellGroupIntakeBehavior::Flat2d)
     }
 
     fn on_pointer_event(&mut self, event: ModulePointerEvent) {
-        let ModulePointerEvent::Click { x, y, button } = event else {
-            return;
-        };
-        if button != ModulePointerButton::Left {
-            return;
-        }
-        let local_x = x - self.rect.x0;
-        let local_y = y - self.rect.y0;
-        let mut state = self.state.borrow_mut();
-        if !state.panel_open {
-            return;
-        }
-        if state.in_session {
-            if local_y == ROW_BUTTONS {
-                if state.is_host && local_x < 14 {
-                    state.queue_action(SessionPanelAction::CopyInvite);
-                } else {
-                    state.queue_action(SessionPanelAction::LeaveRequested);
+        match event {
+            ModulePointerEvent::Click { x, y, button } => {
+                if self.hidden {
+                    return;
                 }
-                self.focus = FieldFocus::None;
-            } else if local_y == ROW_NAME {
-                self.focus = FieldFocus::DisplayName;
-                self.name_draft = state.self_display_name.clone();
-            } else if self
-                .roster_row_at(state.roster.len().min(MAX_ROSTER_ROWS), local_y)
-                .is_none()
-            {
-                self.focus = FieldFocus::None;
+                if let Some(outcome) = self.gizmo_state.handle_click(&self.gizmos, self.rect, x, y)
+                {
+                    if outcome == GizmoClickOutcome::Gizmo(GizmoKind::Close) {
+                        self.hidden = true;
+                        self.blur_fields();
+                    }
+                    return;
+                }
+                if button != ModulePointerButton::Left {
+                    return;
+                }
+                let Some((local_x, local_y)) = self.content_local(x, y) else {
+                    return;
+                };
+                let mut state = self.state.borrow_mut();
+                if state.in_session {
+                    if local_y == ROW_BUTTONS {
+                        if state.is_host && local_x < 14 {
+                            state.queue_action(SessionPanelAction::CopyInvite);
+                        } else {
+                            state.queue_action(SessionPanelAction::LeaveRequested);
+                        }
+                        self.focus = FieldFocus::None;
+                    } else if local_y == ROW_NAME {
+                        self.focus = FieldFocus::DisplayName;
+                        self.name_draft = state.self_display_name.clone();
+                    } else if self
+                        .roster_row_at(self.visible_roster_rows(), local_y)
+                        .is_none()
+                    {
+                        self.focus = FieldFocus::None;
+                    }
+                } else {
+                    if local_y == ROW_HOST {
+                        state.queue_action(SessionPanelAction::HostRequested);
+                        self.focus = FieldFocus::None;
+                    } else if local_y == ROW_JOIN {
+                        self.focus = FieldFocus::JoinAddress;
+                    } else if local_y == ROW_NAME {
+                        self.focus = FieldFocus::DisplayName;
+                        self.name_draft = state.self_display_name.clone();
+                    } else {
+                        self.focus = FieldFocus::None;
+                    }
+                }
             }
-        } else {
-            if local_y == 13 {
-                state.queue_action(SessionPanelAction::HostRequested);
-                self.focus = FieldFocus::None;
-            } else if local_y == 11 {
-                self.focus = FieldFocus::JoinAddress;
-            } else if local_y == 8 {
-                self.focus = FieldFocus::DisplayName;
-                self.name_draft = state.self_display_name.clone();
-            } else {
-                self.focus = FieldFocus::None;
+            ModulePointerEvent::Move { x, y } => {
+                self.gizmo_state.note_pointer(&self.gizmos, self.rect, x, y);
+                if let Some(next_rect) = self.gizmo_state.drag_rect(x, y) {
+                    self.rect = next_rect;
+                }
             }
+            ModulePointerEvent::Up { .. } => self.gizmo_state.end_drag(),
+            ModulePointerEvent::Enter => self.gizmo_state.set_hovered(true),
+            ModulePointerEvent::Leave => self.gizmo_state.set_hovered(false),
+            ModulePointerEvent::Down { .. } => {}
         }
     }
 
@@ -543,7 +538,7 @@ impl Module for SessionPanelModule {
     /// Consumes keys only while a field is focused; otherwise every key
     /// falls through to normal binding dispatch.
     fn on_key_capture(&mut self, label: &str) -> bool {
-        if !self.state.borrow().panel_open {
+        if self.hidden {
             return false;
         }
         match self.focus {
@@ -612,6 +607,42 @@ impl Module for SessionPanelModule {
             }
         }
     }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.gizmo_state.wants_pointer_capture()
+    }
+
+    fn is_hidden(&self) -> bool {
+        self.hidden
+    }
+
+    fn set_hidden(&mut self, hidden: bool) {
+        self.hidden = hidden;
+        if hidden {
+            self.blur_fields();
+        }
+    }
+
+    fn persisted_ui_state(&self) -> Option<PersistedModuleUiState> {
+        Some(PersistedModuleUiState::new(
+            self.id(),
+            self.rect,
+            self.gizmo_state.is_seamless(),
+            self.hidden,
+        ))
+    }
+
+    fn apply_persisted_ui_state(&mut self, state: &PersistedModuleUiState) {
+        self.rect = state.rect.to_runtime();
+        self.gizmo_state.set_seamless(state.is_seamless);
+        self.hidden = state.is_hidden;
+    }
+}
+
+/// Pushes content-column `x` into chrome-local cell space (content columns
+/// are offset one cell in from the content origin for the text gutter).
+fn content_x_of(content_x: i32) -> i32 {
+    PanelChrome::content_origin().0 + content_x
 }
 
 #[cfg(test)]
@@ -626,91 +657,103 @@ mod tests {
         Rc::new(RefCell::new(SessionPanelState::default()))
     }
 
-    fn click(module: &mut dyn Module, x: i32, y: i32) {
+    fn panel(state: Rc<RefCell<SessionPanelState>>) -> SessionPanelModule {
+        // h=17, w=24: content 22x14 at content_origin.
+        SessionPanelModule::new("panel", rect(0, 0, 24, 17), state)
+    }
+
+    fn content_click(module: &mut SessionPanelModule, local_x: i32, local_y: i32) {
+        let (origin_x, origin_y) = PanelChrome::content_origin();
         module.on_pointer_event(ModulePointerEvent::Click {
-            x,
-            y,
+            x: origin_x + local_x,
+            y: origin_y + local_y,
             button: ModulePointerButton::Left,
         });
     }
 
     #[test]
-    fn chip_label_reflects_only_synced_truth() {
+    fn status_label_reflects_only_synced_truth() {
         let state = state();
-        let chip = SessionChipModule::new("chip", rect(0, 0, 30, 0), state.clone());
 
-        assert_eq!(state.borrow().chip_label(), "OFFLINE");
+        assert_eq!(state.borrow().status_label(), "OFFLINE");
 
         state.borrow_mut().in_session = true;
         state.borrow_mut().is_host = true;
         state.borrow_mut().invite_addresses = vec!["192.168.1.5:4747".into()];
-        assert_eq!(state.borrow().chip_label(), "HOSTING 192.168.1.5:4747");
+        assert_eq!(state.borrow().status_label(), "HOSTING 192.168.1.5:4747");
 
         state.borrow_mut().is_host = false;
         state.borrow_mut().peer_count = 3;
-        assert_eq!(state.borrow().chip_label(), "CONNECTED (3)");
+        assert_eq!(state.borrow().status_label(), "CONNECTED (3)");
 
         state.borrow_mut().connected = false;
         state.borrow_mut().reconnecting = true;
-        assert_eq!(state.borrow().chip_label(), "RECONNECTING...");
+        assert_eq!(state.borrow().status_label(), "RECONNECTING...");
 
         state.borrow_mut().reconnecting = false;
         state.borrow_mut().session_ended = true;
-        assert_eq!(state.borrow().chip_label(), "ENDED");
+        assert_eq!(state.borrow().status_label(), "ENDED");
     }
 
     #[test]
-    fn chip_click_toggles_the_panel_open_flag() {
+    fn hidden_panel_draws_nothing_and_ignores_clicks() {
         let state = state();
-        let mut chip = SessionChipModule::new("chip", rect(0, 0, 30, 0), state.clone());
+        let mut module = panel(state.clone());
+        module.set_hidden(true);
 
-        assert!(!state.borrow().panel_open());
-        click(&mut chip, 0, 0);
-        assert!(state.borrow().panel_open());
-        click(&mut chip, 5, 0);
-        assert!(!state.borrow().panel_open());
-    }
-
-    #[test]
-    fn chip_draws_the_dot_and_label() {
-        let state = state();
-        let chip = SessionChipModule::new("chip", rect(0, 0, 30, 0), state.clone());
-        let group = chip.draw();
-
-        let dot = group.get(CellPoint { x: 0, y: 0, z: 0 }).unwrap();
-        assert_eq!(dot.graphic, CellGraphic::Glyph('○'));
-
-        state.borrow_mut().in_session = true;
-        let group = chip.draw();
-        let dot = group.get(CellPoint { x: 0, y: 0, z: 0 }).unwrap();
-        assert_eq!(dot.graphic, CellGraphic::Glyph('●'));
-        // "CONNECTED (n)" with zero peers.
-        let first = group.get(CellPoint { x: 1, y: 0, z: 0 }).unwrap();
-        assert_eq!(first.graphic, CellGraphic::Glyph(' '));
-        let c = group.get(CellPoint { x: 2, y: 0, z: 0 }).unwrap();
-        assert_eq!(c.graphic, CellGraphic::Glyph('C'));
-    }
-
-    #[test]
-    fn closed_panel_draws_nothing_and_ignores_clicks() {
-        let state = state();
-        let mut panel = SessionPanelModule::new("panel", rect(0, 0, 24, 17), state.clone());
-
-        let group = panel.draw();
+        let group = module.draw();
         assert!(group.iter_cells().next().is_none());
 
-        click(&mut panel, 3, 13);
+        content_click(&mut module, 3, ROW_HOST);
         assert!(state.borrow_mut().take_pending_action().is_none());
+        // Keys fall through while hidden.
+        assert!(!module.on_key_capture("1"));
+    }
+
+    #[test]
+    fn draws_standard_gizmo_bar_and_session_title() {
+        let state = state();
+        let module = panel(state);
+        let group = module.draw();
+
+        let height = 17;
+        let glyph_at = |x: i32| -> Option<char> {
+            group
+                .get(CellPoint {
+                    x,
+                    y: height - 1,
+                    z: 0,
+                })
+                .map(|cell| match cell.graphic {
+                    CellGraphic::Glyph(glyph) => glyph,
+                    _ => ' ',
+                })
+        };
+        assert_eq!(glyph_at(1), Some('#'));
+        assert_eq!(glyph_at(3), Some('X'));
+        assert_eq!(glyph_at(5), Some('╋'));
+        assert_eq!(glyph_at(7), Some('S'));
+    }
+
+    #[test]
+    fn close_gizmo_hides_the_panel() {
+        let state = state();
+        let mut module = panel(state);
+        module.on_pointer_event(ModulePointerEvent::Click {
+            x: 1 + 2, // close gizmo column
+            y: 16,    // top border row
+            button: ModulePointerButton::Left,
+        });
+        assert!(module.is_hidden());
     }
 
     #[test]
     fn host_button_queues_one_action_per_frame() {
         let state = state();
-        state.borrow_mut().toggle_panel(); // open
-        let mut panel = SessionPanelModule::new("panel", rect(0, 0, 24, 17), state.clone());
+        let mut module = panel(state.clone());
 
         // One click, one action; the take clears it.
-        click(&mut panel, 3, 13);
+        content_click(&mut module, 3, ROW_HOST);
         assert_eq!(
             state.borrow_mut().take_pending_action(),
             Some(SessionPanelAction::HostRequested)
@@ -718,7 +761,7 @@ mod tests {
         assert!(state.borrow_mut().take_pending_action().is_none());
 
         // A second click requeues.
-        click(&mut panel, 3, 13);
+        content_click(&mut module, 3, ROW_HOST);
         assert_eq!(
             state.borrow_mut().take_pending_action(),
             Some(SessionPanelAction::HostRequested)
@@ -728,17 +771,16 @@ mod tests {
     #[test]
     fn join_field_takes_keys_until_enter_commits_the_address() {
         let state = state();
-        state.borrow_mut().toggle_panel();
-        let mut panel = SessionPanelModule::new("panel", rect(0, 0, 24, 17), state.clone());
-        click(&mut panel, 3, 11); // focus the join field
+        let mut module = panel(state.clone());
+        content_click(&mut module, 3, ROW_JOIN); // focus the join field
 
         // Unfocused keys fall through before focus; focused keys are consumed.
         for label in [
             "1", "9", "2", ".", "1", "6", "8", ".", "1", ".", "5", ":", "4", "7", "4", "7",
         ] {
-            assert!(panel.on_key_capture(label));
+            assert!(module.on_key_capture(label));
         }
-        assert!(panel.on_key_capture("ENTER"));
+        assert!(module.on_key_capture("ENTER"));
 
         assert_eq!(
             state.borrow_mut().take_pending_action(),
@@ -747,55 +789,52 @@ mod tests {
             })
         );
         // Focus cleared: keys fall through again.
-        assert!(!panel.on_key_capture("A"));
+        assert!(!module.on_key_capture("A"));
     }
 
     #[test]
     fn join_field_escape_blurs_without_queueing() {
         let state = state();
-        state.borrow_mut().toggle_panel();
-        let mut panel = SessionPanelModule::new("panel", rect(0, 0, 24, 17), state.clone());
-        click(&mut panel, 3, 11);
-        assert!(panel.on_key_capture("1"));
-        assert!(panel.on_key_capture("ESCAPE"));
+        let mut module = panel(state.clone());
+        content_click(&mut module, 3, ROW_JOIN);
+        assert!(module.on_key_capture("1"));
+        assert!(module.on_key_capture("ESCAPE"));
 
         assert!(state.borrow_mut().take_pending_action().is_none());
-        assert!(!panel.on_key_capture("2"));
+        assert!(!module.on_key_capture("2"));
     }
 
     #[test]
     fn name_commit_queues_rename_only_when_changed() {
         let state = state();
-        state.borrow_mut().toggle_panel();
         state.borrow_mut().self_display_name = "J".into();
-        let mut panel = SessionPanelModule::new("panel", rect(0, 0, 24, 17), state.clone());
+        let mut module = panel(state.clone());
 
-        click(&mut panel, 3, 8); // focus the name field (offline row)
-                                 // The draft starts as the current name; typing appends to it.
+        content_click(&mut module, 3, ROW_NAME); // focus the name field
+                                                 // The draft starts as the current name; typing appends to it.
         for label in ["J", "2"] {
-            assert!(panel.on_key_capture(label));
+            assert!(module.on_key_capture(label));
         }
-        assert!(panel.on_key_capture("ENTER"));
+        assert!(module.on_key_capture("ENTER"));
         assert_eq!(
             state.borrow_mut().take_pending_action(),
             Some(SessionPanelAction::SetDisplayName("JJ2".into()))
         );
 
         // Committing the unchanged name queues nothing.
-        click(&mut panel, 3, 8);
-        assert!(panel.on_key_capture("ENTER"));
+        content_click(&mut module, 3, ROW_NAME);
+        assert!(module.on_key_capture("ENTER"));
         assert!(state.borrow_mut().take_pending_action().is_none());
     }
 
     #[test]
     fn leave_and_copy_buttons_route_by_side() {
         let state = state();
-        state.borrow_mut().toggle_panel();
         state.borrow_mut().in_session = true;
 
         // Client side: one leave button.
-        let mut panel = SessionPanelModule::new("panel", rect(0, 0, 24, 17), state.clone());
-        click(&mut panel, 3, ROW_BUTTONS);
+        let mut module = panel(state.clone());
+        content_click(&mut module, 3, ROW_BUTTONS);
         assert_eq!(
             state.borrow_mut().take_pending_action(),
             Some(SessionPanelAction::LeaveRequested)
@@ -803,12 +842,12 @@ mod tests {
 
         // Host side: the left half copies, the right half leaves.
         state.borrow_mut().is_host = true;
-        click(&mut panel, 3, ROW_BUTTONS);
+        content_click(&mut module, 3, ROW_BUTTONS);
         assert_eq!(
             state.borrow_mut().take_pending_action(),
             Some(SessionPanelAction::CopyInvite)
         );
-        click(&mut panel, 16, ROW_BUTTONS);
+        content_click(&mut module, 16, ROW_BUTTONS);
         assert_eq!(
             state.borrow_mut().take_pending_action(),
             Some(SessionPanelAction::LeaveRequested)
@@ -818,7 +857,6 @@ mod tests {
     #[test]
     fn roster_rows_show_crown_and_you_marker_with_presence_colors() {
         let state = state();
-        state.borrow_mut().toggle_panel();
         state.borrow_mut().in_session = true;
         state.borrow_mut().roster = vec![
             SessionRosterRow {
@@ -836,31 +874,32 @@ mod tests {
                 color: [0, 255, 0],
             },
         ];
-        let panel = SessionPanelModule::new("panel", rect(0, 0, 24, 17), state.clone());
-        let group = panel.draw();
+        let module = panel(state.clone());
+        let group = module.draw();
 
+        let (origin_x, origin_y) = PanelChrome::content_origin();
         // Presence dot color rides the real synced color.
         let host_dot = group
             .get(CellPoint {
-                x: 1,
-                y: ROW_ROSTER_BASE,
+                x: origin_x + 1,
+                y: origin_y + ROW_ROSTER_BASE,
                 z: 0,
             })
             .unwrap();
         assert_eq!(host_dot.color, CellColor::Flat([1.0, 0.0, 0.0, 1.0]));
         // Crown on the host row, "(you)" on your row.
         let crown = group.get(CellPoint {
-            x: 3,
-            y: ROW_ROSTER_BASE,
+            x: origin_x + 3,
+            y: origin_y + ROW_ROSTER_BASE,
             z: 0,
         });
         assert!(crown.is_some());
-        let your_row = ROW_ROSTER_BASE + 1;
+        let your_row = origin_y + ROW_ROSTER_BASE + 1;
         let yours: String = (1..6)
             .filter_map(|x| {
                 group
                     .get(CellPoint {
-                        x,
+                        x: origin_x + x,
                         y: your_row,
                         z: 0,
                     })
@@ -876,17 +915,22 @@ mod tests {
     #[test]
     fn events_render_newest_lowest_and_verbatim() {
         let state = state();
-        state.borrow_mut().toggle_panel();
         state.borrow_mut().push_event("joined bob");
         state.borrow_mut().push_event("join denied: session-ended");
-        let panel = SessionPanelModule::new("panel", rect(0, 0, 24, 17), state.clone());
-        let group = panel.draw();
+        let module = panel(state.clone());
+        let group = module.draw();
 
+        let (origin_x, origin_y) = PanelChrome::content_origin();
         let text_at = |y: i32| -> String {
-            (1..24)
+            // Content columns 1..=22; the right border lives at rect.x1.
+            (1..23)
                 .filter_map(|x| {
                     group
-                        .get(CellPoint { x, y, z: 0 })
+                        .get(CellPoint {
+                            x: origin_x + x,
+                            y: origin_y + y,
+                            z: 0,
+                        })
                         .map(|cell| match cell.graphic {
                             CellGraphic::Glyph(glyph) => glyph.to_string(),
                             _ => String::new(),
@@ -897,8 +941,8 @@ mod tests {
         assert_eq!(text_at(ROW_EVENTS_BASE + 1).trim_end(), "joined bob");
         assert_eq!(
             text_at(ROW_EVENTS_BASE).trim_end(),
-            "join denied: session-en"
-        ); // truncated to the panel width, verbatim otherwise
+            "join denied: session-e"
+        ); // truncated to the content width, verbatim otherwise
     }
 
     #[test]
@@ -909,5 +953,37 @@ mod tests {
         state.push_event("three");
         state.push_event("four");
         assert_eq!(state.events, vec!["two", "three", "four"]);
+    }
+
+    #[test]
+    fn gizmo_move_drag_relocates_the_panel_rect() {
+        let state = state();
+        let mut module = panel(state);
+        // Click the move gizmo (top border row), then drag.
+        module.on_pointer_event(ModulePointerEvent::Click {
+            x: 1,
+            y: 16,
+            button: ModulePointerButton::Left,
+        });
+        module.on_pointer_event(ModulePointerEvent::Move { x: 6, y: 12 });
+        module.on_pointer_event(ModulePointerEvent::Up { x: 6, y: 12 });
+
+        assert_eq!(module.rect(), rect(5, -4, 29, 13));
+    }
+
+    #[test]
+    fn persisted_state_round_trips_rect_seamless_and_hidden() {
+        let state = state();
+        let mut module = panel(Rc::clone(&state));
+        module.set_hidden(true);
+        module.gizmo_state.set_seamless(true);
+
+        let persisted = module.persisted_ui_state().unwrap();
+        let mut restored = panel(state);
+        restored.apply_persisted_ui_state(&persisted);
+
+        assert!(restored.is_hidden());
+        assert!(restored.gizmo_state.is_seamless());
+        assert_eq!(restored.rect(), rect(0, 0, 24, 17));
     }
 }
