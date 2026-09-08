@@ -16,6 +16,13 @@ clients get — self-hosting is "hand a friend the binary + this runbook".
 ## One-time: DNS + cert
 
 1. Point an A record for `relay.jartanddesign.com` at JOBO's public IP.
+   - Do NOT publish an AAAA record. Settled 2026-09-08 (live test: J's
+     partner PC timed out with 10060): an AAAA pointing at JOBO's LAN-global
+     IPv6 behind the router's closed inbound IPv6 firewall silently drops
+     SYNs; v6-capable clients blackhole past the 5s handshake window. IPv4
+     A-record-only is the working shape.
+   - Verified externally reachable via check-host.net TCP probes to :443
+     (2026-09-08, 2/3 nodes connected, one flaky node timed out).
 2. Forward/allow TCP 443 to JOBO (firewall + router if NAT'd).
 3. Certbot standalone (port 80 must be free during issuance):
    `sudo certbot certonly --standalone -d relay.jartanddesign.com`
