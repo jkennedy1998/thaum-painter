@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use crate::session_client::{SessionClient, SessionClientError};
 use crate::session_host::{SessionHost, SessionUser};
 use crate::session_host_tcp::{spawn_session_host_server, SessionHostServer};
+use thaum_painter_domain::debug_log;
 use thaum_painter_domain::storage::{
     SharedDocumentActionRecord, SharedDocumentFile, SharedDocumentRuntime,
 };
@@ -60,6 +61,11 @@ pub struct ClientRejoin {
     user: SessionUser,
     backoff: Duration,
     next_attempt: Instant,
+    /// Consecutive failed rejoin attempts since the last success. Drives the
+    /// one-shot firewall hint in the run log — the most common cause of a
+    /// client that never stops reconnecting is the host machine's firewall
+    /// silently dropping inbound TCP on the listen port.
+    failed_attempts: u32,
     /// One-shot flag: the last `sync` performed a rejoin, so the caller's
     /// runtime was rebuilt from a fresh snapshot and must not republish what
     /// it already had. Cleared on read via `SessionNet::take_rejoined`.
@@ -68,6 +74,10 @@ pub struct ClientRejoin {
 
 const REJOIN_INITIAL_BACKOFF: Duration = Duration::from_millis(500);
 const REJOIN_MAX_BACKOFF: Duration = Duration::from_secs(8);
+
+/// After this many consecutive failed rejoin attempts, the run log calls out
+/// the host-machine firewall — the dominant real-world cause.
+const REJOIN_FIREWALL_HINT_AT: u32 = 3;
 
 impl SessionNet {
     /// Starts hosting: binds the TCP server, registers the snapshot source,
@@ -113,6 +123,7 @@ impl SessionNet {
                     user,
                     backoff: REJOIN_INITIAL_BACKOFF,
                     next_attempt: Instant::now(),
+                    failed_attempts: 0,
                     rejoined: false,
                 },
             },
@@ -252,13 +263,40 @@ impl SessionNet {
                     if Instant::now() >= rejoin.next_attempt {
                         match SessionClient::connect(&rejoin.address, rejoin.user.clone()) {
                             Ok((fresh, snapshot)) => {
+                                debug_log::info(
+                                    "session",
+                                    &format!(
+                                        "rejoined {} after {} failed attempt(s)",
+                                        rejoin.address, rejoin.failed_attempts
+                                    ),
+                                );
+                                rejoin.failed_attempts = 0;
                                 *runtime = SharedDocumentRuntime::new(snapshot);
                                 *client = fresh;
                                 rejoin.backoff = REJOIN_INITIAL_BACKOFF;
                                 rejoin.rejoined = true;
                             }
-                            Err(_) => {
+                            Err(error) => {
                                 rejoin.backoff = (rejoin.backoff * 2).min(REJOIN_MAX_BACKOFF);
+                                rejoin.failed_attempts += 1;
+                                debug_log::warn(
+                                    "session",
+                                    &format!(
+                                        "rejoin to {} failed: {error}; retry in {:?}",
+                                        rejoin.address, rejoin.backoff
+                                    ),
+                                );
+                                if rejoin.failed_attempts == REJOIN_FIREWALL_HINT_AT {
+                                    debug_log::warn(
+                                        "session",
+                                        &format!(
+                                            "rejoins keep failing — on the HOST machine, allow \
+                                             inbound TCP for {} (windows: approve the firewall \
+                                             prompt for thaum painter, or add an inbound rule)",
+                                            rejoin.address
+                                        ),
+                                    );
+                                }
                             }
                         }
                         rejoin.next_attempt = Instant::now() + rejoin.backoff;

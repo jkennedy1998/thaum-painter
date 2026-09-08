@@ -26,6 +26,7 @@ use std::time::Duration;
 use serde::de::DeserializeOwned;
 
 use crate::session_host::{ClientMessage, HostMessage, SessionUser, SESSION_PROTOCOL_VERSION};
+use thaum_painter_domain::debug_log;
 use thaum_painter_domain::storage::{SharedDocumentActionRecord, SharedDocumentRuntime};
 
 #[derive(Debug)]
@@ -99,7 +100,17 @@ impl SessionClient {
         address: &str,
         user: SessionUser,
     ) -> Result<(Self, thaum_painter_domain::storage::SharedDocumentFile), JoinError> {
-        let stream = TcpStream::connect(address)?;
+        debug_log::info(
+            "session",
+            &format!("joining {address} as {}", user.user_id),
+        );
+        let stream = TcpStream::connect(address).map_err(|error| {
+            debug_log::warn(
+                "session",
+                &format!("connect to {address} failed: {error}"),
+            );
+            JoinError::Io(error)
+        })?;
         stream.set_nodelay(true).ok();
         stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
 
@@ -117,7 +128,7 @@ impl SessionClient {
             stream.flush()?;
         }
 
-        let (snapshot, _log_length, roster) = loop {
+        let (snapshot, log_length, roster) = loop {
             let message: HostMessage = read_message(&mut reader)?;
             match message {
                 HostMessage::Welcome {
@@ -127,6 +138,10 @@ impl SessionClient {
                 } => break (snapshot, log_length, roster),
                 HostMessage::Denied { reason } => {
                     let _ = stream.shutdown(Shutdown::Both);
+                    debug_log::warn(
+                        "session",
+                        &format!("join denied by host: {reason}"),
+                    );
                     return Err(JoinError::Denied(reason));
                 }
                 // Pre-welcome roster/presence chatter is stale by definition.
@@ -164,6 +179,7 @@ impl SessionClient {
                         Err(_) => break, // garbage on the wire: lose the connection loudly
                     }
                 }
+                debug_log::warn("session", "session connection lost (reader end)");
                 reader_connected.store(false, Ordering::SeqCst);
             })?;
 
@@ -177,6 +193,10 @@ impl SessionClient {
             .spawn(move || {
                 for line in outbound_rx {
                     if write_line(&writer_stream, &line).is_err() {
+                        debug_log::warn(
+                            "session",
+                            "session write failed; connection marked broken",
+                        );
                         writer_broken_flag.store(true, Ordering::SeqCst);
                         break;
                     }
@@ -212,6 +232,14 @@ impl SessionClient {
         for member in &roster {
             cursors.insert(member.user_id.clone(), None);
         }
+        debug_log::info(
+            "session",
+            &format!(
+                "joined {address}: log_length={log_length} roster={} as {}",
+                roster.len(),
+                user.user_id
+            ),
+        );
         let client = Self {
             user_id: user.user_id,
             consumed_count: 0,

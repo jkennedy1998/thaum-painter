@@ -20,6 +20,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crate::session_host::{ClientMessage, HostMessage, SessionHost};
+use thaum_painter_domain::debug_log;
 
 /// Default LAN listen port for hosted sessions.
 pub const DEFAULT_SESSION_HOST_PORT: u16 = 4747;
@@ -73,6 +74,10 @@ pub fn spawn_session_host_server(
     listener.set_nonblocking(true)?;
     let bound_port = listener.local_addr()?.port();
     let shutdown = Arc::new(AtomicBool::new(false));
+    debug_log::info(
+        "session",
+        &format!("host listening on 0.0.0.0:{bound_port}"),
+    );
 
     let accept_shutdown = Arc::clone(&shutdown);
     let accept_thread = thread::Builder::new()
@@ -112,7 +117,11 @@ pub fn spawn_session_host_server(
                     return;
                 }
                 match listener.accept() {
-                    Ok((stream, _address)) => {
+                    Ok((stream, address)) => {
+                        debug_log::info(
+                            "session",
+                            &format!("host accepted connection from {address}"),
+                        );
                         let host = Arc::clone(&host);
                         let senders = Arc::clone(&senders);
                         let _ = thread::Builder::new()
@@ -201,6 +210,10 @@ fn serve_connection(
                 Ok(()) => {
                     if joined_user_id.is_none() {
                         joined_user_id = Some(user_id.clone());
+                        debug_log::info(
+                            "session",
+                            &format!("client joined: {user_id}"),
+                        );
                     }
                     drain_and_route(&mut host, &senders);
                     None
@@ -211,7 +224,12 @@ fn serve_connection(
                     if joined_user_id.is_none() {
                         senders.lock().expect("senders lock").remove(&user_id);
                     }
-                    Some(rejection_reason(rejection))
+                    let reason = rejection_reason(rejection);
+                    debug_log::warn(
+                        "session",
+                        &format!("client {user_id} denied: {reason}"),
+                    );
+                    Some(reason)
                 }
             }
         };
@@ -228,6 +246,7 @@ fn serve_connection(
 
     if let Some(user_id) = joined_user_id {
         senders.lock().expect("senders lock").remove(&user_id);
+        debug_log::info("session", &format!("client disconnected: {user_id}"));
         let mut host = host.lock().expect("session host lock");
         host.disconnect(&user_id);
         drain_and_route(&mut host, &senders);

@@ -259,9 +259,22 @@ fn apply_session_panel_action(
                     // frozen snapshot — never republished.
                     *net_published = shared_document.actions.len();
                     panel.push_event(format!("hosting on port {port}"));
+                    thaum_painter_domain::debug_log::info(
+                        "session",
+                        &format!(
+                            "panel: hosting on port {port}; invites {:?}",
+                            net.invite_addresses()
+                        ),
+                    );
                     *session_net = Some(net);
                 }
-                Err(error) => panel.push_event(format!("host failed: {error}")),
+                Err(error) => {
+                    panel.push_event(format!("host failed: {error}"));
+                    thaum_painter_domain::debug_log::error(
+                        "session",
+                        &format!("panel: host failed on port {port}: {error}"),
+                    );
+                }
             }
         }
         SessionPanelAction::JoinRequested { address } => {
@@ -289,7 +302,13 @@ fn apply_session_panel_action(
                     panel.push_event(format!("joined {address}"));
                     *session_net = Some(net);
                 }
-                Err(error) => panel.push_event(format!("join denied: {error}")),
+                Err(error) => {
+                    panel.push_event(format!("join denied: {error}"));
+                    thaum_painter_domain::debug_log::error(
+                        "session",
+                        &format!("panel: join to {address} failed: {error}"),
+                    );
+                }
             }
         }
         SessionPanelAction::CopyInvite => {
@@ -1833,9 +1852,23 @@ fn main() -> Result<()> {
             match net {
                 Ok(net) => {
                     eprintln!("session hosting on port {port} as {}", net.user_id());
+                    thaum_painter_domain::debug_log::info(
+                        "session",
+                        &format!(
+                            "boot: hosting on port {port} as {}; invites {:?}",
+                            net.user_id(),
+                            net.invite_addresses()
+                        ),
+                    );
                     session_net = Some(net);
                 }
-                Err(error) => eprintln!("failed to host session on port {port}: {error}"),
+                Err(error) => {
+                    eprintln!("failed to host session on port {port}: {error}");
+                    thaum_painter_domain::debug_log::error(
+                        "session",
+                        &format!("boot: failed to host on port {port}: {error}"),
+                    );
+                }
             }
         }
         thaum_painter_workers::SessionNetBoot::Join(raw) => {
@@ -1852,7 +1885,13 @@ fn main() -> Result<()> {
                     eprintln!("joined session at {address} as {}", net.user_id());
                     session_net = Some(net);
                 }
-                Err(error) => eprintln!("failed to join session at {address}: {error}"),
+                Err(error) => {
+                    eprintln!("failed to join session at {address}: {error}");
+                    thaum_painter_domain::debug_log::error(
+                        "session",
+                        &format!("boot: failed to join {address}: {error} — will not retry; rejoin only covers a lost link after joining"),
+                    );
+                }
             }
         }
         thaum_painter_workers::SessionNetBoot::None => {}
