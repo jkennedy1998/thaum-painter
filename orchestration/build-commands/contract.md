@@ -21,7 +21,6 @@ Own the public build commands and entrypoint binary crate for thaum-painter. One
 - GitHub Actions workflows for remote Mac builds and public three-platform releases
 - the per-environment lane layout and replacement behavior
 - the lane-assembly tail shared by both commands (exe + renderer-assets + licenses)
-- desktop launcher entries for all three commands (`*.desktop`)
 
 ## does not own
 - renderer domain truth or boot internals, owned by `thaum-renderer`
