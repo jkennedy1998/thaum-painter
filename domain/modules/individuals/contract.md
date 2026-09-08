@@ -27,6 +27,8 @@ Own painter's own concrete modules — panels the ASCII painter needs that the g
   - default
 - `layers-panel/`
   - default
+- `session-panel/`
+  - default
 
 ## contents
 - `contract.md`

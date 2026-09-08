@@ -51,6 +51,11 @@ pub enum ClientMessage {
     Presence {
         cursor: Option<[i32; 3]>,
     },
+    /// A joined client renames itself: roster truth updates on the host, and
+    /// every client (the renamer included) learns it via a roster broadcast.
+    Rename {
+        display_name: String,
+    },
     Ping,
 }
 
@@ -105,6 +110,10 @@ pub struct HostClient {
 
 /// Transport-agnostic session host core. One instance per hosted document.
 pub struct SessionHost {
+    /// The hosting app's own identity. Always the first roster entry, so
+    /// clients can crown the host and address it; `None` only for a bare
+    /// core that no hosting app has claimed yet.
+    host_user: Option<SessionUser>,
     /// The authoritative sync log in arrival order. The host's owning app
     /// persists this to `actions.jsonl` (host owns saves in session mode).
     records: Vec<SharedDocumentActionRecord>,
@@ -123,12 +132,19 @@ impl Default for SessionHost {
 impl SessionHost {
     pub fn new() -> Self {
         Self {
+            host_user: None,
             records: Vec::new(),
             clients: Vec::new(),
             cursors: HashMap::new(),
             snapshot_source: None,
             ended: false,
         }
+    }
+
+    /// Claims the host identity: the owning app's user becomes roster entry
+    /// zero and joins/duplicates are checked against it.
+    pub fn set_host_user(&mut self, user: SessionUser) {
+        self.host_user = Some(user);
     }
 
     /// The owning painter app supplies the current document at join time; the
@@ -142,10 +158,31 @@ impl SessionHost {
     }
 
     pub fn roster(&self) -> Vec<SessionUser> {
-        self.clients
-            .iter()
-            .map(|client| client.user.clone())
-            .collect()
+        let mut users = Vec::with_capacity(self.clients.len() + 1);
+        if let Some(host_user) = &self.host_user {
+            users.push(host_user.clone());
+        }
+        users.extend(self.clients.iter().map(|client| client.user.clone()));
+        users
+    }
+
+    pub fn host_user_id(&self) -> Option<&str> {
+        self.host_user.as_ref().map(|user| user.user_id.as_str())
+    }
+
+    /// The host app renames itself: roster truth updates and every client
+    /// learns the new name through a roster broadcast.
+    pub fn set_host_display_name(&mut self, display_name: &str) {
+        let Some(host_user) = &mut self.host_user else {
+            return;
+        };
+        host_user.display_name = display_name.to_string();
+        let roster = self.roster();
+        for client in &mut self.clients {
+            client.outgoing.push_back(HostMessage::Roster {
+                users: roster.clone(),
+            });
+        }
     }
 
     pub fn is_connected(&self, user_id: &str) -> bool {
@@ -179,7 +216,12 @@ impl SessionHost {
                 if user.user_id != user_id {
                     return Err(ClientRejection::NotJoined);
                 }
-                if self.is_connected(user_id) {
+                if self
+                    .host_user
+                    .as_ref()
+                    .is_some_and(|host_user| host_user.user_id == user_id)
+                    || self.is_connected(user_id)
+                {
                     return Err(ClientRejection::DuplicateUserId);
                 }
                 let snapshot = match &self.snapshot_source {
@@ -237,6 +279,23 @@ impl SessionHost {
                         cursor,
                     },
                 );
+                Ok(())
+            }
+            ClientMessage::Rename { display_name } => {
+                let Some(client) = self
+                    .clients
+                    .iter_mut()
+                    .find(|client| client.user.user_id == user_id)
+                else {
+                    return Err(ClientRejection::NotJoined);
+                };
+                client.user.display_name = display_name;
+                let roster = self.roster();
+                for client in &mut self.clients {
+                    client.outgoing.push_back(HostMessage::Roster {
+                        users: roster.clone(),
+                    });
+                }
                 Ok(())
             }
             ClientMessage::Ping => {
@@ -640,6 +699,65 @@ mod tests {
             ),
             Err(ClientRejection::SessionEnded)
         );
+    }
+
+    #[test]
+    fn host_user_leads_the_roster_and_duplicates_are_denied() {
+        let mut host = host();
+        host.set_host_user(user("host-app"));
+        hello(&mut host, "alice");
+
+        let roster = host.roster();
+        assert_eq!(roster.len(), 2);
+        assert_eq!(roster[0].user_id, "host-app");
+        assert_eq!(host.host_user_id(), Some("host-app"));
+
+        // The host's own identity is taken: a client cannot steal it.
+        assert_eq!(
+            host.handle_client_message(
+                "host-app",
+                ClientMessage::Hello {
+                    user: user("host-app"),
+                    protocol_version: SESSION_PROTOCOL_VERSION,
+                }
+            ),
+            Err(ClientRejection::DuplicateUserId)
+        );
+    }
+
+    #[test]
+    fn rename_updates_roster_truth_and_reaches_every_client() {
+        let mut host = host();
+        hello(&mut host, "alice");
+        host.take_outgoing("alice");
+        hello(&mut host, "bob");
+        host.take_outgoing("alice");
+        host.take_outgoing("bob");
+
+        host.handle_client_message(
+            "alice",
+            ClientMessage::Rename {
+                display_name: "Alice A".to_string(),
+            },
+        )
+        .unwrap();
+
+        let roster = host.roster();
+        assert_eq!(roster[0].display_name, "Alice A");
+        // The renamer included: both learn the same roster truth.
+        for id in ["alice", "bob"] {
+            assert_eq!(
+                host.take_outgoing(id),
+                vec![HostMessage::Roster {
+                    users: roster.clone()
+                }]
+            );
+        }
+
+        // Host-side rename flows the same way.
+        host.set_host_user(user("host-app"));
+        host.set_host_display_name("The Host");
+        assert_eq!(host.roster()[0].display_name, "The Host");
     }
 
     #[test]

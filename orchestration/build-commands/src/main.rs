@@ -34,9 +34,9 @@ use thaum_painter_domain::{
     text_entry::{cursor_overlay_group, TextEntryKey, TextEntryOutcome, TextEntryState},
     Canvas, CanvasBounds, DrawingSpaceWheelMode, LayerRow, LayersPanelState,
     PaintCanvasBoundsModule, PaintHand, PaintTool, PainterSelection, PainterUserSessionState,
-    PersistedPainterUiState, SelectionMode, SessionIdentity, SharedDocumentPaths,
-    SharedDocumentRuntime, TimelineState, ToolState, UnsupportedFileError,
-    DEFAULT_SELECTION_CHANNEL_ID,
+    PersistedPainterUiState, SelectionMode, SessionIdentity, SessionPanelAction, SessionPanelState,
+    SessionRosterRow, SharedDocumentPaths, SharedDocumentRuntime, TimelineState, ToolState,
+    UnsupportedFileError, DEFAULT_SELECTION_CHANNEL_ID,
 };
 use thaum_renderer_boot::{
     boot_renderer, cell_clip_size_for_state, run_renderer_window_with_state_frame_provider,
@@ -217,6 +217,115 @@ fn drain_layers_panel_action(
         ));
     }
     append_interaction_log(&log_lines);
+}
+
+/// Applies one session-panel action onto the one `Option<SessionNet>` and
+/// reflects the outcome back through the panel's event lines. This is the
+/// orchestration half of the session-panel contract: the panel emits intent,
+/// this owns the net seam (hosting, joining, leaving, clipboard, rename).
+#[allow(clippy::too_many_arguments)] // session-bridge seam: one fn carries the live session state
+fn apply_session_panel_action(
+    action: SessionPanelAction,
+    session_net: &mut Option<thaum_painter_workers::SessionNet>,
+    session_panel_state: &Rc<RefCell<SessionPanelState>>,
+    session_identity: &mut SessionIdentity,
+    shared_document: &mut SharedDocumentRuntime,
+    shared_document_paths: &mut SharedDocumentPaths,
+    net_published: &mut usize,
+    active_layer_id: &mut String,
+    current_breath: u32,
+    canvas: &mut Canvas,
+) {
+    let mut panel = session_panel_state.borrow_mut();
+    match action {
+        SessionPanelAction::HostRequested => {
+            // Snapshot source freezes the CURRENT document: the host log
+            // starts empty at hosting time, so joiners rebuild exactly via
+            // snapshot + full-record replay of everything after.
+            let snapshot_document = shared_document.document.clone();
+            let port = thaum_painter_workers::host_port_from_env();
+            let net = thaum_painter_workers::SessionNet::host(
+                Box::new(move || snapshot_document.clone()),
+                thaum_painter_workers::session_user_from_identity(session_identity),
+                port,
+            );
+            match net {
+                Ok(net) => {
+                    // Everything already in the local log is inside the
+                    // frozen snapshot — never republished.
+                    *net_published = shared_document.actions.len();
+                    panel.push_event(format!("hosting on port {port}"));
+                    *session_net = Some(net);
+                }
+                Err(error) => panel.push_event(format!("host failed: {error}")),
+            }
+        }
+        SessionPanelAction::JoinRequested { address } => {
+            let address = thaum_painter_workers::join_address(&address);
+            let net = thaum_painter_workers::SessionNet::join(
+                &address,
+                thaum_painter_workers::session_user_from_identity(session_identity),
+            );
+            match net {
+                Ok((net, snapshot)) => {
+                    // Figma's fresh-copy model: the runtime rebuilds from the
+                    // host's snapshot exactly like the env-boot join path.
+                    *shared_document = SharedDocumentRuntime::new(snapshot);
+                    *shared_document_paths =
+                        painter_shared_document_paths(&shared_document.document.document_id);
+                    *active_layer_id =
+                        resolved_active_layer_id(shared_document, Some(active_layer_id.as_str()));
+                    sync_canvas_from_active_layer(
+                        shared_document,
+                        active_layer_id,
+                        current_breath,
+                        canvas,
+                    );
+                    *net_published = 0;
+                    panel.push_event(format!("joined {address}"));
+                    *session_net = Some(net);
+                }
+                Err(error) => panel.push_event(format!("join denied: {error}")),
+            }
+        }
+        SessionPanelAction::CopyInvite => {
+            let addresses = session_net
+                .as_ref()
+                .map(|net| net.invite_addresses())
+                .unwrap_or_default();
+            match arboard::Clipboard::new()
+                .and_then(|mut clipboard| clipboard.set_text(addresses.join("\n")))
+            {
+                Ok(()) => panel.push_event("invite copied".to_string()),
+                Err(error) => panel.push_event(format!("clipboard failed: {error}")),
+            }
+        }
+        SessionPanelAction::LeaveRequested => {
+            let was_host = session_net.as_ref().is_some_and(|net| net.is_host());
+            if let Some(net) = session_net {
+                if was_host {
+                    net.end_session();
+                }
+            }
+            *session_net = None;
+            *net_published = 0;
+            panel.push_event(if was_host {
+                "session ended".to_string()
+            } else {
+                "left session".to_string()
+            });
+        }
+        SessionPanelAction::SetDisplayName(name) => {
+            if let Some(net) = session_net {
+                if let Err(error) = net.set_display_name(&name) {
+                    panel.push_event(format!("rename failed: {error}"));
+                    return;
+                }
+            }
+            session_identity.display_name = name.clone();
+            panel.push_event(format!("name set: {name}"));
+        }
+    }
 }
 
 /// Runs one hand's canvas press through the shared seam when the click
@@ -907,6 +1016,7 @@ fn build_user_session_state(
     selection_mode: SelectionMode,
     tool_state: &ToolState,
     controls_profile: &ControlsProfile,
+    session_display_name: Option<&str>,
 ) -> PainterUserSessionState {
     PainterUserSessionState {
         schema_version: 1,
@@ -927,6 +1037,7 @@ fn build_user_session_state(
             tool_state,
         ),
         controls_profile: controls_profile.clone(),
+        session_display_name: session_display_name.map(str::to_string),
     }
 }
 
@@ -1320,6 +1431,9 @@ fn raw_key_label(key: KeyCode) -> Option<String> {
         KeyCode::Digit9 => "9",
         KeyCode::Minus => "-",
         KeyCode::Equal => "=",
+        KeyCode::Period => ".",
+        KeyCode::Comma => ",",
+        KeyCode::Semicolon => ";",
         KeyCode::Numpad0 => "NUMPAD0",
         KeyCode::Numpad1 => "NUMPAD1",
         KeyCode::Numpad2 => "NUMPAD2",
@@ -1646,10 +1760,18 @@ fn main() -> Result<()> {
     config.window.title = "thaum-painter".to_string();
     config.window.performance_log_path = run_log_dir.as_ref().map(|dir| dir.join("perf.jsonl"));
 
-    let session_identity = session_identity();
+    let mut session_identity = session_identity();
     let session_user_id = session_identity.user_id.clone();
     let session_state_path = painter_session_state_path(&session_user_id);
     let persisted_session = load_painter_user_session_state(&session_state_path)?;
+    // The chosen multiplayer display name rides the user session (the
+    // identity file is permanent and never rewritten).
+    if let Some(name) = persisted_session
+        .as_ref()
+        .and_then(|session| session.session_display_name.clone())
+    {
+        session_identity.display_name = name;
+    }
     // Boot to a blank unsaved document: the user opens or saves explicitly. Restoring
     // the last document from session state once pinned boot to a legacy file that
     // would break silently on schema changes.
@@ -1715,7 +1837,7 @@ fn main() -> Result<()> {
         GlyphFontSet::load_from_asset_root(&state.config.asset_root)
             .ok()
             .map(|font_set| {
-                ShapeFade::build(&FontSetTiles {
+                ShapeFade::build_weighted(&FontSetTiles {
                     font_set: &font_set,
                 })
             });
@@ -1775,6 +1897,7 @@ fn main() -> Result<()> {
     // and Enter commits the value through the tool state.
     let number_edit: Rc<RefCell<Option<NumberFieldEdit>>> = Rc::new(RefCell::new(None));
     let layers_panel_state = Rc::new(RefCell::new(LayersPanelState::default()));
+    let session_panel_state = Rc::new(RefCell::new(SessionPanelState::default()));
     let mut modules = painter_modules::build_painter_modules(
         &tool_state,
         &selection,
@@ -1790,6 +1913,7 @@ fn main() -> Result<()> {
         &camera_parallax_profile,
         &camera_depth_link,
         &camera_layers_link,
+        &session_panel_state,
     );
 
     if let Some(session) = &persisted_session {
@@ -1918,22 +2042,40 @@ fn main() -> Result<()> {
         // (strokes, undo/redo, selections — everything that appended to the
         // runtime's action log), then pull foreign ones in host order. Runs
         // before the demand gate: remote edits make the frame dirty alone.
+        // Own records only: foreign records reach the runtime through sync —
+        // publishing them again would double-log them on the host.
         let mut network_applied = 0usize;
         if let Some(net) = session_net.as_mut() {
+            // Client-side sync runs even while disconnected: that is the
+            // auto-rejoin path (capped backoff inside the net seam). The
+            // publish half only runs on a live link.
             if net.is_connected() {
                 let total = shared_document.actions.len();
                 while net_published < total {
                     let record = shared_document.actions[net_published].clone();
                     net_published += 1;
+                    if record.user_id != session_user_id {
+                        continue;
+                    }
                     if let Err(error) = net.publish(record) {
                         eprintln!("session publish failed: {error}");
                         break;
                     }
                 }
-                match net.sync(&mut shared_document) {
-                    Ok(applied) => network_applied = applied,
-                    Err(error) => eprintln!("session sync failed: {error}"),
+            }
+            match net.sync(&mut shared_document) {
+                Ok(applied) => network_applied = applied,
+                Err(error) if !net.session_ended() => {
+                    eprintln!("session sync failed: {error}");
                 }
+                Err(_) => {}
+            }
+            if net.take_rejoined() {
+                // The runtime was rebuilt from the fresh snapshot; the
+                // replayed log (foreign records) streams in through sync and
+                // must never be republished. Own records were lost with the
+                // old runtime — that is the fresh-snapshot rejoin model.
+                net_published = 0;
             }
         }
         if !input_dirty
@@ -2117,7 +2259,12 @@ fn main() -> Result<()> {
             }
             // While a controls-panel row waits for a captured key, the press
             // becomes that row's new binding and never dispatches a command.
-            if let Some(label) = raw_key_label(*key) {
+            // The session panel's focused fields consume the same seam; the
+            // only shift-aware label is `:` (shift + `;`) for ip:port input.
+            if let Some(mut label) = raw_key_label(*key) {
+                if shift_held && label == ";" {
+                    label = ":".to_string();
+                }
                 if modules.dispatch_key_capture(&label).is_some() {
                     continue;
                 }
@@ -2340,6 +2487,60 @@ fn main() -> Result<()> {
             timeline_state.borrow().playing,
             timeline_state.borrow().loop_enabled,
         );
+        // Session truth mirrors into the panel from the one `Option<SessionNet>`;
+        // the panel-open flag applies straight to the registry.
+        {
+            let net = session_net.as_ref();
+            let roster: Vec<SessionRosterRow> = net
+                .map(|net| {
+                    let host_user_id = net.host_user_id();
+                    net.roster()
+                        .iter()
+                        .map(|user| SessionRosterRow {
+                            is_host: Some(user.user_id.as_str()) == host_user_id.as_deref(),
+                            is_you: user.user_id == session_user_id,
+                            user_id: user.user_id.clone(),
+                            display_name: user.display_name.clone(),
+                            color: user.presence_color,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let self_display_name = roster
+                .iter()
+                .find(|row| row.is_you)
+                .map(|row| row.display_name.clone())
+                .unwrap_or_else(|| session_identity.display_name.clone());
+            let peer_count = roster.len().saturating_sub(1);
+            session_panel_state.borrow_mut().sync(
+                net.is_some(),
+                net.is_some_and(|net| net.is_host()),
+                net.is_some_and(|net| net.is_connected()),
+                net.is_some_and(|net| net.is_reconnecting()),
+                net.is_some_and(|net| net.session_ended()),
+                peer_count,
+                net.map(|net| net.invite_addresses()).unwrap_or_default(),
+                roster,
+                self_display_name,
+            );
+        }
+        let session_panel_open = session_panel_state.borrow().panel_open();
+        let _ = modules.set_hidden("painter_session_panel", !session_panel_open);
+        if let Some(action) = session_panel_state.borrow_mut().take_pending_action() {
+            apply_session_panel_action(
+                action,
+                &mut session_net,
+                &session_panel_state,
+                &mut session_identity,
+                &mut shared_document,
+                &mut shared_document_paths,
+                &mut net_published,
+                &mut active_layer_id,
+                timeline_state.borrow().current_breath,
+                &mut canvas,
+            );
+            session_dirty = true;
+        }
         command_bar.update_layout(cell_clip_size, state.camera.hud_pan_offset);
         let command_bar_hover = frame.input.cursor_position.map(to_screen);
         command_bar.set_pointer_position(command_bar_hover.map(|screen| (screen.x, screen.y)));
@@ -2797,6 +2998,7 @@ fn main() -> Result<()> {
             selection.borrow().mode(),
             &tool_state.borrow(),
             &controls_profile.borrow(),
+            Some(session_identity.display_name.as_str()),
         );
         if let Ok(session_text) = serde_json::to_string_pretty(&session_state) {
             if last_saved_session_text.as_ref() != Some(&session_text) {

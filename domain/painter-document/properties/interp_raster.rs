@@ -31,7 +31,7 @@
 use std::collections::BTreeSet;
 
 use thaum_renderer_domain::shape_fade::fade::ShapeFade;
-use thaum_renderer_domain::CellGraphic;
+use thaum_renderer_domain::{CellGraphic, CellWeight};
 
 use crate::brush::{effective_cell, Canvas, PaintedCell};
 use crate::interp_move;
@@ -221,15 +221,25 @@ fn blend_cells(
     from_active: bool,
     graphic_fade: Option<&ShapeFade>,
 ) -> PaintedCell {
+    let weight_index = lerp_weight(from.weight_index, to.weight_index, progress);
     PaintedCell {
         // Discrete channel. With an injected shape-fade resolver and two
         // glyph-backed cells, the graphic walks the renderer's gradient tour
         // (image-only, monotone toward the target). Without one — and for
         // sprite-backed cells, whose tours would need sprite-identity keys —
         // the hard cutoff at the halfway crossing stands, shaped by the eases.
-        graphic: resolve_graphic(from, to, progress, from_active, graphic_fade),
+        graphic: resolve_graphic(
+            from,
+            to,
+            progress,
+            from_active,
+            renderer_weight(from.weight_index),
+            renderer_weight(to.weight_index),
+            renderer_weight(weight_index),
+            graphic_fade,
+        ),
         color: blend_colors(from.color, to.color, progress, from_active),
-        weight_index: lerp_weight(from.weight_index, to.weight_index, progress),
+        weight_index,
     }
 }
 
@@ -248,6 +258,7 @@ fn fade_one_sided_cell(
     graphic_fade: Option<&ShapeFade>,
 ) -> PaintedCell {
     let mut faded = cell.clone();
+    faded.weight_index = fade_one_sided_weight(cell.weight_index, progress);
     let graphic_progress = if fading_out {
         progress * 2.0
     } else {
@@ -260,11 +271,25 @@ fn fade_one_sided_cell(
         } else {
             (CLEAR_TRANSITION_GLYPH, *glyph)
         };
-        if let Some(graphic) = fade.resolve_shape_fade(from, to, graphic_progress) {
+        if let Some(graphic) = fade.resolve_weighted_shape_fade(
+            from,
+            if fading_out {
+                renderer_weight(cell.weight_index)
+            } else {
+                CellWeight::Zero
+            },
+            to,
+            if fading_out {
+                CellWeight::Zero
+            } else {
+                renderer_weight(cell.weight_index)
+            },
+            renderer_weight(faded.weight_index),
+            graphic_progress,
+        ) {
             faded.graphic = CellGraphic::Glyph(graphic);
         }
     }
-    faded.weight_index = fade_one_sided_weight(cell.weight_index, progress);
     faded
 }
 
@@ -288,6 +313,9 @@ fn resolve_graphic(
     to: &PaintedCell,
     progress: f32,
     from_active: bool,
+    from_weight: CellWeight,
+    to_weight: CellWeight,
+    output_weight: CellWeight,
     graphic_fade: Option<&ShapeFade>,
 ) -> CellGraphic {
     let hard_cutoff = || {
@@ -302,7 +330,14 @@ fn resolve_graphic(
     else {
         return hard_cutoff();
     };
-    match fade.resolve_shape_fade(*from_glyph, *to_glyph, progress) {
+    match fade.resolve_weighted_shape_fade(
+        *from_glyph,
+        from_weight,
+        *to_glyph,
+        to_weight,
+        output_weight,
+        progress,
+    ) {
         Some(resolved) => CellGraphic::Glyph(resolved),
         None => hard_cutoff(),
     }
@@ -336,6 +371,10 @@ fn lerp_channel(from: u8, to: u8, progress: f32) -> u8 {
     (from as f32 + (to as f32 - from as f32) * progress)
         .round()
         .clamp(0.0, 255.0) as u8
+}
+
+fn renderer_weight(weight_index: i64) -> CellWeight {
+    CellWeight::from_index_clamped(weight_index as i32)
 }
 
 fn lerp_weight(from: i64, to: i64, progress: f32) -> i64 {

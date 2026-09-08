@@ -22,6 +22,11 @@ pub struct PainterUserSessionState {
     /// remaps follow them across every document they open.
     #[serde(default = "ControlsProfile::new")]
     pub controls_profile: ControlsProfile,
+    /// The user's chosen multiplayer display name. Rides the user session —
+    /// the identity file is permanent and never rewritten; the cosmetic
+    /// name is the user's to change.
+    #[serde(default)]
+    pub session_display_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -417,6 +422,7 @@ pub fn build_user_session_state(
             tool_state,
         ),
         controls_profile: ControlsProfile::new(),
+        session_display_name: None,
     }
 }
 

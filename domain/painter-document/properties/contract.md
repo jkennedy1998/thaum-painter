@@ -29,7 +29,7 @@ Own editing-facing property-block views over painter file state.
 - `interp_move.rs`
   - the move channel's real resolver: hold / interpolate (with ease-bent lerped offset) / edge-locked loops, plus the shared `empty_progress` ease model the raster channel reuses
 - `interp_raster.rs`
-  - the raster channel's real resolver: hold / interpolate / edge-locked loops over keyframe canvases. Blending matches cells by grid position; flat RGB lerps then resolves to the nearest indexed palette color, weight lerps continuously, the discrete graphic (and material colors) hard-cutoff at the halfway crossing, and one-sided cells show during the half their side is active with their weight fading toward Zero (a fade approximation — weight Zero still renders)
+  - the raster channel's real resolver: hold / interpolate / edge-locked loops over keyframe canvases. Blending matches cells by grid position; flat RGB lerps then resolves to the nearest indexed palette color; shape-faded glyphs score their source and target at their authored render weights and select intermediates at the current output weight; material colors hard-cut at halfway; one-sided cells fade their weight and walk toward/from the low-coverage `▪` clear-transition glyph
 - `pieces/`
   - bar-piece classification: `BarPiece` (single / left head / right head / center) × `CellType` (empty/solid) per breath, the `BreathBar` shape trait, and the covering `BarCell` lookup
 

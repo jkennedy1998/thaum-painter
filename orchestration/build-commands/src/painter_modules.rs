@@ -8,7 +8,8 @@ use std::rc::Rc;
 use thaum_painter_domain::{
     GraphicPickerModule, HandSettingsModule, LayersPanelModule, LayersPanelState,
     MaterialPickerModule, PaintCanvasBoundsModule, PaintColorBlockModule, PaintColorPickerModule,
-    PaintTool, PainterSelection, ToolDef, ToolState, ToolboxModule,
+    PaintTool, PainterSelection, SessionChipModule, SessionPanelModule, SessionPanelState,
+    SessionRosterRow, ToolDef, ToolState, ToolboxModule,
 };
 use thaum_renderer_domain::{
     conflicting_actions, effective_bindings, format_raw_input, ActionBindingMap, CameraDepthLink,
@@ -36,6 +37,7 @@ pub(crate) fn build_painter_modules(
     camera_parallax_profile: &Rc<RefCell<ParallaxProfile>>,
     camera_depth_link: &Rc<CameraDepthLink>,
     camera_layers_link: &Rc<CameraLayersLink>,
+    session_panel_state: &Rc<RefCell<SessionPanelState>>,
 ) -> ModuleRegistry {
     let mut modules = ModuleRegistry::new();
     modules.register(Box::new(
@@ -146,6 +148,32 @@ pub(crate) fn build_painter_modules(
         )
         .with_palette(ui_palette.clone()),
     ));
+    modules.register(Box::new(
+        SessionChipModule::new(
+            "painter_session_chip",
+            ModuleRect {
+                x0: 38,
+                y0: -3,
+                x1: 61,
+                y1: -2,
+            },
+            session_panel_state.clone(),
+        )
+        .with_palette(ui_palette.clone()),
+    ));
+    modules.register(Box::new(
+        SessionPanelModule::new(
+            "painter_session_panel",
+            ModuleRect {
+                x0: 38,
+                y0: -21,
+                x1: 62,
+                y1: -4,
+            },
+            session_panel_state.clone(),
+        )
+        .with_palette(ui_palette.clone()),
+    ));
     modules.register(Box::new(CameraPerspectiveModule::new(
         "painter_camera_perspective",
         // Right column, below the UI-colors panel; tucks under the graphic
@@ -249,8 +277,14 @@ pub(crate) fn default_module_layout() -> Vec<PersistedModuleUiState> {
     fn at(module_id: &str, x0: i32, y0: i32, x1: i32, y1: i32) -> PersistedModuleUiState {
         PersistedModuleUiState::new(module_id, ModuleRect { x0, y0, x1, y1 }, false, false)
     }
+    /// The session detail panel boots closed; only the chip is attached.
+    fn hidden_at(module_id: &str, x0: i32, y0: i32, x1: i32, y1: i32) -> PersistedModuleUiState {
+        PersistedModuleUiState::new(module_id, ModuleRect { x0, y0, x1, y1 }, false, true)
+    }
     vec![
         at("painter_toolbox", -41, 14, -26, 34),
+        at("painter_session_chip", 38, -3, 61, -2),
+        hidden_at("painter_session_panel", 38, -21, 62, -4),
         at("painter_color_picker", 8, -1, 16, 13),
         at("painter_color_block", 8, -18, 36, -2),
         at("painter_material_picker", 17, -1, 36, 13),

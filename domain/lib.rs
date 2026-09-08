@@ -67,6 +67,8 @@ pub mod selection_state;
 pub mod selection_stroke;
 #[path = "painter-session/session_document.rs"]
 pub mod session_document;
+#[path = "modules/individuals/session-panel/session_panel_module.rs"]
+pub mod session_panel_module;
 #[path = "file/storage/storage.rs"]
 pub mod storage;
 #[path = "tai/tai.rs"]
@@ -116,6 +118,9 @@ pub use render_space::{build_composition, build_data_lanes, build_render_space, 
 pub use selection_actions::apply_painter_selection_action;
 pub use selection_state::{
     flood_select_points, PainterSelection, PlaneSelection, SelectionMode, WorldSelection,
+};
+pub use session_panel_module::{
+    SessionChipModule, SessionPanelAction, SessionPanelModule, SessionPanelState, SessionRosterRow,
 };
 pub use storage::{
     append_action_record, load_or_create_shared_document, save_shared_document_snapshot,

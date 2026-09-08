@@ -54,6 +54,10 @@ pub struct ClientRejoin {
     user: SessionUser,
     backoff: Duration,
     next_attempt: Instant,
+    /// One-shot flag: the last `sync` performed a rejoin, so the caller's
+    /// runtime was rebuilt from a fresh snapshot and must not republish what
+    /// it already had. Cleared on read via `SessionNet::take_rejoined`.
+    rejoined: bool,
 }
 
 const REJOIN_INITIAL_BACKOFF: Duration = Duration::from_millis(500);
@@ -69,6 +73,7 @@ impl SessionNet {
     ) -> std::io::Result<Self> {
         let mut host = SessionHost::new();
         host.set_snapshot_source(snapshot_source);
+        host.set_host_user(user.clone());
         let host = Arc::new(Mutex::new(host));
         let server = spawn_session_host_server(Arc::clone(&host), port)?;
         let port = server.port;
@@ -97,6 +102,7 @@ impl SessionNet {
                     user,
                     backoff: REJOIN_INITIAL_BACKOFF,
                     next_attempt: Instant::now(),
+                    rejoined: false,
                 },
             },
             snapshot,
@@ -238,6 +244,7 @@ impl SessionNet {
                                 *runtime = SharedDocumentRuntime::new(snapshot);
                                 *client = fresh;
                                 rejoin.backoff = REJOIN_INITIAL_BACKOFF;
+                                rejoin.rejoined = true;
                             }
                             Err(_) => {
                                 rejoin.backoff = (rejoin.backoff * 2).min(REJOIN_MAX_BACKOFF);
@@ -252,6 +259,52 @@ impl SessionNet {
         }
     }
 
+    /// Whether the last `sync` performed a rejoin: the caller's runtime was
+    /// rebuilt from a fresh snapshot, so everything it already had predates
+    /// the new link and must never be republished. One-shot; cleared on read.
+    pub fn take_rejoined(&mut self) -> bool {
+        match self {
+            Self::Host { .. } => false,
+            Self::Client { rejoin, .. } => std::mem::take(&mut rejoin.rejoined),
+        }
+    }
+
+    /// Renames the local user. Host mode: roster truth updates here and a
+    /// roster broadcast reaches every client. Client mode: a `Rename` goes
+    /// to the host, whose roster broadcast brings the name back to all.
+    pub fn set_display_name(&mut self, display_name: &str) -> Result<(), String> {
+        match self {
+            Self::Host { host, .. } => {
+                host.lock()
+                    .expect("session host lock")
+                    .set_host_display_name(display_name);
+                Ok(())
+            }
+            Self::Client { client, .. } => client
+                .send_rename(display_name)
+                .map_err(|error| error.to_string()),
+        }
+    }
+
+    /// The host's user id — the roster's entry zero (see `roster`).
+    pub fn host_user_id(&self) -> Option<String> {
+        match self {
+            Self::Host { host, .. } => host
+                .lock()
+                .expect("session host lock")
+                .host_user_id()
+                .map(str::to_string),
+            Self::Client { .. } => {
+                // Roster contract: entry zero is the host.
+                self.roster().first().map(|user| user.user_id.clone())
+            }
+        }
+    }
+
+    /// The session roster, host first: entry zero is always the hosting
+    /// app's user, followed by joined clients in join order. The panel
+    /// crowns entry zero and marks the entry matching `user_id` as you.
+    /// Host mode reads the host core; client mode reads its mirror.
     pub fn roster(&self) -> Vec<SessionUser> {
         match self {
             Self::Host { host, .. } => host.lock().expect("session host lock").roster(),

@@ -265,6 +265,14 @@ impl SessionClient {
         self.send(ClientMessage::Presence { cursor })
     }
 
+    /// Renames this user on the host; the roster broadcast brings the new
+    /// name back to every client, this one included.
+    pub fn send_rename(&self, display_name: &str) -> Result<(), SessionClientError> {
+        self.send(ClientMessage::Rename {
+            display_name: display_name.to_string(),
+        })
+    }
+
     pub fn ping(&self) -> Result<(), SessionClientError> {
         self.send(ClientMessage::Ping)
     }
