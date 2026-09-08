@@ -13,6 +13,11 @@ builds_root="$painter_root/orchestration/builds"
 cargo_cache="$builds_root/.cargo-cache"
 lane_name="thaum painter"
 github_repo="jkennedy1998/thaum-painter"
+github_cli="${JOBO_GITHUB_CLI:-/jobo/tools/github/run-github-cli.mjs}"
+
+github() {
+  node "$github_cli" "$@"
+}
 
 source "$HOME/.cargo/env" 2>/dev/null || true
 cd "$painter_root"
@@ -71,7 +76,7 @@ find_workflow_run() {
   local workflow="$1" started_at="$2" painter_sha="$3"
   local run_id=""
   for _ in $(seq 1 30); do
-    run_id="$(gh run list --repo "$github_repo" --workflow "$workflow" --event workflow_dispatch --limit 30 \
+    run_id="$(github run list --repo "$github_repo" --workflow "$workflow" --event workflow_dispatch --limit 30 \
       --json databaseId,createdAt,headSha --jq ".[] | select(.createdAt >= \"$started_at\" and .headSha == \"$painter_sha\") | .databaseId" | head -n 1)"
     [[ -n "$run_id" ]] && {
       printf '%s\n' "$run_id"
@@ -83,23 +88,23 @@ find_workflow_run() {
 }
 
 build_mac() {
-  command -v gh >/dev/null || fail "building Mac requires GitHub CLI (gh); install it and authenticate to github.com first"
-  gh auth status -h github.com >/dev/null 2>&1 || fail "building Mac requires gh authenticated to github.com"
+  [[ -f "$github_cli" ]] || fail "building Mac requires the jobo GitHub seam at $github_cli"
+  github auth status -h github.com >/dev/null 2>&1 || fail "building Mac requires GITHUB_TOKEN in jobo runtime secrets"
 
   local painter_sha renderer_sha started_at run_id temp_dir artifact_zip
   painter_sha="$(require_clean_pushed_main "$painter_root" "thaum-painter")"
   renderer_sha="$(require_clean_pushed_main "$renderer_root" "thaum-renderer")"
   started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "requesting Mac build for painter ${painter_sha:0:12} and renderer ${renderer_sha:0:12}"
-  gh workflow run build-mac.yml --repo "$github_repo" --ref main \
+  github workflow run build-mac.yml --repo "$github_repo" --ref main \
     -f painter_ref="$painter_sha" -f renderer_ref="$renderer_sha"
   run_id="$(find_workflow_run build-mac.yml "$started_at" "$painter_sha")"
   echo "waiting for GitHub Actions run $run_id"
-  gh run watch "$run_id" --repo "$github_repo" --exit-status
+  github run watch "$run_id" --repo "$github_repo" --exit-status
 
   temp_dir="$(mktemp -d)"
   trap 'rm -rf "$temp_dir"' RETURN
-  gh run download "$run_id" --repo "$github_repo" --name thaum-painter-mac --dir "$temp_dir"
+  github run download "$run_id" --repo "$github_repo" --name thaum-painter-mac --dir "$temp_dir"
   artifact_zip="$(find "$temp_dir" -maxdepth 1 -type f -name 'thaum-painter-mac.zip' -print -quit)"
   [[ -n "$artifact_zip" ]] || fail "Mac workflow completed without thaum-painter-mac.zip"
   rm -rf "$builds_root/mac"

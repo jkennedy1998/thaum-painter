@@ -13,6 +13,16 @@ renderer_root="$(cd "$painter_root/../thaum-renderer" && pwd)"
 website_root="${THAUM_PAINTER_WEBSITE_ROOT:-$HOME/Repos/jartanddesign-website}"
 github_repo="jkennedy1998/thaum-painter"
 website_entry="source/development/2026/1/entry.md"
+github_cli="${JOBO_GITHUB_CLI:-/jobo/tools/github/run-github-cli.mjs}"
+github_git_cli="${JOBO_GITHUB_GIT_CLI:-/jobo/tools/github/run-git-with-github-auth.mjs}"
+
+github() {
+  node "$github_cli" "$@"
+}
+
+github_git() {
+  node "$github_git_cli" "$@"
+}
 
 fail() {
   echo "error: $*" >&2
@@ -36,7 +46,7 @@ find_workflow_run() {
   local started_at="$1" painter_sha="$2"
   local run_id=""
   for _ in $(seq 1 30); do
-    run_id="$(gh run list --repo "$github_repo" --workflow release-thaum-painter.yml --event workflow_dispatch --limit 30 \
+    run_id="$(github run list --repo "$github_repo" --workflow release-thaum-painter.yml --event workflow_dispatch --limit 30 \
       --json databaseId,createdAt,headSha --jq ".[] | select(.createdAt >= \"$started_at\" and .headSha == \"$painter_sha\") | .databaseId" | head -n 1)"
     [[ -n "$run_id" ]] && {
       printf '%s\n' "$run_id"
@@ -79,7 +89,7 @@ PY
   fi
   git -C "$website_root" add "$website_entry" source/development/entries.js
   git -C "$website_root" commit -m "Development: use latest Thaum Painter release assets"
-  git -C "$website_root" push origin master
+  github_git -C "$website_root" push origin master
   echo "published website source from ${website_sha:0:12}"
 }
 
@@ -88,8 +98,8 @@ if [[ -z "$version" && -t 0 ]]; then
   read -r -p 'Release version (for example v0.1.2): ' version
 fi
 [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "release version must be vMAJOR.MINOR.PATCH (for example v0.1.2)"
-command -v gh >/dev/null || fail "releasing requires GitHub CLI (gh); install it and authenticate to github.com first"
-gh auth status -h github.com >/dev/null 2>&1 || fail "releasing requires gh authenticated to github.com"
+[[ -f "$github_cli" && -f "$github_git_cli" ]] || fail "releasing requires the jobo GitHub seam under /jobo/tools/github/"
+github auth status -h github.com >/dev/null 2>&1 || fail "releasing requires GITHUB_TOKEN in jobo runtime secrets"
 
 painter_sha="$(require_clean_pushed_main "$painter_root" "thaum-painter")"
 renderer_sha="$(require_clean_pushed_main "$renderer_root" "thaum-renderer")"
@@ -97,17 +107,17 @@ git -C "$painter_root" show-ref --verify --quiet "refs/tags/$version" && fail "l
 git -C "$painter_root" ls-remote --exit-code --tags origin "refs/tags/$version" >/dev/null 2>&1 && fail "remote tag $version already exists"
 
 git -C "$painter_root" tag -a "$version" "$painter_sha" -m "Thaum Painter $version"
-git -C "$painter_root" push origin "$version"
+github_git -C "$painter_root" push origin "$version"
 
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "requesting public $version release for painter ${painter_sha:0:12} and renderer ${renderer_sha:0:12}"
-gh workflow run release-thaum-painter.yml --repo "$github_repo" --ref main \
+github workflow run release-thaum-painter.yml --repo "$github_repo" --ref main \
   -f version="$version" -f painter_ref="$painter_sha" -f renderer_ref="$renderer_sha"
 run_id="$(find_workflow_run "$started_at" "$painter_sha")"
 echo "waiting for GitHub Actions release run $run_id"
-gh run watch "$run_id" --repo "$github_repo" --exit-status
+github run watch "$run_id" --repo "$github_repo" --exit-status
 
-gh release view "$version" --repo "$github_repo" --json url --jq .url >/dev/null || fail "release workflow completed but GitHub Release $version is unavailable"
+github release view "$version" --repo "$github_repo" --json url --jq .url >/dev/null || fail "release workflow completed but GitHub Release $version is unavailable"
 publish_website_latest_links
 printf 'public release: '
-gh release view "$version" --repo "$github_repo" --json url --jq .url
+github release view "$version" --repo "$github_repo" --json url --jq .url
