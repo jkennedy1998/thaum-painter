@@ -952,6 +952,36 @@ fn push_host_structure_record(
     );
 }
 
+/// Host-side session re-seed after a wholesale document swap (file:new,
+/// file:open): installs the new document as the session snapshot, re-seeds the
+/// host log with the new runtime's history, and evicts every client so their
+/// auto-rejoin rebuilds on the new document. Returns the new publish cursor —
+/// everything already in the swapped runtime is the seed. No session (or a
+/// client-side swap): None, nothing to do.
+fn reseed_host_session(
+    session_net: &mut Option<thaum_painter_workers::SessionNet>,
+    shared_document: &SharedDocumentRuntime,
+) -> Result<Option<usize>> {
+    let Some(net) = session_net else {
+        return Ok(None);
+    };
+    if !net.is_host() {
+        return Ok(None);
+    }
+    let document = shared_document.document.clone();
+    let seed_records = shared_document.actions_for_file();
+    let cursor = net
+        .reseed_host(Box::new(move || document.clone()), seed_records)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    thaum_painter_domain::debug_log::info(
+        "session",
+        &format!(
+            "host re-seeded session after document swap; {cursor} seed record(s), clients rejoin for the new document"
+        ),
+    );
+    Ok(Some(cursor))
+}
+
 fn handle_command_bar_button(
     button_id: &str,
     modules: &mut ModuleRegistry,
@@ -965,21 +995,21 @@ fn handle_command_bar_button(
     canvas: &mut Canvas,
     selection: &Rc<RefCell<PainterSelection>>,
     session_user_id: &str,
-    session_hosting: bool,
+    session_net: &mut Option<thaum_painter_workers::SessionNet>,
     persist_to_disk: bool,
-) -> Result<()> {
+) -> Result<Option<usize>> {
     if let Some(module_id) = button_id.strip_prefix("module:") {
         if let Some(hidden) = modules.is_hidden(module_id) {
             modules.set_hidden(module_id, !hidden);
         }
-        return Ok(());
+        return Ok(None);
     }
     if button_id == "layout:reset" {
         // Reset layout: every live module returns to the shared default
         // layout — default rect, silence (seamless) off, open. Camera is
         // intentionally untouched.
         modules.apply_persisted_ui_state(&painter_modules::default_module_layout());
-        return Ok(());
+        return Ok(None);
     }
     let file_root = painter_file_root();
     match button_id {
@@ -996,9 +1026,10 @@ fn handle_command_bar_button(
             push_host_structure_record(
                 shared_document,
                 session_user_id,
-                session_hosting,
+                session_net.as_ref().is_some_and(|net| net.is_host()),
                 shared_action_counter,
             );
+            return reseed_host_session(session_net, shared_document);
         }
         "file:open" => {
             if let Some(next_root) = prompt_open_document_root(&file_root) {
@@ -1014,7 +1045,7 @@ fn handle_command_bar_button(
                             let message = format!("document not opened: {error:#}");
                             thaum_painter_domain::debug_log::error("file", &message);
                             eprintln!("{message}");
-                            return Ok(());
+                            return Ok(None);
                         }
                         return Err(error);
                     }
@@ -1039,9 +1070,10 @@ fn handle_command_bar_button(
                 push_host_structure_record(
                     shared_document,
                     session_user_id,
-                    session_hosting,
+                    session_net.as_ref().is_some_and(|net| net.is_host()),
                     shared_action_counter,
                 );
+                return reseed_host_session(session_net, shared_document);
             }
         }
         "file:save" => {
@@ -1115,7 +1147,7 @@ fn handle_command_bar_button(
         }
         _ => {}
     }
-    Ok(())
+    Ok(None)
 }
 
 fn build_user_session_state(
@@ -2787,7 +2819,7 @@ fn main() -> Result<()> {
                     button: ModulePointerButton::Left,
                 })
             {
-                handle_command_bar_button(
+                if let Some(cursor) = handle_command_bar_button(
                     &button_id,
                     &mut modules,
                     &mut shared_document,
@@ -2800,9 +2832,11 @@ fn main() -> Result<()> {
                     &mut canvas,
                     &selection,
                     &session_user_id,
-                    session_net.as_ref().is_some_and(|net| net.is_host()),
+                    &mut session_net,
                     persist_to_disk,
-                )?;
+                )? {
+                    net_published = cursor;
+                }
             }
             let module_hit = if handled_command_bar {
                 None

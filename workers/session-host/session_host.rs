@@ -346,6 +346,19 @@ impl SessionHost {
         );
     }
 
+    /// Drops EVERY connected client (session re-seed): roster, cursors, and
+    /// seen-times clear synchronously, so an evicted identity can rejoin
+    /// immediately instead of waiting out the stale-prune timeout. The
+    /// transport-level sockets close on the client's next message (Ping etc.),
+    /// which the host rejects as NotJoined — that sends clients into the
+    /// existing auto-rejoin path, where each gets the re-seeded snapshot and
+    /// full-log replay (Figma's fresh-copy model, round two).
+    pub fn evict_clients(&mut self) {
+        self.clients.clear();
+        self.cursors.clear();
+        self.last_seen.clear();
+    }
+
     /// Prunes clients that have sent nothing past `timeout` (keepalive pings
     /// every couple of seconds keep live clients comfortably inside it). A
     /// half-open dead connection otherwise holds its user_id forever, and

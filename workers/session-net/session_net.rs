@@ -140,6 +140,32 @@ impl SessionNet {
         }
     }
 
+    /// Host mode: re-seeds the session after a wholesale document swap
+    /// (file:new / file:open while hosting). Installs the new snapshot source,
+    /// replaces the host log with the new document's seed records, and evicts
+    /// every client — their auto-rejoin rebuilds from the fresh Welcome plus
+    /// full replay, so the whole session converges on the new document. The
+    /// host-side consume cursor resets with the log. Returns the new publish
+    /// cursor: everything already in the caller's runtime is the seed.
+    /// Client mode: an error — only the host re-seeds.
+    pub fn reseed_host(
+        &mut self,
+        snapshot_source: Box<dyn Fn() -> SharedDocumentFile + Send>,
+        seed_records: Vec<SharedDocumentActionRecord>,
+    ) -> Result<usize, String> {
+        match self {
+            Self::Host { host, consumed, .. } => {
+                let mut host = host.lock().expect("session host lock");
+                host.set_snapshot_source(snapshot_source);
+                host.seed_log(seed_records);
+                host.evict_clients();
+                *consumed = 0;
+                Ok(host.records().len())
+            }
+            Self::Client { .. } => Err("only the host can re-seed a session".to_string()),
+        }
+    }
+
     /// True once the session ended on purpose (host side decided, client
     /// learned `Ended`). A rejoin never runs past this.
     pub fn session_ended(&self) -> bool {
@@ -596,6 +622,122 @@ mod tests {
         let mut host_runtime = SharedDocumentRuntime::new(boot_document);
         assert_eq!(host_net.sync(&mut host_runtime).unwrap(), 0);
         assert_eq!(canvas_len(&host_runtime), 0);
+    }
+
+    #[test]
+    fn host_reseed_rebuilds_clients_on_the_new_document() {
+        // Wholesale document swap while hosting (file:new / file:open): the
+        // re-seed installs the new snapshot, replaces the log, and evicts the
+        // old client — whose auto-rejoin must land on the NEW document with
+        // the NEW seed replay, and whose user_id must be free immediately (no
+        // user-id-in-use squat from the stale-prune window).
+        let doc_a = SharedDocumentFile::single_layer("doc-a", "Doc A", "layer-1", "Layer 1");
+        let doc_b = SharedDocumentFile::single_layer("doc-b", "Doc B", "layer-1", "Layer 1");
+        let doc_b_title = doc_b.title.clone();
+        let seed_a = SharedDocumentActionRecord::cell_patch_set(
+            "a-1".to_string(),
+            "doc-a".to_string(),
+            "layer-1".to_string(),
+            "host-user".to_string(),
+            "t".to_string(),
+            vec![SharedCellPatch::new(
+                CellPoint { x: 0, y: 0, z: 0 },
+                None,
+                Some(&paint((200, 0, 0))),
+            )],
+            None,
+        );
+        let seed_b = SharedDocumentActionRecord::cell_patch_set(
+            "b-1".to_string(),
+            "doc-b".to_string(),
+            "layer-1".to_string(),
+            "host-user".to_string(),
+            "t".to_string(),
+            vec![SharedCellPatch::new(
+                CellPoint { x: 1, y: 1, z: 0 },
+                None,
+                Some(&paint((0, 0, 200))),
+            )],
+            None,
+        );
+        let seed_b_for_closure = seed_b.clone();
+        let mut host_net = SessionNet::host(
+            Box::new(move || doc_a.clone()),
+            user("host-user"),
+            0,
+            vec![seed_a],
+        )
+        .expect("host boots");
+        let port = match &host_net {
+            SessionNet::Host { _server, .. } => _server.port,
+            SessionNet::Client { .. } => unreachable!(),
+        };
+        let (mut client_net, snapshot) =
+            SessionNet::join(&format!("127.0.0.1:{port}"), user("client-1")).expect("join");
+        assert_eq!(snapshot.title, "Doc A");
+        let mut client_runtime = SharedDocumentRuntime::new(snapshot);
+        let mut host_runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-a", "Doc A", "layer-1", "Layer 1",
+        ));
+
+        // Re-seed onto Doc B. The cursor must cover the new seed.
+        let cursor = host_net
+            .reseed_host(Box::new(move || doc_b.clone()), vec![seed_b_for_closure])
+            .expect("host re-seeds");
+        assert_eq!(cursor, 1);
+
+        // The evicted client's next publish hits NotJoined on the host, the
+        // connection dies, and the auto-rejoin rebuilds from the new Welcome.
+        // The publish may or may not error before the wire notices the
+        // eviction; either way the host rejects it as NotJoined and the
+        // connection dies, sending the client into the auto-rejoin path.
+        let _ = client_net.publish(stroke(&client_net, &client_runtime, "c-1", 3, (0, 200, 0)));
+        let mut rejoined = false;
+        for _ in 0..400 {
+            let _ = client_net.sync(&mut client_runtime);
+            if client_net.take_rejoined() {
+                rejoined = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(rejoined, "client did not rejoin after the re-seed");
+        assert_eq!(client_runtime.document.title, doc_b_title);
+        // Seed replay streams right behind the Welcome; poll until it lands.
+        let mut replayed = false;
+        for _ in 0..300 {
+            let _ = client_net.sync(&mut client_runtime);
+            if canvas_len(&client_runtime) == 1 {
+                replayed = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(replayed, "seed replay did not reach the rejoined client");
+
+        // The host-side consume cursor reset: a client record published after
+        // the re-seed reaches the host runtime in host order. (The host skips
+        // its own seed record — already applied locally — so the baseline is
+        // the new document with no cells until a client record arrives.)
+        let record = stroke(&client_net, &client_runtime, "c-2", 4, (0, 200, 0));
+        client_runtime.apply_action_record(record.clone());
+        client_net.publish(record).unwrap();
+        let mut converged = false;
+        for _ in 0..300 {
+            let _ = host_net.sync(&mut host_runtime);
+            if canvas_len(&host_runtime) >= 1 {
+                converged = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(converged, "host did not apply post-reseed client records");
+
+        // A brand-new joiner gets the new document too.
+        let (mut late_net, late_snapshot) =
+            SessionNet::join(&format!("127.0.0.1:{port}"), user("client-2")).expect("late join");
+        assert_eq!(late_snapshot.title, "Doc B");
+        let _ = late_net;
     }
 
     #[test]
