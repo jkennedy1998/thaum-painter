@@ -223,8 +223,7 @@ impl SessionHost {
         // Every non-Hello message counts as a liveness signal from a joined
         // identity (Hello seeds its own entry below).
         if !matches!(message, ClientMessage::Hello { .. }) {
-            self.last_seen
-                .insert(user_id.to_string(), Instant::now());
+            self.last_seen.insert(user_id.to_string(), Instant::now());
         }
         match message {
             ClientMessage::Hello {

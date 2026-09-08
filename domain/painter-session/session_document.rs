@@ -54,8 +54,14 @@ pub fn append_and_apply_shared_action(
     runtime: &mut SharedDocumentRuntime,
     paths: &SharedDocumentPaths,
     action: SharedDocumentActionRecord,
+    persist_to_disk: bool,
 ) -> Result<()> {
-    append_action_record(&paths.actions_file_path, &action)?;
+    // Session-client mode keeps the disk out of it: the host owns saves while a
+    // session runs, and this machine's solo log diverged the moment the runtime
+    // was rebuilt from the network snapshot (append-guard false conflicts).
+    if persist_to_disk {
+        append_action_record(&paths.actions_file_path, &action)?;
+    }
     runtime.apply_action_record(action);
     Ok(())
 }
@@ -164,6 +170,7 @@ pub fn commit_staged_paint_stroke(
     active_layer_id: &str,
     canvas: &mut Canvas,
     stroke_start: Option<(Canvas, String)>,
+    persist_to_disk: bool,
 ) -> Result<()> {
     let Some((start_canvas, block_id)) = stroke_start else {
         return Ok(());
@@ -181,7 +188,12 @@ pub fn commit_staged_paint_stroke(
         patches,
         Some(block_id),
     );
-    append_action_record(&paths.actions_file_path, &record)?;
+    // Session-client mode: the record reaches peers through the publish seam;
+    // the host owns saves, so the disk log stays untouched (see
+    // append_and_apply_shared_action).
+    if persist_to_disk {
+        append_action_record(&paths.actions_file_path, &record)?;
+    }
     runtime.apply_action_record(record);
     Ok(())
 }
@@ -248,6 +260,7 @@ pub fn commit_selection_channel<I>(
     canvas: &mut Canvas,
     selection: &std::rc::Rc<std::cell::RefCell<PainterSelection>>,
     action_counter: &mut u64,
+    persist_to_disk: bool,
 ) where
     I: IntoIterator<Item = CellPoint>,
 {
@@ -258,17 +271,21 @@ pub fn commit_selection_channel<I>(
         SelectionMode::Intersect => SharedSelectionWriteMode::Intersect,
     };
     if runtime.apply_selection_points(DEFAULT_SELECTION_CHANNEL_ID, points, write_mode) {
-        if let Err(error) = save_shared_document_snapshot(paths, runtime) {
-            recover_snapshot_conflict(
-                &error,
-                runtime,
-                paths,
-                active_layer_id,
-                current_breath,
-                canvas,
-                selection,
-                action_counter,
-            );
+        // Session-client mode skips the save: the channel change reaches peers
+        // through the record/publish path and the host owns saves.
+        if persist_to_disk {
+            if let Err(error) = save_shared_document_snapshot(paths, runtime) {
+                recover_snapshot_conflict(
+                    &error,
+                    runtime,
+                    paths,
+                    active_layer_id,
+                    current_breath,
+                    canvas,
+                    selection,
+                    action_counter,
+                );
+            }
         }
     }
 }
@@ -285,9 +302,14 @@ pub fn commit_move_offset(
     active_layer_id: &str,
     delta: WorldPoint,
     current_breath: u32,
+    persist_to_disk: bool,
 ) -> Result<()> {
     if runtime.add_move_offset(active_layer_id, current_breath, delta) {
-        save_shared_document_snapshot(paths, runtime)?;
+        // Session-client mode: the move block rides the structure record the
+        // panel path pushes; the host owns snapshot saves.
+        if persist_to_disk {
+            save_shared_document_snapshot(paths, runtime)?;
+        }
     }
     Ok(())
 }
@@ -302,6 +324,7 @@ pub fn apply_shared_history_action(
     canvas: &mut Canvas,
     undo: bool,
     current_breath: u32,
+    persist_to_disk: bool,
 ) -> Result<()> {
     // Undo/redo are persisted as passive revert records (normal CellPatchSets that
     // paint content but skip the undo stacks) — the all-forward-edits log keeps
@@ -322,7 +345,11 @@ pub fn apply_shared_history_action(
             Some(revert.block_id),
             revert.action_id,
         );
-        append_action_record(&paths.actions_file_path, &record)?;
+        // Session-client mode: the revert record reaches peers through the
+        // publish seam; the host owns saves.
+        if persist_to_disk {
+            append_action_record(&paths.actions_file_path, &record)?;
+        }
         // The undo/redo already mutated the canvases; the record is history-only,
         // so push without re-applying (the canonical in-session flow the storage
         // tests validate).

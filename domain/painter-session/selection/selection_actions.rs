@@ -26,6 +26,7 @@ pub fn apply_painter_selection_action(
     active_layer_id: &mut String,
     current_breath: u32,
     canvas: &mut Canvas,
+    persist_to_disk: bool,
 ) -> Result<bool> {
     let mode_action = match action {
         "painter_selection_mode_replace" => Some(SelectionMode::Replace),
@@ -51,6 +52,7 @@ pub fn apply_painter_selection_action(
                 canvas,
                 selection,
                 action_counter,
+                persist_to_disk,
             );
         }
         "painter_selection_invert" => {
@@ -63,6 +65,7 @@ pub fn apply_painter_selection_action(
                 current_breath,
                 canvas,
                 action_counter,
+                persist_to_disk,
             );
         }
         "painter_selection_all" => {
@@ -75,6 +78,7 @@ pub fn apply_painter_selection_action(
                 current_breath,
                 canvas,
                 action_counter,
+                persist_to_disk,
             );
         }
         _ => return Ok(false),
@@ -93,6 +97,7 @@ fn commit_plane_points(
     current_breath: u32,
     canvas: &mut Canvas,
     action_counter: &mut u64,
+    persist_to_disk: bool,
 ) {
     let points: Vec<CellPoint> = selection.borrow().plane().iter().collect();
     commit_selection_channel(
@@ -105,5 +110,6 @@ fn commit_plane_points(
         canvas,
         selection,
         action_counter,
+        persist_to_disk,
     );
 }

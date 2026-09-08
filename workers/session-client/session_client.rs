@@ -100,15 +100,9 @@ impl SessionClient {
         address: &str,
         user: SessionUser,
     ) -> Result<(Self, thaum_painter_domain::storage::SharedDocumentFile), JoinError> {
-        debug_log::info(
-            "session",
-            &format!("joining {address} as {}", user.user_id),
-        );
+        debug_log::info("session", &format!("joining {address} as {}", user.user_id));
         let stream = TcpStream::connect(address).map_err(|error| {
-            debug_log::warn(
-                "session",
-                &format!("connect to {address} failed: {error}"),
-            );
+            debug_log::warn("session", &format!("connect to {address} failed: {error}"));
             JoinError::Io(error)
         })?;
         stream.set_nodelay(true).ok();
@@ -138,10 +132,7 @@ impl SessionClient {
                 } => break (snapshot, log_length, roster),
                 HostMessage::Denied { reason } => {
                     let _ = stream.shutdown(Shutdown::Both);
-                    debug_log::warn(
-                        "session",
-                        &format!("join denied by host: {reason}"),
-                    );
+                    debug_log::warn("session", &format!("join denied by host: {reason}"));
                     return Err(JoinError::Denied(reason));
                 }
                 // Pre-welcome roster/presence chatter is stale by definition.

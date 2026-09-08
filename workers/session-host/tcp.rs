@@ -149,6 +149,13 @@ fn serve_connection(
     stream: TcpStream,
 ) {
     let _ = stream.set_nodelay(true);
+    // Windows quirk: sockets accepted from a NON-BLOCKING listener inherit that
+    // non-blocking mode (POSIX accepts don't). The reader/writer halves here need
+    // blocking I/O — a non-blocking write of a large Welcome snapshot would
+    // partial-write then fail with WouldBlock, killing the writer thread and (on
+    // winsock, where one closed handle closes the shared socket) the whole
+    // connection right after the join. Force blocking back on.
+    let _ = stream.set_nonblocking(false);
     let mut reader = BufReader::new(match stream.try_clone() {
         Ok(clone) => clone,
         Err(_) => return,
@@ -210,10 +217,7 @@ fn serve_connection(
                 Ok(()) => {
                     if joined_user_id.is_none() {
                         joined_user_id = Some(user_id.clone());
-                        debug_log::info(
-                            "session",
-                            &format!("client joined: {user_id}"),
-                        );
+                        debug_log::info("session", &format!("client joined: {user_id}"));
                     }
                     drain_and_route(&mut host, &senders);
                     None
@@ -225,10 +229,7 @@ fn serve_connection(
                         senders.lock().expect("senders lock").remove(&user_id);
                     }
                     let reason = rejection_reason(rejection);
-                    debug_log::warn(
-                        "session",
-                        &format!("client {user_id} denied: {reason}"),
-                    );
+                    debug_log::warn("session", &format!("client {user_id} denied: {reason}"));
                     Some(reason)
                 }
             }

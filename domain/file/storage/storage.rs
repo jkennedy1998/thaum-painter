@@ -2849,6 +2849,36 @@ pub fn save_shared_document_snapshot(
         }
     }
 
+    write_snapshot_files(paths, runtime)
+}
+
+/// Session-leave seam: writes the live runtime to disk WITHOUT the
+/// multi-writer conflict guards. A session member's runtime was rebuilt from
+/// the network snapshot, so its history can never match this machine's solo
+/// log — the guards would refuse every later save and the reload path would
+/// discard all session work. After the session ends there is no other writer
+/// for this document on this machine, so the live runtime is the truth and
+/// overwriting is safe. Content lives in the written log (replay rebuilds
+/// canvases on open).
+pub fn force_save_shared_document_snapshot(
+    paths: &SharedDocumentPaths,
+    runtime: &mut SharedDocumentRuntime,
+) -> Result<()> {
+    fs::create_dir_all(&paths.root).with_context(|| {
+        format!(
+            "failed to create shared document directory {}",
+            paths.root.display()
+        )
+    })?;
+    write_snapshot_files(paths, runtime)
+}
+
+/// The guarded save's write half: document.json + squashed action log, then
+/// the revision bump commit. No conflict guards here.
+fn write_snapshot_files(
+    paths: &SharedDocumentPaths,
+    runtime: &mut SharedDocumentRuntime,
+) -> Result<()> {
     let next_revision = runtime.revision + 1;
     let mut document = runtime.document.clone();
     document.revision = next_revision;
@@ -3468,6 +3498,99 @@ mod tests {
         assert_eq!(recovered.revision(), 2);
         save_shared_document_snapshot(&paths, &mut recovered).unwrap();
         assert_eq!(recovered.revision(), 3);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn session_leave_force_save_writes_live_truth_and_heals_later_saves() {
+        // The session-leave seam: a joined runtime was rebuilt from the network
+        // snapshot, so its history never matches this machine's solo log — the
+        // guarded save refuses it forever and the reload discards all session
+        // work. force_save writes the live truth instead; afterwards normal
+        // guarded saves work against the new disk state.
+        let unique = format!(
+            "thaum-painter-force-save-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let paths = SharedDocumentPaths::new(root.clone());
+
+        // Solo history on disk: one snapshot save (revision 1, one record).
+        let mut solo = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        solo.apply_action_record(SharedDocumentActionRecord::cell_patch_set(
+            "solo-stroke",
+            "doc-1",
+            "layer-1",
+            "solo-user",
+            "t",
+            vec![SharedCellPatch::new(point(0, 0), None, Some(&cell('A')))],
+            None,
+        ));
+        save_shared_document_snapshot(&paths, &mut solo).unwrap();
+        // Solo appends without a snapshot save (the normal stroke flow) — the
+        // on-disk log grows past what any snapshot revision tracks.
+        for i in 0..2 {
+            append_action_record(
+                &paths.actions_file_path,
+                &SharedDocumentActionRecord::cell_patch_set(
+                    format!("solo-append-{i}"),
+                    "doc-1",
+                    "layer-1",
+                    "solo-user",
+                    "t",
+                    vec![SharedCellPatch::new(
+                        point(i + 2, 0),
+                        None,
+                        Some(&cell('A')),
+                    )],
+                    None,
+                ),
+            )
+            .unwrap();
+        }
+
+        // The session runtime: rebuilt from the host's snapshot (the snapshot
+        // carries the host's current revision, but a DIFFERENT history) plus
+        // one replayed foreign record.
+        let snapshot = {
+            let mut snapshot =
+                SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
+            snapshot.revision = solo.revision();
+            snapshot
+        };
+        let mut joined = SharedDocumentRuntime::new(snapshot);
+        joined.apply_action_record(SharedDocumentActionRecord::cell_patch_set(
+            "session-stroke",
+            "doc-1",
+            "layer-1",
+            "host-user",
+            "t",
+            vec![SharedCellPatch::new(point(1, 1), None, Some(&cell('B')))],
+            None,
+        ));
+
+        // The guarded save refuses this runtime forever (disk log holds the
+        // solo record, the session runtime accounts for a different one).
+        let error = save_shared_document_snapshot(&paths, &mut joined)
+            .expect_err("session runtime must conflict with the stale solo log");
+        assert!(error.to_string().contains("changed on disk"));
+
+        // Session leave: force-save writes the live session truth.
+        force_save_shared_document_snapshot(&paths, &mut joined).unwrap();
+        let disk_log = count_action_records(&paths.actions_file_path).unwrap();
+        assert_eq!(disk_log, 1);
+        let on_disk = load_document_file(&paths.document_file_path).unwrap();
+        assert_eq!(on_disk.revision, 2);
+
+        // And the next guarded save works — solo mode is healed.
+        let mut healed = load_or_create_shared_document(&paths, joined.document.clone()).unwrap();
+        save_shared_document_snapshot(&paths, &mut healed).unwrap();
 
         let _ = fs::remove_dir_all(root);
     }

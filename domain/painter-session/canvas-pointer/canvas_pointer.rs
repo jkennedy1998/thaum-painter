@@ -280,6 +280,11 @@ pub struct CanvasPointerContext<'a> {
     pub action_counter: &'a mut u64,
     pub session_user_id: &'a str,
     pub active_layer_id: &'a mut String,
+    /// Session-persistence gate: false in session-client mode, where the host
+    /// owns saves and this machine's disk log diverged at join time. Disk-
+    /// touching commits (snapshot saves, log appends) skip their write half;
+    /// runtime mutations and peer publishes stay live.
+    pub persist_to_disk: bool,
 }
 
 /// What a text-tool press hands back to the entrypoint: the typing session
@@ -747,6 +752,7 @@ impl CanvasPointerStrokes {
             ctx.canvas,
             ctx.selection,
             ctx.action_counter,
+            ctx.persist_to_disk,
         );
     }
 
@@ -773,6 +779,7 @@ impl CanvasPointerStrokes {
                     z: dz,
                 },
                 current_breath,
+                ctx.persist_to_disk,
             ) {
                 errors.push(error);
             }
@@ -819,6 +826,7 @@ impl CanvasPointerStrokes {
                     ctx.canvas,
                     ctx.selection,
                     ctx.action_counter,
+                    ctx.persist_to_disk,
                 );
             }
         }
@@ -856,6 +864,7 @@ impl CanvasPointerStrokes {
                     ctx.canvas,
                     ctx.selection,
                     ctx.action_counter,
+                    ctx.persist_to_disk,
                 );
             }
         }
@@ -868,6 +877,7 @@ impl CanvasPointerStrokes {
                 ctx.active_layer_id,
                 ctx.canvas,
                 start,
+                ctx.persist_to_disk,
             ) {
                 errors.push(error);
             }
@@ -1033,6 +1043,7 @@ mod tests {
                 action_counter: &mut self.action_counter,
                 session_user_id: &self.user,
                 active_layer_id: &mut self.layer_id,
+                persist_to_disk: true,
             }
         }
     }

@@ -166,6 +166,7 @@ pub fn apply_layers_panel_action(
     canvas: &mut Canvas,
     timeline_state: &Rc<RefCell<TimelineState>>,
     selection: &Rc<RefCell<PainterSelection>>,
+    persist_to_disk: bool,
 ) {
     let Some(action) = action else { return };
     let current_breath = timeline_state.borrow().current_breath;
@@ -352,8 +353,12 @@ pub fn apply_layers_panel_action(
                 session_user_id,
                 action_timestamp_string(),
             ) {
-                let _ =
-                    append_and_apply_shared_action(shared_document, shared_document_paths, record);
+                let _ = append_and_apply_shared_action(
+                    shared_document,
+                    shared_document_paths,
+                    record,
+                    persist_to_disk,
+                );
             }
             sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
         }
@@ -375,8 +380,12 @@ pub fn apply_layers_panel_action(
                 session_user_id,
                 action_timestamp_string(),
             ) {
-                let _ =
-                    append_and_apply_shared_action(shared_document, shared_document_paths, record);
+                let _ = append_and_apply_shared_action(
+                    shared_document,
+                    shared_document_paths,
+                    record,
+                    persist_to_disk,
+                );
             }
             sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
         }
@@ -416,17 +425,25 @@ pub fn apply_layers_panel_action(
             session_user_id,
             action_timestamp_string(),
         );
-        if let Err(error) = save_shared_document_snapshot(shared_document_paths, shared_document) {
-            recover_snapshot_conflict(
-                &error,
-                shared_document,
-                shared_document_paths,
-                active_layer_id,
-                current_breath,
-                canvas,
-                selection,
-                shared_action_counter,
-            );
+        // Session-client mode skips the snapshot save: the structure record
+        // above reaches peers through the publish seam and the host owns
+        // saves — this machine's disk log diverged at join time, so a guarded
+        // save here would always conflict and reload away the edit.
+        if persist_to_disk {
+            if let Err(error) =
+                save_shared_document_snapshot(shared_document_paths, shared_document)
+            {
+                recover_snapshot_conflict(
+                    &error,
+                    shared_document,
+                    shared_document_paths,
+                    active_layer_id,
+                    current_breath,
+                    canvas,
+                    selection,
+                    shared_action_counter,
+                );
+            }
         }
     }
 }

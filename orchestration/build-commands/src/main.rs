@@ -20,6 +20,7 @@ use thaum_painter_domain::{
     document_locations::{
         load_document_from_root, new_unsaved_document, resolve_painter_file_root,
     },
+    force_save_shared_document_snapshot,
     layers_panel_module::LayersPanelAction,
     layers_runtime::{
         apply_layers_panel_action, build_selected_layer_property_rows, resolved_active_layer_id,
@@ -91,6 +92,7 @@ fn canvas_pointer_context<'a>(
     shared_action_counter: &'a mut u64,
     session_user_id: &'a str,
     active_layer_id: &'a mut String,
+    persist_to_disk: bool,
 ) -> CanvasPointerContext<'a> {
     CanvasPointerContext {
         tool_state,
@@ -101,6 +103,7 @@ fn canvas_pointer_context<'a>(
         action_counter: shared_action_counter,
         session_user_id,
         active_layer_id,
+        persist_to_disk,
     }
 }
 
@@ -175,6 +178,7 @@ fn drain_layers_panel_action(
     canvas: &mut Canvas,
     timeline_state: &Rc<RefCell<TimelineState>>,
     selection: &Rc<RefCell<PainterSelection>>,
+    persist_to_disk: bool,
 ) {
     let action = layers_panel_state.borrow_mut().take_pending_action();
     let mut log_lines = layers_panel_state.borrow_mut().take_interaction_log();
@@ -205,6 +209,7 @@ fn drain_layers_panel_action(
         canvas,
         timeline_state,
         selection,
+        persist_to_disk,
     );
     if document_mutated {
         // The document shape after the mutation — this is the ground truth the
@@ -336,6 +341,21 @@ fn apply_session_panel_action(
                     net.end_session();
                 }
             }
+            // Client leave: the live runtime holds this machine's freshest
+            // session truth and its disk log diverged at join time — force-save
+            // (no guards, no other writer) so solo saving works again.
+            if !was_host {
+                match force_save_shared_document_snapshot(shared_document_paths, shared_document) {
+                    Ok(()) => thaum_painter_domain::debug_log::info(
+                        "session",
+                        "left session; session state force-saved to disk",
+                    ),
+                    Err(error) => thaum_painter_domain::debug_log::error(
+                        "session",
+                        &format!("leave force-save failed: {error:#}"),
+                    ),
+                }
+            }
             *session_net = None;
             *net_published = 0;
             panel.push_event(if was_host {
@@ -385,6 +405,7 @@ fn begin_canvas_press_if_eligible(
     text_entry: &mut Option<TextEntryState>,
     text_stroke_start: &mut Option<(Canvas, String)>,
     typing_mode: &mut TypingMode,
+    persist_to_disk: bool,
 ) {
     let position = CellPoint {
         x: world.x,
@@ -410,6 +431,7 @@ fn begin_canvas_press_if_eligible(
             shared_action_counter,
             session_user_id,
             active_layer_id,
+            persist_to_disk,
         ),
         hand,
         position,
@@ -446,6 +468,7 @@ fn continue_canvas_drag_if_eligible(
     view_orientation: thaum_renderer_domain::CameraViewOrientation,
     chrome_hit: bool,
     typing_owns_input: bool,
+    persist_to_disk: bool,
 ) {
     match route_drag(
         screen,
@@ -470,6 +493,7 @@ fn continue_canvas_drag_if_eligible(
                 shared_action_counter,
                 session_user_id,
                 active_layer_id,
+                persist_to_disk,
             ),
             hand,
             position,
@@ -503,6 +527,7 @@ fn finish_canvas_release(
     screen: CellPoint,
     view_orientation: thaum_renderer_domain::CameraViewOrientation,
     current_breath: u32,
+    persist_to_disk: bool,
 ) {
     // Broadcast the release to every module, not just the captured one: a
     // drag that never requested capture (or lost it) would otherwise keep
@@ -525,6 +550,7 @@ fn finish_canvas_release(
             shared_action_counter,
             session_user_id,
             active_layer_id,
+            persist_to_disk,
         ),
         view_orientation,
         current_breath,
@@ -542,6 +568,7 @@ fn finish_canvas_release(
         canvas,
         timeline_state,
         selection,
+        persist_to_disk,
     );
 }
 
@@ -939,6 +966,7 @@ fn handle_command_bar_button(
     selection: &Rc<RefCell<PainterSelection>>,
     session_user_id: &str,
     session_hosting: bool,
+    persist_to_disk: bool,
 ) -> Result<()> {
     if let Some(module_id) = button_id.strip_prefix("module:") {
         if let Some(hidden) = modules.is_hidden(module_id) {
@@ -965,7 +993,12 @@ fn handle_command_bar_button(
             *shared_action_counter = 0;
             sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
             selection.borrow_mut().clear_plane();
-            push_host_structure_record(shared_document, session_user_id, session_hosting, shared_action_counter);
+            push_host_structure_record(
+                shared_document,
+                session_user_id,
+                session_hosting,
+                shared_action_counter,
+            );
         }
         "file:open" => {
             if let Some(next_root) = prompt_open_document_root(&file_root) {
@@ -1003,7 +1036,12 @@ fn handle_command_bar_button(
                 // document.json truth the frozen session snapshot never held.
                 // Broadcast it so joiners rebuild structure, then receive the
                 // file's content records streaming through the publish cursor.
-                push_host_structure_record(shared_document, session_user_id, session_hosting, shared_action_counter);
+                push_host_structure_record(
+                    shared_document,
+                    session_user_id,
+                    session_hosting,
+                    shared_action_counter,
+                );
             }
         }
         "file:save" => {
@@ -1021,18 +1059,28 @@ fn handle_command_bar_button(
                 *shared_document_paths = SharedDocumentPaths::new(next_root.clone());
                 *current_document_root = Some(next_root);
             }
-            if let Err(error) =
-                save_shared_document_snapshot(shared_document_paths, shared_document)
-            {
-                recover_snapshot_conflict(
-                    &error,
-                    shared_document,
-                    shared_document_paths,
-                    active_layer_id,
-                    current_breath,
-                    canvas,
-                    selection,
-                    shared_action_counter,
+            // Session-client mode: the host owns saves while a session runs;
+            // this machine's disk log diverged at join time, so a guarded save
+            // here would always conflict and reload away live session truth.
+            if persist_to_disk {
+                if let Err(error) =
+                    save_shared_document_snapshot(shared_document_paths, shared_document)
+                {
+                    recover_snapshot_conflict(
+                        &error,
+                        shared_document,
+                        shared_document_paths,
+                        active_layer_id,
+                        current_breath,
+                        canvas,
+                        selection,
+                        shared_action_counter,
+                    );
+                }
+            } else {
+                thaum_painter_domain::debug_log::warn(
+                    "session",
+                    "file:save skipped in session-client mode — the host owns saves",
                 );
             }
         }
@@ -1041,16 +1089,24 @@ fn handle_command_bar_button(
                 prompt_save_document_root(&file_root, &shared_document.document.title)
             {
                 let next_paths = SharedDocumentPaths::new(next_root.clone());
-                if let Err(error) = save_shared_document_snapshot(&next_paths, shared_document) {
-                    recover_snapshot_conflict(
-                        &error,
-                        shared_document,
-                        &next_paths,
-                        active_layer_id,
-                        current_breath,
-                        canvas,
-                        selection,
-                        shared_action_counter,
+                if persist_to_disk {
+                    if let Err(error) = save_shared_document_snapshot(&next_paths, shared_document)
+                    {
+                        recover_snapshot_conflict(
+                            &error,
+                            shared_document,
+                            &next_paths,
+                            active_layer_id,
+                            current_breath,
+                            canvas,
+                            selection,
+                            shared_action_counter,
+                        );
+                    }
+                } else {
+                    thaum_painter_domain::debug_log::warn(
+                        "session",
+                        "file:save-as skipped in session-client mode — the host owns saves",
                     );
                 }
                 *shared_document_paths = next_paths;
@@ -2190,6 +2246,36 @@ fn main() -> Result<()> {
                 net_published = 0;
             }
         }
+        // A session the HOST ended reaches the client as Ended: the live
+        // runtime holds the final session truth on this machine, so force-save
+        // it (no guards — there is no other writer left) and drop to solo mode
+        // so later saves work without the conflict/reload discarding it.
+        if session_net
+            .as_ref()
+            .is_some_and(|net| !net.is_host() && net.session_ended())
+        {
+            match force_save_shared_document_snapshot(&shared_document_paths, &mut shared_document)
+            {
+                Ok(()) => thaum_painter_domain::debug_log::info(
+                    "session",
+                    "session ended by host; session state force-saved to disk",
+                ),
+                Err(error) => thaum_painter_domain::debug_log::error(
+                    "session",
+                    &format!("session-end force-save failed: {error:#}"),
+                ),
+            }
+            session_net = None;
+        }
+        // Session-persistence gate: while THIS machine is a session client,
+        // the host owns saves and this machine's disk log diverged the moment
+        // the runtime was rebuilt from the network snapshot — a guarded save
+        // would always conflict and the reload would discard local edits. Solo
+        // and host modes persist to disk normally.
+        let persist_to_disk = session_net
+            .as_ref()
+            .map(|net| net.is_host())
+            .unwrap_or(true);
         if !input_dirty
             && !playback_due
             && !blink_due
@@ -2320,6 +2406,7 @@ fn main() -> Result<()> {
                                     &active_layer_id,
                                     &mut canvas,
                                     text_stroke_start.take(),
+                                    persist_to_disk,
                                 ) {
                                     eprintln!("text commit failed (kept in memory): {err:#}");
                                 }
@@ -2337,6 +2424,7 @@ fn main() -> Result<()> {
                                     &active_layer_id,
                                     &mut canvas,
                                     text_stroke_start.take(),
+                                    persist_to_disk,
                                 ) {
                                     eprintln!("text commit failed (kept in memory): {err:#}");
                                 }
@@ -2420,6 +2508,7 @@ fn main() -> Result<()> {
                     &mut active_layer_id,
                     timeline_state.borrow().current_breath,
                     &mut canvas,
+                    persist_to_disk,
                 )? {
                     continue;
                 }
@@ -2455,6 +2544,7 @@ fn main() -> Result<()> {
                         &mut canvas,
                         true,
                         timeline_state.borrow().current_breath,
+                        persist_to_disk,
                     )?,
                     "painter_redo" => apply_shared_history_action(
                         &mut shared_document,
@@ -2465,6 +2555,7 @@ fn main() -> Result<()> {
                         &mut canvas,
                         false,
                         timeline_state.borrow().current_breath,
+                        persist_to_disk,
                     )?,
                     "painter_clipboard_copy" => {
                         // Copy the selection as a 3D world copy into the own
@@ -2676,6 +2767,7 @@ fn main() -> Result<()> {
                     &active_layer_id,
                     &mut canvas,
                     text_stroke_start.take(),
+                    persist_to_disk,
                 ) {
                     // A failed commit must not tear down the session: the
                     // in-memory document already holds the change.
@@ -2709,6 +2801,7 @@ fn main() -> Result<()> {
                     &selection,
                     &session_user_id,
                     session_net.as_ref().is_some_and(|net| net.is_host()),
+                    persist_to_disk,
                 )?;
             }
             let module_hit = if handled_command_bar {
@@ -2750,6 +2843,7 @@ fn main() -> Result<()> {
                 &mut canvas,
                 &timeline_state,
                 &selection,
+                persist_to_disk,
             );
             if handled_command_bar || handled_module || modules.is_pointer_captured() {
                 pointer_strokes.cancel(PaintHand::Left);
@@ -2776,6 +2870,7 @@ fn main() -> Result<()> {
                     &mut text_entry,
                     &mut text_stroke_start,
                     &mut typing_mode,
+                    persist_to_disk,
                 );
             }
         } else if let Some(click) = frame.input.just_right_clicked {
@@ -2814,6 +2909,7 @@ fn main() -> Result<()> {
                 &mut canvas,
                 &timeline_state,
                 &selection,
+                persist_to_disk,
             );
             if handled_command_bar || handled_module || modules.is_pointer_captured() {
                 pointer_strokes.cancel(PaintHand::Right);
@@ -2840,6 +2936,7 @@ fn main() -> Result<()> {
                     &mut text_entry,
                     &mut text_stroke_start,
                     &mut typing_mode,
+                    persist_to_disk,
                 );
             }
             // A number-field click just began an in-place edit; typing mode
@@ -2874,6 +2971,7 @@ fn main() -> Result<()> {
                     &mut canvas,
                     &timeline_state,
                     &selection,
+                    persist_to_disk,
                 );
                 continue_canvas_drag_if_eligible(
                     &mut pointer_strokes,
@@ -2893,6 +2991,7 @@ fn main() -> Result<()> {
                     view_orientation,
                     command_bar.contains(screen.x, screen.y) || modules.is_pointer_captured(),
                     text_entry.as_ref().is_some_and(|entry| entry.is_active()),
+                    persist_to_disk,
                 );
             }
         }
@@ -2911,6 +3010,7 @@ fn main() -> Result<()> {
                     &mut shared_action_counter,
                     &session_user_id,
                     &mut active_layer_id,
+                    persist_to_disk,
                 ),
                 timeline_state.borrow().current_breath,
             );
@@ -3051,6 +3151,7 @@ fn main() -> Result<()> {
                 screen,
                 view_orientation,
                 current_breath,
+                persist_to_disk,
             );
         }
         left_pointer_was_down = frame.input.pointer_down;
@@ -3203,6 +3304,7 @@ fn main() -> Result<()> {
                 &mut shared_action_counter,
                 &session_user_id,
                 &mut active_layer_id,
+                persist_to_disk,
             ),
             view_orientation,
             ui_palette.get(UiColorRole::Vivid),

@@ -125,14 +125,15 @@ pub use session_panel_module::{
     SessionPanelAction, SessionPanelModule, SessionPanelState, SessionRosterRow,
 };
 pub use storage::{
-    append_action_record, load_or_create_shared_document, save_shared_document_snapshot,
-    write_action_records_atomic, PersistedCellPoint, PersistedSharedGraphic,
-    PersistedSharedPaintColor, PersistedSharedPaintedCell, SharedCellPatch, SharedDocumentAction,
-    SharedDocumentActionRecord, SharedDocumentFile, SharedDocumentLayer, SharedDocumentPaths,
-    SharedDocumentPropertyBlock, SharedDocumentPropertyTrack, SharedDocumentRuntime,
-    SharedDocumentSelection, SharedDocumentSelectionChannel, SharedSelectionWriteMode,
-    UnsupportedFileError, UnsupportedFileReason, DEFAULT_SELECTION_CHANNEL_ID,
-    SHARED_DOCUMENT_KIND, SHARED_DOCUMENT_SCHEMA_VERSION, UNDO_HISTORY_DEPTH,
+    append_action_record, force_save_shared_document_snapshot, load_or_create_shared_document,
+    save_shared_document_snapshot, write_action_records_atomic, PersistedCellPoint,
+    PersistedSharedGraphic, PersistedSharedPaintColor, PersistedSharedPaintedCell, SharedCellPatch,
+    SharedDocumentAction, SharedDocumentActionRecord, SharedDocumentFile, SharedDocumentLayer,
+    SharedDocumentPaths, SharedDocumentPropertyBlock, SharedDocumentPropertyTrack,
+    SharedDocumentRuntime, SharedDocumentSelection, SharedDocumentSelectionChannel,
+    SharedSelectionWriteMode, UnsupportedFileError, UnsupportedFileReason,
+    DEFAULT_SELECTION_CHANNEL_ID, SHARED_DOCUMENT_KIND, SHARED_DOCUMENT_SCHEMA_VERSION,
+    UNDO_HISTORY_DEPTH,
 };
 pub use timeline_state::TimelineState;
 pub use tool_state::{
