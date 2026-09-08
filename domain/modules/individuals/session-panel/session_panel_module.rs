@@ -210,6 +210,9 @@ pub struct SessionPanelModule {
 const ROW_EVENTS_BASE: i32 = 0;
 const ROW_NAME: i32 = 4;
 const ROW_BUTTONS: i32 = 5;
+/// In-session only: the live invite, shown verbatim while hosting (row 6 is
+/// the join field when offline). Clicking it copies, like [COPY INVITE].
+const ROW_INVITE: i32 = 6;
 const ROW_ROSTER_BASE: i32 = 7;
 const ROW_JOIN: i32 = 6;
 const ROW_HOST: i32 = 8;
@@ -391,6 +394,11 @@ impl Module for SessionPanelModule {
                     bright,
                     width,
                 );
+                // The invite itself on screen: the newest truth from the
+                // host, verbatim — never a reconstructed address.
+                if let Some(address) = state.invite_addresses.first() {
+                    push_line(&mut cells, content_y + ROW_INVITE, address, vivid, width);
+                }
             } else {
                 push_line(
                     &mut cells,
@@ -497,6 +505,9 @@ impl Module for SessionPanelModule {
                         } else {
                             state.queue_action(SessionPanelAction::LeaveRequested);
                         }
+                        self.focus = FieldFocus::None;
+                    } else if local_y == ROW_INVITE && state.is_host {
+                        state.queue_action(SessionPanelAction::CopyInvite);
                         self.focus = FieldFocus::None;
                     } else if local_y == ROW_NAME {
                         self.focus = FieldFocus::DisplayName;
@@ -669,6 +680,75 @@ mod tests {
             y: origin_y + local_y,
             button: ModulePointerButton::Left,
         });
+    }
+
+    #[test]
+    fn host_shows_invite_row_and_clicking_it_copies() {
+        let state = state();
+        state.borrow_mut().sync(
+            true,
+            true,
+            true,
+            false,
+            false,
+            0,
+            vec!["192.168.1.42:4747".to_string()],
+            Vec::new(),
+            "Host".to_string(),
+        );
+        let mut module = panel(state.clone());
+        let group = module.draw();
+
+        let (origin_x, origin_y) = PanelChrome::content_origin();
+        let row: String = (1..23)
+            .filter_map(|x| {
+                group
+                    .get(CellPoint {
+                        x: origin_x + x,
+                        y: origin_y + ROW_INVITE,
+                        z: 0,
+                    })
+                    .map(|cell| match cell.graphic {
+                        CellGraphic::Glyph(glyph) => glyph.to_string(),
+                        _ => String::new(),
+                    })
+            })
+            .collect();
+        assert_eq!(row.trim_end(), "192.168.1.42:4747");
+
+        // Clicking the invite row copies, like [COPY INVITE].
+        content_click(&mut module, 3, ROW_INVITE);
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(SessionPanelAction::CopyInvite)
+        );
+        // A joiner sees no invite row.
+        let joiner = Rc::new(RefCell::new(SessionPanelState::default()));
+        joiner.borrow_mut().sync(
+            true,
+            false,
+            true,
+            false,
+            false,
+            1,
+            Vec::new(),
+            Vec::new(),
+            "Joiner".to_string(),
+        );
+        let joiner_panel = panel(joiner);
+        let group = joiner_panel.draw();
+        let joiner_cell = group
+            .get(CellPoint {
+                x: origin_x + 2,
+                y: origin_y + ROW_INVITE,
+                z: 0,
+            })
+            .map(|cell| match cell.graphic {
+                CellGraphic::Glyph(glyph) => glyph.to_string(),
+                _ => String::new(),
+            })
+            .unwrap_or_default();
+        assert_eq!(joiner_cell.trim_end(), "");
     }
 
     #[test]

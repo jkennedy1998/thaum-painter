@@ -293,10 +293,15 @@ fn apply_session_panel_action(
                 .as_ref()
                 .map(|net| net.invite_addresses())
                 .unwrap_or_default();
-            match arboard::Clipboard::new()
-                .and_then(|mut clipboard| clipboard.set_text(addresses.join("\n")))
-            {
-                Ok(()) => panel.push_event("invite copied".to_string()),
+            match copy_text_to_clipboard(&addresses.join("\n")) {
+                Ok(()) => {
+                    // Show what was copied, verbatim, so the invite is on
+                    // screen even when the OS clipboard eats it.
+                    panel.push_event(format!(
+                        "copied {}",
+                        addresses.first().map(String::as_str).unwrap_or("none")
+                    ));
+                }
                 Err(error) => panel.push_event(format!("clipboard failed: {error}")),
             }
         }
@@ -1595,6 +1600,27 @@ fn typing_reserved_inputs(bindings: &ActionBindingMap) -> Vec<RawInput> {
         .collect()
 }
 
+/// Copies text to the OS clipboard through one long-lived clipboard handle
+/// on the UI thread. Dropping the handle right after `set_text` destroys
+/// the X11 serving window before anyone can paste, and with no clipboard
+/// manager running the copy evaporates — so the handle stays alive for the
+/// process instead.
+fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
+    thread_local! {
+        static CLIPBOARD: RefCell<Option<arboard::Clipboard>> = const { RefCell::new(None) };
+    }
+    CLIPBOARD.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(arboard::Clipboard::new().map_err(|error| error.to_string())?);
+        }
+        slot.as_mut()
+            .expect("clipboard handle present")
+            .set_text(text.to_string())
+            .map_err(|error| error.to_string())
+    })
+}
+
 /// Live painter behavior for one registry action. One entry per action the
 /// dispatcher handles; `LIVE_PAINTER_ACTIONS` and the dispatch match below
 /// must stay in sync, which the drift tests assert in both directions.
@@ -2362,11 +2388,9 @@ fn main() -> Result<()> {
                             &canvas,
                             &selection.borrow(),
                         ) {
-                            if let Ok(mut os_clipboard) = arboard::Clipboard::new() {
-                                let _ = os_clipboard.set_text(
-                                    thaum_painter_domain::clipboard::encode_os_clipboard(&data),
-                                );
-                            }
+                            let _ = copy_text_to_clipboard(
+                                &thaum_painter_domain::clipboard::encode_os_clipboard(&data),
+                            );
                             user_clipboards.copy_for_user(&session_user_id, data);
                         }
                     }
