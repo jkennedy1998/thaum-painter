@@ -1077,18 +1077,17 @@ impl SharedDocumentRuntime {
 
     /// Adds `delta` to the move track at `breath` on `layer_id`, creating the
     /// move track when missing. This is the canvas drag commit seam, so it
-    /// authors KEYFRAMES the way J drags (J 2026-09-07):
+    /// authors KEYFRAMES the way J drags (J 2026-09-09):
     ///
-    /// - drag at a solid keyframe's own start breath → the delta accumulates on
-    ///   that keyframe (repeated drags at one breath stay one keyframe);
-    /// - drag strictly inside a solid → the drag authors a NEW keyframe at the
-    ///   drag breath (old offset + delta), the covering bar keeps the region
-    ///   before the split, and an interpolating empty opens between the two
-    ///   bars so consecutive drags at different breaths produce visible motion
-    ///   instead of a position-to-position clip;
-    /// - drag inside an empty → the empty's left part stays empty (the
-    ///   interpolation region survives) and a new keyframe lands at the drag
-    ///   breath carrying the resolved offset + delta.
+    /// - drag on a solid bar — at its start breath or strictly inside it —
+    ///   updates THAT bar's offset in place (a bar that already carries
+    ///   movement is edited, never split into a new bar at the playhead);
+    /// - drag strictly inside an empty → the empty's left part stays empty,
+    ///   a ONE-BREATH keyframe lands at the drag breath carrying the resolved
+    ///   offset + delta, and the empty's right part is re-opened with the
+    ///   same mode and eases — the interpolation regions on BOTH sides of
+    ///   the new keyframe survive (swallowing the empty's remainder used to
+    ///   clip the transition into the next keyframe);
     ///
     /// With no block covering the breath at all, a keyframe spanning the
     /// layer's own timing window is created. Returns whether the document
@@ -1147,49 +1146,30 @@ impl SharedDocumentRuntime {
                 let block_is_blank = track.blocks[index].is_blank;
                 let strictly_inside =
                     breath > block_start && breath < block_start + block_length.max(1);
-                let carries_value = track.blocks[index]
-                    .value
-                    .as_ref()
-                    .and_then(parse_move_offset)
-                    .is_some();
-                // Split cases: a drag strictly inside a real keyframe, or
-                // strictly inside an empty. A valueless solid (the born-tiled
-                // placeholder) and a drag at a block's own start breath edit in
-                // place instead.
-                let splits = if block_is_blank {
-                    strictly_inside
-                } else {
-                    carries_value && strictly_inside
-                };
-                if !splits {
-                    // Drag at the keyframe's own start breath: edit in place.
+                if !block_is_blank || !strictly_inside {
+                    // Drag on a solid bar — or at any block's own start
+                    // breath — updates THAT block in place (J 2026-09-09).
+                    // A valueless solid (the born-tiled placeholder) takes
+                    // its first value here too.
                     let block = &mut track.blocks[index];
                     block.value = Some(next_value);
                     block.is_blank = false;
                 } else {
-                    // Keyframe split at the drag breath. A valueless solid (the
-                    // born-tiled placeholder) just takes the value in place. For a
-                    // solid keyframe the empty is carved out of the left keyframe's
-                    // right end (keeping at least one breath of it) so the retile
-                    // below fills the gap with a default interpolating empty; for
-                    // an empty covering block the left part simply stays empty.
-                    if block_is_blank {
-                        track.blocks[index].length_breaths = breath - block_start;
-                    } else {
-                        let left_length = breath - block_start;
-                        let empty_length = if left_length >= 2 {
-                            (left_length / 2).max(1).min(left_length - 1)
-                        } else {
-                            0
-                        };
-                        track.blocks[index].length_breaths = left_length - empty_length;
-                    }
+                    // Drag strictly inside an empty: the empty's left part
+                    // stays, a one-breath keyframe lands at the drag breath
+                    // carrying the resolved offset + delta, and the empty's
+                    // right part is re-opened with the same mode and eases so
+                    // the interpolation regions on both sides survive.
+                    let interpretation = track.blocks[index].interpretation.clone();
+                    let ease_out_percent = track.blocks[index].ease_out_percent;
+                    let ease_in_percent = track.blocks[index].ease_in_percent;
+                    track.blocks[index].length_breaths = breath - block_start;
                     track.blocks.insert(
                         index + 1,
                         SharedDocumentPropertyBlock {
                             id: next_property_block_id(&track.blocks),
                             start_breath: breath,
-                            length_breaths: block_start + block_length - breath,
+                            length_breaths: 1,
                             is_blank: false,
                             value: Some(next_value),
                             interpretation: None,
@@ -1197,6 +1177,22 @@ impl SharedDocumentRuntime {
                             ease_in_percent: None,
                         },
                     );
+                    let empty_end = block_start + block_length;
+                    if breath + 1 < empty_end {
+                        track.blocks.insert(
+                            index + 2,
+                            SharedDocumentPropertyBlock {
+                                id: next_property_block_id(&track.blocks),
+                                start_breath: breath + 1,
+                                length_breaths: empty_end - breath - 1,
+                                is_blank: true,
+                                value: None,
+                                interpretation,
+                                ease_out_percent,
+                                ease_in_percent,
+                            },
+                        );
+                    }
                 }
             }
             None => {
@@ -5073,15 +5069,14 @@ mod tests {
     }
 
     #[test]
-    fn a_move_drag_inside_a_keyframe_authors_a_new_keyframe_with_an_interpolating_empty() {
+    fn a_move_drag_on_a_keyframe_updates_that_keyframe_in_place() {
         let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
             "doc-1", "Doc", "layer-1", "Layer 1",
         ));
         // First drag authors keyframe 1 across the whole layer window.
         assert!(runtime.add_move_offset("layer-1", 2, WorldPoint { x: 2, y: 0, z: 0 }));
-        // Second drag at breath 12 must author keyframe 2 — not pile onto the
-        // same solid — and open a default (interpolating) empty between the
-        // two bars, so the layer visibly moves instead of clipping.
+        // Second drag while the playhead stands inside that bar UPDATES the
+        // bar (J 2026-09-09) — no split, no new bar at the playhead.
         assert!(runtime.add_move_offset("layer-1", 12, WorldPoint { x: 10, y: 0, z: 0 }));
         let blocks: Vec<(u32, u32, bool, Option<i32>)> = runtime
             .property_track("layer-1", "move")
@@ -5102,36 +5097,31 @@ mod tests {
             .collect();
         assert_eq!(
             blocks,
-            vec![
-                (0, 6, false, Some(2)),
-                (6, 12, true, None),
-                (12, 24, false, Some(12)),
-                (24, 25, true, None)
-            ],
-            "track shape after two drags"
+            vec![(0, 24, false, Some(12)), (24, 25, true, None)],
+            "the bar carries the accumulated offset, still one bar"
         );
-        // The keyframe breaths carry their own offsets; the empty between
-        // them interpolates strictly between the two values.
-        assert_eq!(runtime.move_offset_for_layer("layer-1", 2).x, 2);
+        // The whole bar holds the updated offset.
+        assert_eq!(runtime.move_offset_for_layer("layer-1", 2).x, 12);
         assert_eq!(runtime.move_offset_for_layer("layer-1", 12).x, 12);
-        let mid = runtime.move_offset_for_layer("layer-1", 8).x;
-        assert!(
-            mid > 2 && mid < 12,
-            "mid-empty breath must interpolate ({mid})"
-        );
+        assert_eq!(runtime.move_offset_for_layer("layer-1", 20).x, 12);
     }
 
     #[test]
-    fn a_move_drag_inside_an_empty_keeps_the_interpolation_region_and_lands_a_keyframe() {
+    fn a_move_drag_inside_an_empty_lands_a_one_breath_keyframe_keeping_both_interpolation_regions(
+    ) {
         let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
             "doc-1", "Doc", "layer-1", "Layer 1",
         ));
         assert!(runtime.add_move_offset("layer-1", 2, WorldPoint { x: 2, y: 0, z: 0 }));
-        assert!(runtime.add_move_offset("layer-1", 12, WorldPoint { x: 10, y: 0, z: 0 }));
-        // Dragging mid-transition must not swallow the whole empty into one
-        // solid: the empty's left part stays empty, the new keyframe lands at
-        // the drag breath carrying the resolved offset + delta.
-        assert!(runtime.add_move_offset("layer-1", 9, WorldPoint { x: 5, y: 0, z: 0 }));
+        // Keyframe 2 authors out past the stored extent (the born bar updates
+        // in place, so a gap empty only exists out there).
+        assert!(runtime.add_move_offset("layer-1", 30, WorldPoint { x: 40, y: 0, z: 0 }));
+        // Dragging mid-transition (breath 26, inside the gap empty) lands a
+        // ONE-BREATH keyframe at the drag breath carrying the resolved offset
+        // + delta, and the empty survives on BOTH sides — swallowing the
+        // empty's remainder used to butt the new keyframe against the next
+        // one and clip the transition.
+        assert!(runtime.add_move_offset("layer-1", 26, WorldPoint { x: 5, y: 0, z: 0 }));
         let blocks: Vec<(u32, u32, bool, Option<i32>)> = runtime
             .property_track("layer-1", "move")
             .unwrap()
@@ -5152,15 +5142,28 @@ mod tests {
         assert_eq!(
             blocks,
             vec![
-                (0, 6, false, Some(2)),
-                (6, 9, true, None),
-                (9, 12, false, Some(13)),
-                (12, 24, false, Some(12)),
-                (24, 25, true, None)
+                (0, 24, false, Some(2)),
+                (24, 26, true, None),
+                (26, 27, false, Some(24)),
+                (27, 30, true, None),
+                (30, 31, false, Some(42)),
+                (31, 32, true, None)
             ],
             "track shape after a mid-empty drag"
         );
-        assert_eq!(runtime.move_offset_for_layer("layer-1", 9).x, 13);
+        assert_eq!(runtime.move_offset_for_layer("layer-1", 26).x, 24);
+        // Both interpolation regions survived: the left empty lerps 2 -> 24,
+        // the right empty lerps 24 -> 42.
+        let left_mid = runtime.move_offset_for_layer("layer-1", 25).x;
+        assert!(
+            left_mid > 2 && left_mid < 24,
+            "left region must still interpolate ({left_mid})"
+        );
+        let right_mid = runtime.move_offset_for_layer("layer-1", 28).x;
+        assert!(
+            right_mid > 24 && right_mid < 42,
+            "right region must still interpolate ({right_mid})"
+        );
     }
 
     #[test]
@@ -5201,7 +5204,8 @@ mod tests {
         // Dragging out in the infinite region (breath 30, past the tail
         // blank's stored extent) must land a one-breath keyframe there and
         // keep every earlier keyframe — not push a span solid that the retile
-        // trims over the existing bars.
+        // trims over the existing bars. The first two drags both stand inside
+        // the born placeholder bar, so they accumulate onto it in place.
         assert!(runtime.add_move_offset("layer-1", 30, WorldPoint { x: 5, y: 0, z: 0 }));
         let blocks: Vec<(u32, u32, bool, Option<i32>)> = runtime
             .property_track("layer-1", "move")
@@ -5226,9 +5230,7 @@ mod tests {
         assert_eq!(
             blocks,
             vec![
-                (0, 6, false, Some(2)),
-                (6, 12, true, None),
-                (12, 24, false, Some(12)),
+                (0, 24, false, Some(12)),
                 (24, 30, true, None),
                 (30, 31, false, Some(17)),
                 (31, 32, true, None)
@@ -5236,7 +5238,7 @@ mod tests {
             "track shape after a past-extent drag"
         );
         // The new keyframe carries the offset that was playing there (the
-        // x=12 keyframe holds through the trailing blank) plus the delta.
+        // born bar holds x=12 across the trailing blank) plus the delta.
         assert_eq!(runtime.move_offset_for_layer("layer-1", 30).x, 17);
         assert_eq!(runtime.move_offset_for_layer("layer-1", 12).x, 12);
     }
@@ -5272,10 +5274,10 @@ mod tests {
             "no stranded loop mode survives a retile"
         );
         // The new keyframe carries the value the loop was playing there
-        // (breath 26 wraps to region breath 2, the x=2 keyframe) plus delta.
-        assert_eq!(runtime.move_offset_for_layer("layer-1", 26).x, 5);
+        // (breath 26 wraps to region breath 2, the born bar's x=12) plus delta.
+        assert_eq!(runtime.move_offset_for_layer("layer-1", 26).x, 15);
         // Keyframes before the drag are untouched.
-        assert_eq!(runtime.move_offset_for_layer("layer-1", 2).x, 2);
+        assert_eq!(runtime.move_offset_for_layer("layer-1", 2).x, 12);
         assert_eq!(runtime.move_offset_for_layer("layer-1", 12).x, 12);
     }
 
@@ -5624,16 +5626,18 @@ mod tests {
 
     #[test]
     fn j_flow_save_reload_interpolation_round_trips() {
-        // J's flow, now automatic from add_move_offset: drag at 2 (keyframe 1),
-        // drag at 12 (keyframe 2) — the interpolating empty opens by itself.
+        // J's flow through add_move_offset: drag at 2 takes the born
+        // placeholder bar in place, drag at 30 lands a one-breath keyframe
+        // past the stored extent, and the gap empty between them
+        // interpolates; all of it round-trips through save + reload.
         let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
             "doc-1", "Doc", "layer-1", "Layer 1",
         ));
         assert!(runtime.add_move_offset("layer-1", 2, WorldPoint { x: 2, y: 0, z: 0 }));
-        assert!(runtime.add_move_offset("layer-1", 12, WorldPoint { x: 10, y: 0, z: 0 }));
+        assert!(runtime.add_move_offset("layer-1", 30, WorldPoint { x: 40, y: 0, z: 0 }));
         assert_eq!(
             runtime.property_track_shape("layer-1", "move"),
-            "[0..6 6..12/e 12..24 24..25/e]"
+            "[0..24 24..30/e 30..31 31..32/e]"
         );
 
         // Save + reload through the same path boot uses.
@@ -5651,9 +5655,11 @@ mod tests {
         )
         .unwrap();
         let shape2 = reloaded.property_track_shape("layer-1", "move");
-        assert_eq!(shape2, "[0..6 6..12/e 12..24 24..25/e]");
+        assert_eq!(shape2, "[0..24 24..30/e 30..31 31..32/e]");
         assert_eq!(reloaded.move_offset_for_layer("layer-1", 2).x, 2);
-        assert_eq!(reloaded.move_offset_for_layer("layer-1", 12).x, 12);
+        assert_eq!(reloaded.move_offset_for_layer("layer-1", 30).x, 42);
+        let mid = reloaded.move_offset_for_layer("layer-1", 27).x;
+        assert!(mid > 2 && mid < 42, "empty must interpolate ({mid})");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
