@@ -276,22 +276,34 @@ fn handle_connection(
     // Clone the raw socket BEFORE the upgrade consumes it: this handle is the
     // room's kick lever for this member (host-originated force-close).
     let kick_handle: Option<TcpStream> = stream.try_clone().ok();
+    eprintln!("relay: connection from {address}");
     let shared: SharedStream = match upgrader.upgrade(stream) {
         Ok(stream) => Arc::new(Mutex::new(ConnState {
             stream,
             buffer: FrameBuffer::new(),
         })),
-        Err(_) => return,
+        Err(error) => {
+            eprintln!("relay: upgrade from {address} failed: {error}");
+            return;
+        }
     };
 
     let first = match read_frame_shared(&shared, caps.max_frame_bytes) {
         Ok(Some(frame)) => frame,
-        _ => return,
+        Ok(None) => {
+            eprintln!("relay: {address} closed before hello");
+            return;
+        }
+        Err(error) => {
+            eprintln!("relay: {address} hello read failed: {error}");
+            return;
+        }
     };
     let hello: Result<HelloFrame, _> = serde_json::from_str(&first);
     let hello = match hello {
         Ok(hello) => hello,
         Err(_) => {
+            eprintln!("relay: {address} sent bad hello");
             deny(&shared, caps, "bad-hello");
             return;
         }

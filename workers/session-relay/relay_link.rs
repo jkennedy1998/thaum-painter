@@ -388,7 +388,15 @@ fn serve_bridge_connection(
     local.set_nonblocking(false).ok();
     let link = match relay_tls::connect(relay_address) {
         Ok(link) => link,
-        Err(_) => return,
+        Err(error) => {
+            // The local socket drops silently, so the SessionClient only
+            // sees a generic io error — log the real relay dial failure.
+            debug_log::warn(
+                "session",
+                &format!("relay dial to {relay_address} failed: {error}"),
+            );
+            return;
+        }
     };
     let join = HelloFrame::Join {
         room: room.to_string(),
