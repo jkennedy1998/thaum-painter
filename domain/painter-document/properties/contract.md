@@ -30,6 +30,7 @@ Own editing-facing property-block views over painter file state.
   - the interpolation-mode vocabulary: interpolate / hold / loop_out / loop_in on every property channel, plus ease-adjustable `smear` only on interior raster empties; owns availability, edge locking, cycling, and center glyphs
 - `interp_move.rs`
   - the move channel's real resolver: hold / interpolate (with ease-bent lerped offset) / edge-locked loops, plus the shared `empty_progress` ease model the raster channel reuses
+  - settled truth (J 2026-09-09): a valueless solid (the born-tiled placeholder, or a split remainder of it) IS the identity keyframe — it renders unshifted at every breath it covers, so an interpolating empty beside it lerps from the unmoved position. It never counts as "no keyframe": the old hold-next degradation beside a placeholder was the broken move-interpolate J reported
 - `interp_raster.rs`
   - the raster channel's real resolver: hold / interpolate / interior-only smear / edge-locked loops over keyframe canvases. Ordinary blending matches cells by grid position; flat RGB lerps then resolves to the nearest indexed palette color; shape-faded glyphs score their source and target at their authored render weights and select intermediates at the current output weight; material colors hard-cut at halfway; one-sided cells fade their weight and walk toward/from the low-coverage `▪` clear-transition glyph
 - `raster-smear/`

@@ -45,6 +45,22 @@ sudo systemctl enable --now thaum-session-relay
 - Smoke: `cargo test -p thaum-painter-workers --lib session_relay` locally
   (the in-process TLS round-trip test), then a real app test: host on one
   device, join with the minted code from another network.
+- Painter-lane smoke (no GUI needed): `THAUM_RELAY_LIVE=1 cargo test -p
+  thaum-painter-workers --test relay_live_dial` dials the deployed relay
+  through the painter's real host bridge and prints the minted code.
+
+## Hairpin NAT (settled 2026-09-09)
+
+A machine INSIDE this network cannot reach `relay.jartanddesign.com:443`
+through the router's public IP when the router lacks NAT loopback — SYNs
+blackhole (verified live: JOBO dialing its own relay timed out; the
+painter silently fell back to LAN-only hosting, so nothing could ever
+join). The client lane now self-heals the self-host case: for public
+relay targets it first probes loopback on the same port and uses it when
+a TLS handshake verifying the real hostname succeeds; otherwise it dials
+the honest address unchanged. Same-LAN OTHER machines still need the
+router's NAT-loopback setting enabled, or a hosts-file entry pointing the
+relay hostname at JOBO's LAN IP.
 
 ## Renewal
 
