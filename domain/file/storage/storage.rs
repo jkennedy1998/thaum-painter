@@ -5532,6 +5532,60 @@ mod tests {
     }
 
     #[test]
+    fn j_three_segment_move_row_with_valueless_solids_interpolates_after_two_drags() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        // J's live 3-segment move row (run log 2026-09-09-18-38-06): the born
+        // placeholder is split into left/right valueless solids with the
+        // middle segment blanked into the interpolating empty.
+        runtime
+            .split_property_block("layer-1", "move", "block-1", 17)
+            .expect("split off the right segment");
+        let mid_id = runtime
+            .split_property_block("layer-1", "move", "block-1", 6)
+            .expect("split off the middle segment");
+        assert!(runtime.blank_property_block("layer-1", "move", &mid_id));
+
+        // First auto-key drag at breath 20 lands on the VALUELESS right
+        // solid and takes its first value IN PLACE — the live log's exact
+        // post-commit shape. The left placeholder IS the identity keyframe
+        // (J 2026-09-09 correction: it renders unshifted at every breath it
+        // covers, so the middle empty interpolates from the unmoved position
+        // to the drag — one drag on a fresh row authors visible motion, not
+        // the old hold-next degradation J read as "interpolate broken").
+        assert!(runtime.add_move_offset_keyframe(
+            "layer-1",
+            20,
+            WorldPoint { x: 0, y: -3, z: -3 }
+        ));
+        let shape = runtime.property_track_shape("layer-1", "move");
+        assert_eq!(shape, "[0..6 6..17/e 17..24 24..25/e]");
+        let mid = runtime.move_offset_for_layer("layer-1", 10).y;
+        assert!(
+            mid > -3 && mid < 0,
+            "the middle empty must interpolate identity -> the drag ({mid})"
+        );
+        assert_eq!(runtime.move_offset_for_layer("layer-1", 2).y, 0);
+
+        // Second auto-key drag on the LEFT segment gives it a value — NOW
+        // the middle empty has keyframes on both sides and interpolates
+        // between them.
+        assert!(runtime.add_move_offset_keyframe(
+            "layer-1",
+            2,
+            WorldPoint { x: 5, y: 2, z: 0 }
+        ));
+        assert_eq!(runtime.move_offset_for_layer("layer-1", 2).y, 2);
+        assert_eq!(runtime.move_offset_for_layer("layer-1", 20).y, -3);
+        let mid = runtime.move_offset_for_layer("layer-1", 10).y;
+        assert!(
+            mid > -3 && mid < 2,
+            "the middle empty must interpolate between the two drags ({mid})"
+        );
+    }
+
+    #[test]
     fn a_move_drag_past_the_stored_extent_lands_a_keyframe_without_vaporizing_the_track() {
         let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
             "doc-1", "Doc", "layer-1", "Layer 1",

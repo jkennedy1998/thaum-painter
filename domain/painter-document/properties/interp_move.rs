@@ -124,23 +124,39 @@ fn resolve_loop(
     resolve_block(blocks, mapped_index, mapped)
 }
 
-/// The nearest solid keyframe entirely left of `index`, if any.
+/// The nearest solid keyframe entirely left of `index`, if any. A valueless
+/// solid resolves as the identity keyframe `[0, 0, 0]`, not "no keyframe":
+/// the born-tiled placeholder (and split remainders of it) renders unshifted
+/// at every breath it covers, so it IS the unmoved position any interpolating
+/// empty beside it should lerp from (J 2026-09-09 live repro: a placeholder
+/// left of a real keyframe made the empty between them degrade to hold-next
+/// and the move track never animated). Returning `None` here is reserved for
+/// genuinely no solid on that side.
 fn solid_value_before(blocks: &[SharedDocumentPropertyBlock], index: usize) -> Option<[i32; 3]> {
     blocks[..index]
         .iter()
         .rev()
         .find(|block| !block.is_blank)
-        .and_then(|block| block.value.as_ref())
-        .and_then(parse_move_offset)
+        .map(solid_keyframe_value)
 }
 
-/// The nearest solid keyframe entirely right of `index`, if any.
+/// Mirror of `solid_value_before` for the right side.
 fn solid_value_after(blocks: &[SharedDocumentPropertyBlock], index: usize) -> Option<[i32; 3]> {
     blocks[index + 1..]
         .iter()
         .find(|block| !block.is_blank)
-        .and_then(|block| block.value.as_ref())
+        .map(solid_keyframe_value)
+}
+
+/// One solid block's interpolation keyframe value: its parsed offset, or the
+/// identity for a valueless solid (same resolution the solid itself gets at
+/// render time — unshifted).
+fn solid_keyframe_value(block: &SharedDocumentPropertyBlock) -> [i32; 3] {
+    block
+        .value
+        .as_ref()
         .and_then(parse_move_offset)
+        .unwrap_or([0, 0, 0])
 }
 
 /// Eased progress across one empty's span at `breath` (0..=1). Keyframes hold
@@ -210,6 +226,19 @@ mod tests {
             interpretation: interpretation.map(str::to_string),
             ease_out_percent: ease_out,
             ease_in_percent: ease_in,
+        }
+    }
+
+    fn valueless_solid(id: &str, start: u32, length: u32) -> SharedDocumentPropertyBlock {
+        SharedDocumentPropertyBlock {
+            id: id.to_string(),
+            start_breath: start,
+            length_breaths: length,
+            is_blank: false,
+            value: None,
+            interpretation: None,
+            ease_out_percent: None,
+            ease_in_percent: None,
         }
     }
 
@@ -340,5 +369,31 @@ mod tests {
         let blocks = vec![blank("tail", 0, 24, None, None, None)];
         assert_eq!(resolve_move_offset(&blocks, 5), None);
         assert_eq!(resolve_move_offset(&[], 0), None);
+    }
+
+    #[test]
+    fn a_placeholder_solid_is_the_identity_keyframe_beside_an_interpolating_empty() {
+        // J 2026-09-09 live repro: the born-tiled placeholder (or a split
+        // remainder of it) left of a real keyframe used to make the empty
+        // between them degrade to hold-next — the track never animated.
+        // Track shape straight from the run log:
+        // 0..6/vNone 6..17/e 17..24/vSome({0,-3,-3}) 24..25/e
+        let blocks = vec![
+            valueless_solid("a", 0, 6),
+            blank("b", 6, 11, None, None, None),
+            solid("c", 17, 7, [0, -3, -3]),
+            blank("tail", 24, 1, None, None, None),
+        ];
+        // The placeholder itself renders unshifted (identity).
+        assert_eq!(resolve_move_offset(&blocks, 0), None);
+        assert_eq!(resolve_move_offset(&blocks, 5), None);
+        // The interpolating empty lerps identity -> {0,-3,-3}: real motion.
+        // Progress at breath 6 = 1/12 (linear), at breath 16 = 11/12.
+        assert_eq!(resolve_move_offset(&blocks, 6), Some([0, 0, 0]));
+        assert_eq!(resolve_move_offset(&blocks, 11), Some([0, -2, -2]));
+        assert_eq!(resolve_move_offset(&blocks, 16), Some([0, -3, -3]));
+        // The keyframe and its trailing empty hold as before.
+        assert_eq!(resolve_move_offset(&blocks, 20), Some([0, -3, -3]));
+        assert_eq!(resolve_move_offset(&blocks, 24), Some([0, -3, -3]));
     }
 }
