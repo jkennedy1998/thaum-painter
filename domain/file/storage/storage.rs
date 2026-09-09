@@ -1863,10 +1863,16 @@ impl SharedDocumentRuntime {
         );
         // The new right half starts with its own (empty) canvas; the caller propagates
         // the split block's data onto it as a recorded patch so replay rebuilds the copy.
-        self.block_canvases.insert(
-            (layer_id.to_string(), "raster".to_string(), next_id.clone()),
-            Canvas::new(),
-        );
+        // RASTER splits only: a move/other-track split shares the per-track `block-N`
+        // id sequence, so inserting a raster canvas under the fresh id would overwrite
+        // the painted raster frame that already owns that (layer, raster, id) key
+        // (J's live repro: move 3-segment split wiped the hidden raster frame).
+        if property_id == "raster" {
+            self.block_canvases.insert(
+                (layer_id.to_string(), "raster".to_string(), next_id.clone()),
+                Canvas::new(),
+            );
+        }
         Some(next_id)
     }
 
@@ -5086,6 +5092,68 @@ mod tests {
         assert_eq!(
             runtime.canvas_for_layer("layer-1", 3).unwrap().get(&point(0, 0)),
             Some(&cell('A'))
+        );
+    }
+
+    #[test]
+    fn move_three_segment_split_keeps_hidden_raster_frames() {
+        // J's live repro (2026-09-09, boot +cbb42f7, still failing on the
+        // 941e264 canvas-key fix): paint a line on the left, split the raster
+        // bar into left/empty/right, paint a second line on the right, then
+        // split the MOVE bar the same way — the non-displayed raster frames'
+        // canvases must all survive.
+        let document = SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
+        let mut runtime = SharedDocumentRuntime::new(document);
+        // 1. first line lands in raster block-1 (whole-bar solid).
+        runtime.apply_action_record(SharedDocumentActionRecord::cell_patch_set(
+            "a1",
+            "doc-1",
+            "layer-1",
+            "u1",
+            "1",
+            vec![SharedCellPatch::new(point(0, 0), None, Some(&cell('A')))],
+            Some("block-1".to_string()),
+        ));
+        // 2. raster 3-segment: left solid / center empty / right solid.
+        let raster_right = runtime.split_property_block("layer-1", "raster", "block-1", 8).unwrap();
+        let raster_tail = runtime
+            .split_property_block("layer-1", "raster", &raster_right, 12)
+            .unwrap();
+        assert!(runtime.blank_property_block("layer-1", "raster", &raster_right));
+        // 3. second line painted on the right segment.
+        runtime.apply_action_record(SharedDocumentActionRecord::cell_patch_set(
+            "a2",
+            "doc-1",
+            "layer-1",
+            "u1",
+            "2",
+            vec![SharedCellPatch::new(point(2, 0), None, Some(&cell('B')))],
+            Some(raster_tail.clone()),
+        ));
+        assert_eq!(
+            runtime.block_canvas("layer-1", "block-1").unwrap().get(&point(0, 0)),
+            Some(&cell('A'))
+        );
+        assert_eq!(
+            runtime.block_canvas("layer-1", &raster_tail).unwrap().get(&point(2, 0)),
+            Some(&cell('B'))
+        );
+        // 4. MOVE bar split the same way: left solid / center empty / right solid.
+        let move_right = runtime.split_property_block("layer-1", "move", "block-1", 8).unwrap();
+        let move_tail = runtime
+            .split_property_block("layer-1", "move", &move_right, 12)
+            .unwrap();
+        assert!(runtime.blank_property_block("layer-1", "move", &move_right));
+        // 5. every raster frame survives the move-track edit.
+        assert_eq!(
+            runtime.block_canvas("layer-1", "block-1").unwrap().get(&point(0, 0)),
+            Some(&cell('A')),
+            "left raster frame lost its line after the move split"
+        );
+        assert_eq!(
+            runtime.block_canvas("layer-1", &raster_tail).unwrap().get(&point(2, 0)),
+            Some(&cell('B')),
+            "right raster frame lost its line after the move split"
         );
     }
 
