@@ -229,7 +229,10 @@ pub fn recover_snapshot_conflict(
     if let Err(reload_error) = runtime.reload_from_disk(paths) {
         crate::debug_log::error(
             "storage",
-            &format!("failed to reload shared document: {reload_error}"),
+            // `{:#}` prints the full anyhow chain: the io error kind (missing vs
+            // locked vs corrupt) is the difference between the two candidate
+            // causes (other-writer race vs wiped file) and must reach the log.
+            &format!("failed to reload shared document: {reload_error:#}"),
         );
         return false;
     }
@@ -311,6 +314,31 @@ pub fn commit_move_offset(
         runtime.add_move_offset(active_layer_id, current_breath, delta)
     };
     if changed {
+        // Every move commit logs its resulting track shape + the gate that chose
+        // the seam — without this, a one-keyframe track (all modes degrade to the
+        // same hold) is indistinguishable from a broken interpolator in the logs.
+        if let Some(track) = runtime.property_track(active_layer_id, "move") {
+            let shape = track
+                .blocks
+                .iter()
+                .map(|block| {
+                    let end = block.start_breath + block.length_breaths;
+                    let kind = if block.is_blank {
+                        "e".to_string()
+                    } else {
+                        format!("v{:?}", block.value)
+                    };
+                    format!("{}..{}/{}", block.start_breath, end, kind)
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            crate::debug_log::info(
+                "move",
+                &format!(
+                    "move commit (auto_key={auto_key}) layer={active_layer_id} breath={current_breath} track: {shape}"
+                ),
+            );
+        }
         // Session-client mode: the move block rides the structure record the
         // panel path pushes; the host owns snapshot saves.
         if persist_to_disk {

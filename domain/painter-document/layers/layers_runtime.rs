@@ -347,6 +347,7 @@ pub fn apply_layers_panel_action(
             // patch: both halves start as identical copies and replay rebuilds the copy.
             if let Some(record) = shared_document.split_data_propagation_record(
                 &layer_id,
+                &property_id,
                 &block_id,
                 &new_block_id,
                 next_action_id(shared_action_counter, session_user_id),
@@ -374,6 +375,7 @@ pub fn apply_layers_panel_action(
             // edited separately.
             if let Some(record) = shared_document.duplicate_data_propagation_record(
                 &layer_id,
+                &property_id,
                 &block_id,
                 &new_block_id,
                 next_action_id(shared_action_counter, session_user_id),

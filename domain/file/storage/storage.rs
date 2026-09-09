@@ -748,9 +748,13 @@ pub struct HistoryRevertPatches {
 pub struct SharedDocumentRuntime {
     pub document: SharedDocumentFile,
     pub actions: Vec<SharedDocumentActionRecord>,
-    /// Painted content per raster block, keyed by `(layer_id, block_id)`. Block
-    /// metadata lives in `document`; canvases are runtime state rebuilt by replay.
-    block_canvases: BTreeMap<(String, String), Canvas>,
+    /// Painted content per raster block, keyed by `(layer_id, property_id,
+    /// block_id)`. The property dimension is load-bearing: every track mints
+    /// block ids from the same `block-N` sequence, so a bare `(layer, block)`
+    /// key let a move-track edit wipe the raster canvas sharing that id (J
+    /// 2026-09-09 cross-channel conflation bug). Block metadata lives in
+    /// `document`; canvases are runtime state rebuilt by replay.
+    block_canvases: BTreeMap<(String, String, String), Canvas>,
     applied_action_ids_by_layer: BTreeMap<String, Vec<String>>,
     undone_action_ids_by_layer: BTreeMap<String, Vec<String>>,
     patches_by_action_id: BTreeMap<String, AppliedCellPatches>,
@@ -791,8 +795,14 @@ impl SharedDocumentRuntime {
                 .find(|track| track.property_id == "raster")
             {
                 for block in &track.blocks {
-                    block_canvases
-                        .insert((layer.layer_id.clone(), block.id.clone()), Canvas::new());
+                    block_canvases.insert(
+                        (
+                            layer.layer_id.clone(),
+                            track.property_id.clone(),
+                            block.id.clone(),
+                        ),
+                        Canvas::new(),
+                    );
                 }
             }
             applied_action_ids_by_layer.insert(layer.layer_id.clone(), Vec::new());
@@ -820,7 +830,11 @@ impl SharedDocumentRuntime {
     /// Direct read access to one raster block's live canvas (test and debug use).
     pub fn block_canvas(&self, layer_id: &str, block_id: &str) -> Option<&Canvas> {
         self.block_canvases
-            .get(&(layer_id.to_string(), block_id.to_string()))
+            .get(&(
+                layer_id.to_string(),
+                "raster".to_string(),
+                block_id.to_string(),
+            ))
     }
 
     /// Ensures every block on the layer's raster track has a canvas entry (empty
@@ -856,7 +870,7 @@ impl SharedDocumentRuntime {
         for (block_id, is_blank) in track {
             let entry = self
                 .block_canvases
-                .entry((layer_id.to_string(), block_id))
+                .entry((layer_id.to_string(), "raster".to_string(), block_id))
                 .or_default();
             if is_blank && !entry.is_empty() {
                 entry.clear();
@@ -994,7 +1008,11 @@ impl SharedDocumentRuntime {
     /// blocks (a gap renders nothing for that layer).
     pub fn canvas_for_layer(&self, layer_id: &str, current_breath: u32) -> Option<&Canvas> {
         let block_id = self.active_raster_block_id(layer_id, current_breath)?;
-        self.block_canvases.get(&(layer_id.to_string(), block_id))
+        self.block_canvases.get(&(
+            layer_id.to_string(),
+            "raster".to_string(),
+            block_id,
+        ))
     }
 
     /// The layer's RESOLVED canvas at `current_breath`: a solid raster block
@@ -1024,7 +1042,11 @@ impl SharedDocumentRuntime {
             current_breath,
             |block| {
                 canvases
-                    .get(&(layer_id.to_string(), block.id.clone()))
+                    .get(&(
+                        layer_id.to_string(),
+                        "raster".to_string(),
+                        block.id.clone(),
+                    ))
                     .cloned()
             },
             graphic_fade,
@@ -1431,8 +1453,14 @@ impl SharedDocumentRuntime {
                 default_property_track("move", 0, default_layer_length_breaths()),
             ],
         });
-        self.block_canvases
-            .insert((layer_id.clone(), "block-1".to_string()), Canvas::new());
+        self.block_canvases.insert(
+            (
+                layer_id.clone(),
+                "raster".to_string(),
+                "block-1".to_string(),
+            ),
+            Canvas::new(),
+        );
         self.applied_action_ids_by_layer
             .insert(layer_id.clone(), Vec::new());
         self.undone_action_ids_by_layer
@@ -1457,7 +1485,7 @@ impl SharedDocumentRuntime {
             return false;
         }
         self.block_canvases
-            .retain(|(canvas_layer_id, _), _| canvas_layer_id != layer_id);
+            .retain(|(canvas_layer_id, _, _), _| canvas_layer_id != layer_id);
         self.applied_action_ids_by_layer.remove(layer_id);
         self.undone_action_ids_by_layer.remove(layer_id);
         true
@@ -1697,7 +1725,7 @@ impl SharedDocumentRuntime {
         // stays in place, the second splits off as a new block (same is_blank/value,
         // fresh id, own empty canvas — per-block canvases cannot be split).
         let mut dropped_canvas_keys = Vec::new();
-        let mut new_canvas_keys: Vec<(String, String)> = Vec::new();
+        let mut new_canvas_keys: Vec<(String, String, String)> = Vec::new();
         let mut trimmed_once: Vec<usize> = Vec::new();
         for (other_index, (start, length)) in destructive.trimmed {
             let track_index = other_track_indices[other_index];
@@ -1720,7 +1748,8 @@ impl SharedDocumentRuntime {
                     .position(|block| block.start_breath > start)
                     .unwrap_or(track.blocks.len());
                 track.blocks.insert(insert_at, split);
-                new_canvas_keys.push((layer_id.to_string(), split_id));
+                new_canvas_keys
+                    .push((layer_id.to_string(), property_id.to_string(), split_id));
                 continue;
             }
             trimmed_once.push(track_index);
@@ -1738,7 +1767,8 @@ impl SharedDocumentRuntime {
         for track_index in removed_track_indices {
             let removed_id = track.blocks[track_index].id.clone();
             track.blocks.remove(track_index);
-            dropped_canvas_keys.push((layer_id.to_string(), removed_id));
+            dropped_canvas_keys
+                .push((layer_id.to_string(), property_id.to_string(), removed_id));
         }
         for key in dropped_canvas_keys {
             self.block_canvases.remove(&key);
@@ -1833,8 +1863,10 @@ impl SharedDocumentRuntime {
         );
         // The new right half starts with its own (empty) canvas; the caller propagates
         // the split block's data onto it as a recorded patch so replay rebuilds the copy.
-        self.block_canvases
-            .insert((layer_id.to_string(), next_id.clone()), Canvas::new());
+        self.block_canvases.insert(
+            (layer_id.to_string(), "raster".to_string(), next_id.clone()),
+            Canvas::new(),
+        );
         Some(next_id)
     }
 
@@ -1847,6 +1879,7 @@ impl SharedDocumentRuntime {
     pub fn split_data_propagation_record(
         &self,
         layer_id: &str,
+        property_id: &str,
         source_block_id: &str,
         new_block_id: &str,
         action_id: String,
@@ -1855,7 +1888,11 @@ impl SharedDocumentRuntime {
     ) -> Option<SharedDocumentActionRecord> {
         let canvas = self
             .block_canvases
-            .get(&(layer_id.to_string(), source_block_id.to_string()))?;
+            .get(&(
+                layer_id.to_string(),
+                property_id.to_string(),
+                source_block_id.to_string(),
+            ))?;
         if canvas.is_empty() {
             return None;
         }
@@ -1907,8 +1944,14 @@ impl SharedDocumentRuntime {
         // The block's painted content is discarded: a stale canvas would keep
         // rendering through the raw edit-surface seam (which reads by block id,
         // not by is_blank) as ghost content over a blank span.
-        self.block_canvases
-            .insert((layer_id.to_string(), block_id.to_string()), Canvas::new());
+        self.block_canvases.insert(
+            (
+                layer_id.to_string(),
+                property_id.to_string(),
+                block_id.to_string(),
+            ),
+            Canvas::new(),
+        );
         self.ensure_block_canvas_coverage(layer_id);
         true
     }
@@ -1968,8 +2011,11 @@ impl SharedDocumentRuntime {
             track.blocks[target_index].length_breaths += empty_span.1;
         }
         track.blocks.remove(index);
-        self.block_canvases
-            .remove(&(layer_id.to_string(), block_id.to_string()));
+        self.block_canvases.remove(&(
+            layer_id.to_string(),
+            property_id.to_string(),
+            block_id.to_string(),
+        ));
         // Re-tile like every other mutating seam: merging the trailing blank
         // into a content block must still leave a trailing blank representative
         // (and any stranded edge-locked mode must normalize away).
@@ -2203,8 +2249,14 @@ impl SharedDocumentRuntime {
                 ease_in_percent: None,
             },
         );
-        self.block_canvases
-            .insert((layer_id.to_string(), new_id.clone()), Canvas::new());
+        self.block_canvases.insert(
+            (
+                layer_id.to_string(),
+                property_id.to_string(),
+                new_id.clone(),
+            ),
+            Canvas::new(),
+        );
         let (span_start, span_length) = self
             .document
             .layers
@@ -2241,6 +2293,7 @@ impl SharedDocumentRuntime {
     pub fn duplicate_data_propagation_record(
         &self,
         layer_id: &str,
+        property_id: &str,
         source_block_id: &str,
         new_block_id: &str,
         action_id: String,
@@ -2249,7 +2302,11 @@ impl SharedDocumentRuntime {
     ) -> Option<SharedDocumentActionRecord> {
         let canvas = self
             .block_canvases
-            .get(&(layer_id.to_string(), source_block_id.to_string()))?;
+            .get(&(
+                layer_id.to_string(),
+                property_id.to_string(),
+                source_block_id.to_string(),
+            ))?;
         if canvas.is_empty() {
             return None;
         }
@@ -2307,7 +2364,11 @@ impl SharedDocumentRuntime {
                         self.unblank_raster_block(&target_layer_id, &target_block_id);
                         let canvas = self
                             .block_canvases
-                            .entry((target_layer_id.clone(), target_block_id.clone()))
+                            .entry((
+                                target_layer_id.clone(),
+                                "raster".to_string(),
+                                target_block_id.clone(),
+                            ))
                             .or_default();
                         apply_patches(canvas, patches, PatchDirection::After);
                         if !*passive {
@@ -2368,7 +2429,11 @@ impl SharedDocumentRuntime {
                     if let Some(applied) = self.patches_by_action_id.get(&action_id) {
                         let canvas = self
                             .block_canvases
-                            .entry((applied.layer_id.clone(), applied.block_id.clone()))
+                            .entry((
+                                applied.layer_id.clone(),
+                                "raster".to_string(),
+                                applied.block_id.clone(),
+                            ))
                             .or_default();
                         apply_patches(canvas, &applied.patches, PatchDirection::Before);
                         self.undone_action_ids_by_layer
@@ -2388,7 +2453,11 @@ impl SharedDocumentRuntime {
                     if let Some(applied) = self.patches_by_action_id.get(&action_id) {
                         let canvas = self
                             .block_canvases
-                            .entry((applied.layer_id.clone(), applied.block_id.clone()))
+                            .entry((
+                                applied.layer_id.clone(),
+                                "raster".to_string(),
+                                applied.block_id.clone(),
+                            ))
                             .or_default();
                         apply_patches(canvas, &applied.patches, PatchDirection::After);
                         self.applied_action_ids_by_layer
@@ -2426,7 +2495,7 @@ impl SharedDocumentRuntime {
             .map(|layer| layer.layer_id.clone())
             .collect();
         self.block_canvases
-            .retain(|(layer_id, _), _| layer_ids.contains(layer_id));
+            .retain(|(layer_id, _, _), _| layer_ids.contains(layer_id));
         self.applied_action_ids_by_layer
             .retain(|layer_id, _| layer_ids.contains(layer_id));
         self.undone_action_ids_by_layer
@@ -2480,7 +2549,11 @@ impl SharedDocumentRuntime {
         self.unblank_raster_block(layer_id, block_id);
         let canvas = self
             .block_canvases
-            .entry((layer_id.to_string(), block_id.to_string()))
+            .entry((
+                layer_id.to_string(),
+                "raster".to_string(),
+                block_id.to_string(),
+            ))
             .or_default();
         apply_patches(canvas, patches, PatchDirection::After);
     }
@@ -2528,7 +2601,11 @@ impl SharedDocumentRuntime {
         let applied = self.patches_by_action_id.get(&action_id)?;
         let canvas = self
             .block_canvases
-            .entry((applied.layer_id.clone(), applied.block_id.clone()))
+            .entry((
+                applied.layer_id.clone(),
+                "raster".to_string(),
+                applied.block_id.clone(),
+            ))
             .or_default();
         apply_patches(canvas, &applied.patches, PatchDirection::Before);
         let revert = HistoryRevertPatches {
@@ -2554,7 +2631,11 @@ impl SharedDocumentRuntime {
         let applied = self.patches_by_action_id.get(&action_id)?;
         let canvas = self
             .block_canvases
-            .entry((applied.layer_id.clone(), applied.block_id.clone()))
+            .entry((
+                applied.layer_id.clone(),
+                "raster".to_string(),
+                applied.block_id.clone(),
+            ))
             .or_default();
         apply_patches(canvas, &applied.patches, PatchDirection::After);
         self.applied_action_ids_by_layer
@@ -2587,7 +2668,7 @@ impl SharedDocumentRuntime {
         let head = self.actions[..new_cut].to_vec();
         let replay = SharedDocumentRuntime::replay(self.document.clone(), head);
         let mut baseline = Vec::new();
-        for ((layer_id, block_id), canvas) in &replay.block_canvases {
+        for ((layer_id, _property_id, block_id), canvas) in &replay.block_canvases {
             if canvas.is_empty() {
                 continue;
             }
@@ -4980,6 +5061,35 @@ mod tests {
 
 
     #[test]
+    fn blanking_a_move_block_keeps_the_same_id_raster_canvas() {
+        // Channel conflation regression (J 2026-09-09): both tracks mint ids from
+        // the same `block-N` sequence, so the bare (layer, block) canvas key let a
+        // move-track blank wipe the raster block sharing that id.
+        let document = SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
+        let mut runtime = SharedDocumentRuntime::new(document);
+        runtime.split_property_block("layer-1", "raster", "block-1", 8);
+        runtime.apply_action_record(SharedDocumentActionRecord::cell_patch_set(
+            "a1",
+            "doc-1",
+            "layer-1",
+            "u1",
+            "1",
+            vec![SharedCellPatch::new(point(0, 0), None, Some(&cell('A')))],
+            Some("block-1".to_string()),
+        ));
+        assert_eq!(
+            runtime.canvas_for_layer("layer-1", 3).unwrap().get(&point(0, 0)),
+            Some(&cell('A'))
+        );
+        // Delete (blank) the MOVE block-1 — the raster block-1's content must survive.
+        assert!(runtime.blank_property_block("layer-1", "move", "block-1"));
+        assert_eq!(
+            runtime.canvas_for_layer("layer-1", 3).unwrap().get(&point(0, 0)),
+            Some(&cell('A'))
+        );
+    }
+
+    #[test]
     fn painting_into_a_blank_block_unblanks_it_and_lands_on_its_canvas() {
         let document = SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
         let mut runtime = SharedDocumentRuntime::new(document);
@@ -5115,6 +5225,7 @@ mod tests {
         let record = runtime
             .split_data_propagation_record(
                 "layer-1",
+                "raster",
                 "block-1",
                 &new_block_id,
                 "copy-1".to_string(),
@@ -5157,6 +5268,7 @@ mod tests {
         assert!(runtime
             .split_data_propagation_record(
                 "layer-1",
+                "raster",
                 "block-1",
                 &new_block_id,
                 "copy-1".to_string(),

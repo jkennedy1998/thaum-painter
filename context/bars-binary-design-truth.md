@@ -6,7 +6,8 @@ Source-of-truth from J for the binary bar redesign: property tracks tile fully w
 ## core truth: binary channels
 - A property channel has exactly two cell types: **empty** and **solid** (content). Voids (breaths with no block) stop existing.
 - Every property track (raster, move, and future rows: rotation, opacity, …) tiles the **entire layer breath span** edge to edge. All pieces of a bar — single, left head, middle, right head — live inside bars that together cover the whole layer span.
-- Bar placement is binary: no gaps, no overlaps, ever. `clamped_breath_span`'s gap-allowing and unwedge paths die; moves resolve through ripple (`pushed_breath_span`) and swap.
+- **Bar placement is binary: no gaps, no overlaps, ever.** `clamped_breath_span`'s gap-allowing and unwedge paths die; moves resolve through ripple (`pushed_breath_span`) and swap.
+- **Channel independence (J 2026-09-09):** property channels never interfere with each other's data. Runtime canvases are keyed `(layer_id, property_id, block_id)` — every track mints ids from the same `block-N` sequence, so a bare `(layer, block)` key let a move-track edit wipe the raster canvas sharing that id. Cross-channel id collision must never leak into storage, canvases, or undo.
 - Move track and raster track use the **exact same bar logic**. Property rows will grow over time; bar behavior (binary, empty/solid interaction, UX) is single source of truth. Per-property logic is limited to interpolation and sometimes bar graphics — never bar structure.
 
 ## bar piece taxonomy
