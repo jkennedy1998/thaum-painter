@@ -1092,7 +1092,38 @@ impl SharedDocumentRuntime {
     /// With no block covering the breath at all, a keyframe spanning the
     /// layer's own timing window is created. Returns whether the document
     /// changed.
+    /// Canvas-drag commit seam, auto-key OFF (editing, J 2026-09-09): a drag on a
+    /// bar that already carries movement UPDATES that bar in place — the bar is
+    /// never split into a cropped bar + a new bar at the playhead. Empties and
+    /// valueless placeholders still author (see `add_move_offset_keyframe`).
     pub fn add_move_offset(&mut self, layer_id: &str, breath: u32, delta: WorldPoint) -> bool {
+        self.add_move_offset_inner(layer_id, breath, delta, false)
+    }
+
+    /// Canvas-drag commit seam, auto-key ON (authoring, J 2026-09-09): a drag
+    /// strictly inside a valued keyframe SPLITS it — the left remainder keeps the
+    /// old offset, an interpolating empty is carved from the left bar's right end
+    /// (the left bar keeps at least one breath), and the keyframe from the drag
+    /// breath to the old end carries old offset + delta. Two drags at two breaths
+    /// produce visible motion by themselves (J 2026-09-07). Drags on empties,
+    /// valueless born-tiled solids, and past the stored extent behave exactly
+    /// like the editing seam — they were never disputed.
+    pub fn add_move_offset_keyframe(
+        &mut self,
+        layer_id: &str,
+        breath: u32,
+        delta: WorldPoint,
+    ) -> bool {
+        self.add_move_offset_inner(layer_id, breath, delta, true)
+    }
+
+    fn add_move_offset_inner(
+        &mut self,
+        layer_id: &str,
+        breath: u32,
+        delta: WorldPoint,
+        authoring: bool,
+    ) -> bool {
         if delta == WorldPoint::origin() {
             return false;
         }
@@ -1145,15 +1176,62 @@ impl SharedDocumentRuntime {
                 let block_length = track.blocks[index].length_breaths;
                 let block_is_blank = track.blocks[index].is_blank;
                 if !block_is_blank {
-                    // Drag on a solid bar — at its start breath or strictly
-                    // inside it — updates THAT bar in place (J 2026-09-09).
-                    // A bar that already carries movement is edited, never
-                    // split into a new bar at the playhead. A valueless
-                    // solid (the born-tiled placeholder) takes its first
-                    // value here too.
-                    let block = &mut track.blocks[index];
-                    block.value = Some(next_value);
-                    block.is_blank = false;
+                    if authoring
+                        && track.blocks[index].value.is_some()
+                        && block_length > 1
+                        && breath > block_start
+                    {
+                        // Auto-key authoring on a valued keyframe (J 2026-09-09
+                        // reinstating the 09-07 shape): split at the drag breath.
+                        // The left remainder keeps the old offset; an interpolating
+                        // empty is carved from its right end (the left bar keeps at
+                        // least one breath); the keyframe from the drag breath to
+                        // the old end carries old offset + delta.
+                        let keyframe_end = block_start + block_length;
+                        let left_remainder = breath - block_start;
+                        let carve = (left_remainder / 2).max(1).min(left_remainder - 1);
+                        track.blocks[index].length_breaths = left_remainder - carve;
+                        let mut insert_at = index + 1;
+                        if carve > 0 {
+                            track.blocks.insert(
+                                insert_at,
+                                SharedDocumentPropertyBlock {
+                                    id: next_property_block_id(&track.blocks),
+                                    start_breath: block_start + left_remainder - carve,
+                                    length_breaths: carve,
+                                    is_blank: true,
+                                    value: None,
+                                    interpretation: None,
+                                    ease_out_percent: None,
+                                    ease_in_percent: None,
+                                },
+                            );
+                            insert_at += 1;
+                        }
+                        track.blocks.insert(
+                            insert_at,
+                            SharedDocumentPropertyBlock {
+                                id: next_property_block_id(&track.blocks),
+                                start_breath: breath,
+                                length_breaths: keyframe_end - breath,
+                                is_blank: false,
+                                value: Some(next_value),
+                                interpretation: None,
+                                ease_out_percent: None,
+                                ease_in_percent: None,
+                            },
+                        );
+                    } else {
+                        // Drag on a solid bar — at its start breath or strictly
+                        // inside it — updates THAT bar in place (J 2026-09-09).
+                        // A bar that already carries movement is edited, never
+                        // split into a new bar at the playhead. A valueless
+                        // solid (the born-tiled placeholder) takes its first
+                        // value here too.
+                        let block = &mut track.blocks[index];
+                        block.value = Some(next_value);
+                        block.is_blank = false;
+                    }
                 } else {
                     // Drag inside an empty — including at its own start
                     // breath, which half-open spans resolve onto the empty:
@@ -4899,6 +4977,7 @@ mod tests {
             runtime.canvas_for_layer("layer-1", 10)
         );
     }
+
 
     #[test]
     fn painting_into_a_blank_block_unblanks_it_and_lands_on_its_canvas() {

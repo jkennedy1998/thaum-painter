@@ -303,8 +303,14 @@ pub fn commit_move_offset(
     delta: WorldPoint,
     current_breath: u32,
     persist_to_disk: bool,
+    auto_key: bool,
 ) -> Result<()> {
-    if runtime.add_move_offset(active_layer_id, current_breath, delta) {
+    let changed = if auto_key {
+        runtime.add_move_offset_keyframe(active_layer_id, current_breath, delta)
+    } else {
+        runtime.add_move_offset(active_layer_id, current_breath, delta)
+    };
+    if changed {
         // Session-client mode: the move block rides the structure record the
         // panel path pushes; the host owns snapshot saves.
         if persist_to_disk {

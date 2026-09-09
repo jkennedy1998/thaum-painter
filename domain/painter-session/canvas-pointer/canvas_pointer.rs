@@ -765,6 +765,7 @@ impl CanvasPointerStrokes {
         ctx: &mut CanvasPointerContext<'_>,
         orientation: CameraViewOrientation,
         current_breath: u32,
+        auto_key: bool,
     ) -> Vec<Error> {
         let mut errors = Vec::new();
         if let Some(stroke) = self.vector_move.take() {
@@ -780,6 +781,7 @@ impl CanvasPointerStrokes {
                 },
                 current_breath,
                 ctx.persist_to_disk,
+                auto_key,
             ) {
                 errors.push(error);
             }
@@ -1100,7 +1102,7 @@ mod tests {
         );
         assert!(strokes.lasso().is_some());
 
-        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0, false);
         assert!(errors.is_empty());
         assert!(strokes.lasso().is_none());
         // The enclosed cell took the hand's glyph, in exactly one commit.
@@ -1240,7 +1242,7 @@ mod tests {
         let groups = strokes.overlay_cell_groups(&mut session.ctx(), flat_view(), vivid);
         assert!(!groups.is_empty());
 
-        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0, false);
         assert!(errors.is_empty());
         // Nothing in progress and nothing selected: every returned overlay
         // group is an empty shell with no cells.
@@ -1271,7 +1273,7 @@ mod tests {
         assert!(strokes.lasso().is_none());
         assert!(strokes.selection().is_none());
 
-        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0, false);
         assert!(errors.is_empty());
         assert_eq!(session.action_counter, 0);
     }
@@ -1346,7 +1348,7 @@ mod tests {
         assert!(session.canvas.get(&point(8, 8)).is_none());
         assert!(session.canvas.get(&point(9, 8)).is_none());
 
-        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0, false);
         assert!(errors.is_empty());
         assert_eq!(session.action_counter, 1);
     }
@@ -1371,7 +1373,7 @@ mod tests {
         );
         assert!(session.canvas.get(&point(5, 5)).is_none());
 
-        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0, false);
         assert!(errors.is_empty());
         assert_eq!(session.action_counter, 0);
     }
@@ -1470,7 +1472,7 @@ mod tests {
         // The user scrolls the focus depth to z=2 and releases without any
         // further pointer motion: the release frame folds the depth delta.
         strokes.fold_move_release(PaintHand::Left, point_at(2, 0, 2), flat_view());
-        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0, false);
         assert!(errors.is_empty());
 
         assert!(session.canvas.get(&point(1, 1)).is_none());
@@ -1512,7 +1514,7 @@ mod tests {
         );
         // A right-hand release folds nothing into the left hand's move.
         strokes.fold_move_release(PaintHand::Right, point_at(2, 0, 2), flat_view());
-        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0, false);
         assert!(errors.is_empty());
 
         assert_eq!(
@@ -1552,7 +1554,7 @@ mod tests {
             bounds,
             flat_view(),
         );
-        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0, false);
         assert!(errors.is_empty());
 
         // The origin area is cleared, the content sits at the new place:
@@ -1607,7 +1609,7 @@ mod tests {
             strokes.pending_move_offset(),
             Some(WorldPoint { x: 3, y: 0, z: 0 })
         );
-        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0, false);
         assert!(errors.is_empty());
 
         // Raster data is untouched; the offset landed on the active layer's
@@ -1650,7 +1652,7 @@ mod tests {
             flat_view(),
         );
         strokes.cancel(PaintHand::Left);
-        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0, false);
         assert!(errors.is_empty());
 
         assert_eq!(
@@ -1696,7 +1698,7 @@ mod tests {
         let overlay_cells: Vec<_> = groups.iter().flat_map(|group| group.iter_cells()).collect();
         assert!(overlay_cells.len() >= 4);
 
-        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0, false);
         assert!(errors.is_empty());
     }
 
@@ -1741,7 +1743,7 @@ mod tests {
             bounds,
             flat_view(),
         );
-        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0);
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0, false);
         assert!(errors.is_empty());
 
         // The move lands on the new depth, not the origin's.
@@ -1811,7 +1813,7 @@ mod tests {
             bounds,
             posx,
         );
-        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), posx, 0);
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), posx, 0, false);
         assert!(errors.is_empty());
 
         // The displacement followed the cursor in view space: three east

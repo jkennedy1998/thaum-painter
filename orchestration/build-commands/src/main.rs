@@ -698,6 +698,7 @@ fn finish_canvas_release(
         ),
         view_orientation,
         current_breath,
+        timeline_state.borrow().auto_key_enabled,
     ) {
         eprintln!("stroke commit failed (kept in memory): {error:#}");
     }
