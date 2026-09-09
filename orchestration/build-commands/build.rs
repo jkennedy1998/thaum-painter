@@ -13,4 +13,10 @@ fn main() {
         .unwrap_or_default();
     println!("cargo:rustc-env=THAUM_BUILD_COMMIT={commit}");
     println!("cargo:rerun-if-changed=build.rs");
+    // A commit bump changes none of the package sources, so without watching
+    // the git refs the cached build would keep the previous commit's stamp
+    // (seen live: a shipped exe booted as an older commit than its zip).
+    println!("cargo:rerun-if-changed=../../.git/HEAD");
+    println!("cargo:rerun-if-changed=../../.git/refs/heads");
+    println!("cargo:rerun-if-changed=../../.git/packed-refs");
 }
