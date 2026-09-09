@@ -91,6 +91,30 @@ pub fn connect_trusting(
         .strip_prefix("plain://")
         .or_else(|| address.strip_prefix("tls://"))
         .unwrap_or(address);
+    let host = target
+        .rsplit_once(':')
+        .map(|(host, _)| host.trim_matches(|c| c == '[' || c == ']'))
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "relay address needs host:port",
+            )
+        })?
+        .to_string();
+
+    // Hairpin escape first: when the relay is public, probe the local
+    // machine for a relay serving the same port before the honest dial.
+    // A machine that hosts the relay itself cannot dial its own public IP
+    // without router NAT loopback (seen live 2026-09-09: the painter on
+    // JOBO timed out reaching the deployed relay on JOBO). TLS still
+    // verifies the real hostname, so a foreign local service fails the
+    // handshake and we fall through to the honest dial.
+    if !plain {
+        if let Some(link) = try_local_relay(&host, target, &extra_roots) {
+            return link;
+        }
+    }
+
     let socket = dial_socket(target)?;
     if plain {
         socket.set_read_timeout(Some(RELAY_STREAM_READ_SLICE)).ok();
@@ -104,19 +128,59 @@ pub fn connect_trusting(
             socket: control,
         });
     }
+    tls_link(socket, host, extra_roots)
+}
+
+/// The hairpin escape: probe loopback on the target's port. Returns `None`
+/// whenever the probe cannot prove the local machine serves the relay —
+/// loopback refused (nothing local) or any TLS failure (foreign local
+/// service) — so the caller falls through to the honest public dial.
+fn try_local_relay(
+    host: &str,
+    target: &str,
+    extra_roots: &Option<Vec<CertificateDer<'static>>>,
+) -> Option<std::io::Result<RelayClientLink>> {
+    let resolved: Vec<_> = target.to_socket_addrs().ok()?.collect();
+    // Public targets only: an explicit private/loopback address already
+    // names its machine, and hairpin NAT is a public-IP phenomenon.
+    if !resolved.iter().any(|address| is_public_ip(address.ip())) {
+        return None;
+    }
+    let port = resolved.first()?.port();
+    let loopback = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let socket = TcpStream::connect_timeout(&loopback, DIAL_ADDRESS_TIMEOUT).ok()?;
+    Some(tls_link(socket, host.to_string(), extra_roots.clone()))
+}
+
+/// Rough public-address test (`IpAddr::is_global` is the honest rule but is
+/// gated behind newer std than this workspace pins; the private-use, loopback,
+/// link-local, and unspecified exclusions cover every real relay address).
+fn is_public_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            !v4.is_loopback()
+                && !v4.is_private()
+                && !v4.is_link_local()
+                && !v4.is_unspecified()
+                && !v4.is_broadcast()
+        }
+        std::net::IpAddr::V6(v6) => {
+            !v6.is_loopback() && !v6.is_unspecified() && (v6.segments()[0] & 0xfe00) != 0xfe00
+        }
+    }
+}
+
+/// Wraps an already-dialed socket in the client TLS link: trust roots, SNI
+/// from the dialed hostname, handshake driven to completion under the
+/// handshake window.
+fn tls_link(
+    socket: TcpStream,
+    host: String,
+    extra_roots: Option<Vec<CertificateDer<'static>>>,
+) -> std::io::Result<RelayClientLink> {
     // TLS path: keep a socket clone for shutdown/timeout control before the
     // stream takes ownership of its twin.
     let control = socket.try_clone()?;
-    let host = target
-        .rsplit_once(':')
-        .map(|(host, _)| host.trim_matches(|c| c == '[' || c == ']'))
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "relay address needs host:port",
-            )
-        })?
-        .to_string();
 
     let mut roots = RootCertStore::empty();
     match extra_roots {
@@ -400,6 +464,14 @@ mod tests {
         assert!(is_plain_target("plain://localhost:4748"));
         assert!(!is_plain_target("relay.jartanddesign.com:443"));
         assert!(!is_plain_target("10.0.0.5:4748"));
+    }
+
+    #[test]
+    fn public_ip_test_excludes_local_ranges() {
+        assert!(is_public_ip(std::net::IpAddr::from([73, 36, 136, 170])));
+        assert!(!is_public_ip(std::net::IpAddr::from([127, 0, 0, 1])));
+        assert!(!is_public_ip(std::net::IpAddr::from([10, 0, 0, 68])));
+        assert!(!is_public_ip(std::net::IpAddr::from([192, 168, 1, 1])));
     }
 
     #[test]
