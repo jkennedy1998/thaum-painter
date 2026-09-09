@@ -1,33 +1,38 @@
-//! Session panel: the user surface for LAN multiplayer (the session-ui
-//! plan's view + intent module). One standard `Module` over a shared
-//! `SessionPanelState`: standard gizmo bar (move / close / resize /
+//! Session panel: the user surface for multiplayer (the session-ui plan's
+//! view + intent module, v2 lane-visible shape). One standard `Module` over
+//! a shared `SessionPanelState`: standard gizmo bar (move / close / resize /
 //! seamless) on `PanelChrome` chrome, recallable from the command bar via
-//! the registry's hidden flag — the same shape as every other painter
-//! panel (material-picker pattern). No chip: status lives in the panel's
-//! own synced status row, never in a fake always-attached button.
+//! the registry's hidden flag — the same shape as every other painter panel.
 //!
-//! Ownership rule: the module never touches `SessionNet`/`SessionHost`/
-//! `SessionClient`/sockets. It renders only what `SessionPanelState::sync`
-//! was told — every displayed state is real synced state, never invented —
-//! and emits at most one `SessionPanelAction` per frame via
-//! `take_pending_action` for the orchestration layer to apply onto the one
-//! `Option<SessionNet>`. Swap the transport, the panel doesn't know; swap
-//! the panel, the transport doesn't know.
+//! v2 design (settled with J): no fallback magic, two visible lanes. The
+//! offline state shows both join lanes — `join with code` (relay invite)
+//! and `join local` (LAN discovery selector) — plus `host session`. The
+//! hosting state shows the net invite code (with a relay note when the net
+//! lane degraded) and the connected roster; the connected state shows the
+//! roster (host crowned) and leave/end. Hosting is never gated on relay
+//! health: the relay is one reachability lane, not a precondition.
 //!
-//! Text entry rides the existing key-capture seam (`Module::on_key_capture`,
-//! the controls-panel rebind pattern): clicking a field focuses it, focused
-//! fields consume keys until Enter commits or Escape blurs. There is no
-//! generic Module-trait focus/IME hook yet — the same deferred cross-repo
-//! seam the layers-panel rename wants.
+//! Ownership rule: the module never touches `SessionNet`/sockets/discovery.
+//! It renders only what `SessionPanelState::sync` was told — every displayed
+//! state is real synced state, never invented — and emits at most one
+//! `SessionPanelAction` per frame via `take_pending_action` for the
+//! orchestration layer to apply. Swap the transport, the panel doesn't know;
+//! swap the panel, the transport doesn't know.
+//!
+//! Text entry rides the shared `TextEntryField`
+//! (`thaum-renderer/domain/modules/shared/text-entry/`) through the
+//! registry's key-capture seam, including clipboard-paste intake: the paste
+//! button flags a paste request, the orchestration layer reads the OS
+//! clipboard and applies it back through `insert_text`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use thaum_renderer_domain::{
-    Cell, CellColor, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, GizmoBar,
-    GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module, ModulePointerButton,
-    ModulePointerEvent, ModuleRect, PanelChrome, PersistedModuleUiState, UiColorRole, UiPalette,
-    WorldPoint,
+    text_entry::TextEntryField, Cell, CellColor, CellGraphic, CellGroup, CellGroupIntakeBehavior,
+    CellPoint, GizmoBar, GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module,
+    ModulePointerButton, ModulePointerEvent, ModuleRect, PanelChrome, PersistedModuleUiState,
+    UiColorRole, UiPalette, WorldPoint,
 };
 
 /// One roster row as synced from the live session. The host is roster entry
@@ -42,21 +47,34 @@ pub struct SessionRosterRow {
     pub color: [u8; 3],
 }
 
+/// One LAN-discovered host as synced from the discovery poller. The panel
+/// renders the name; the orchestration layer dials the address verbatim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionDiscoveredHost {
+    pub name: String,
+    pub address: String,
+}
+
 /// A user action requested through the panel, for the orchestration layer to
 /// apply onto the real `SessionNet` and reflect back through `sync`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionPanelAction {
-    /// Host a session on the current document.
+    /// Host a session on the current document (both lanes; the orchestration
+    /// layer reports any degraded lane through `relay_note`).
     HostRequested,
-    /// Join the host at a typed `ip:port` (LAN lane) or an invite code
-    /// (relay lane; routed by shape in the orchestration layer). The panel
-    /// stays a dumb view either way.
-    JoinRequested { address: String },
-    /// Copy the invite addresses to the OS clipboard (orchestration-owned).
-    CopyInvite,
-    /// Leave / end the session (host leaving ends it for everyone).
+    /// Join by relay invite code typed/pasted into the code field.
+    JoinCodeRequested { code: String },
+    /// Join the LAN-discovered host at a dialable address.
+    JoinLocalRequested { address: String },
+    /// Read the OS clipboard and paste it into the code field
+    /// (orchestration-owned clipboard timing, panel-owned intent).
+    PasteCodeRequested,
+    /// Copy the net invite code to the OS clipboard (orchestration-owned).
+    CopyCode,
+    /// Leave the session (host leaving ends it for everyone; the
+    /// orchestration layer decides by side).
     LeaveRequested,
-    /// Commit the edited display name.
+    /// Commit the edited display name (offline state).
     SetDisplayName(String),
 }
 
@@ -66,12 +84,12 @@ pub enum SessionPanelAction {
 enum FieldFocus {
     #[default]
     None,
-    JoinAddress,
+    Code,
     DisplayName,
 }
 
 /// Shared state between the module and its orchestration caller. The module
-/// only ever reads/writes this struct — no document or socket.
+/// only ever reads/writes this struct — no document, socket, or discovery.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionPanelState {
     /// True while this app participates in a session (either side).
@@ -84,8 +102,15 @@ pub struct SessionPanelState {
     pub session_ended: bool,
     /// Other users in the session (roster minus self, host excluded).
     pub peer_count: usize,
-    /// `SessionNet::invite_addresses()` verbatim; empty when not hosting.
-    pub invite_addresses: Vec<String>,
+    /// The net invite code while hosting (relay lane), verbatim; `None`
+    /// when not hosting or hosting LAN-only.
+    pub net_code: Option<String>,
+    /// Why the net lane is degraded, shown while hosting (e.g. the relay
+    /// dial failed and this host is LAN-only). `None` = nothing degraded.
+    pub relay_note: Option<String>,
+    /// LAN-discovered hosts for the join-local selector, verbatim from the
+    /// discovery poller's newest scan.
+    pub discovered: Vec<SessionDiscoveredHost>,
     /// The full roster, host first (the `SessionNet::roster` contract).
     pub roster: Vec<SessionRosterRow>,
     /// The local user's current display name.
@@ -93,13 +118,26 @@ pub struct SessionPanelState {
     /// The last events (joined / left / dropped / denied / copied), oldest
     /// first. The panel renders the newest three; nothing it was not told.
     pub events: Vec<String>,
+    /// The shared join-code field: focus, draft, commit, paste intake.
+    pub code_field: TextEntryField,
     pending_action: Option<SessionPanelAction>,
 }
 
 /// The event log shown is the newest three lines.
 const EVENT_LINES: usize = 3;
 
+/// The join code's shape budget: `<room6>-<token10>` is 17 glyphs; a little
+/// headroom stays friendly without inviting essays.
+const CODE_FIELD_CHARS: usize = 24;
+
 impl SessionPanelState {
+    pub fn new() -> Self {
+        Self {
+            code_field: TextEntryField::new(CODE_FIELD_CHARS, "code + enter"),
+            ..Self::default()
+        }
+    }
+
     /// Pushes one event line, capped at the log-lite limit.
     pub fn push_event(&mut self, event: impl Into<String>) {
         self.events.push(event.into());
@@ -118,10 +156,7 @@ impl SessionPanelState {
             return "RECONNECTING...".to_string();
         }
         if self.in_session && self.is_host {
-            return match self.invite_addresses.first() {
-                Some(address) => format!("HOSTING {address}"),
-                None => "HOSTING".to_string(),
-            };
+            return "HOSTING".to_string();
         }
         if self.in_session {
             return format!("CONNECTED ({})", self.peer_count);
@@ -129,12 +164,17 @@ impl SessionPanelState {
         "OFFLINE".to_string()
     }
 
-    /// Takes the pending action, if any. At most one action queues per frame.
+    /// Takes the pending action, if any. At most one action queues per frame;
+    /// a flagged paste request promotes itself here so the shared field's
+    /// paste surface and the action queue stay one seam.
     pub fn take_pending_action(&mut self) -> Option<SessionPanelAction> {
+        if self.pending_action.is_none() && self.code_field.take_paste_request() {
+            self.pending_action = Some(SessionPanelAction::PasteCodeRequested);
+        }
         self.pending_action.take()
     }
 
-    /// Refreshes the displayed truth from the live session. Called once per
+    /// Refreshes the session truth from the live session. Called once per
     /// frame by the orchestration layer; events are the panel's own memory
     /// and are never touched here.
     #[allow(clippy::too_many_arguments)] // one arg per synced truth field
@@ -146,7 +186,7 @@ impl SessionPanelState {
         reconnecting: bool,
         session_ended: bool,
         peer_count: usize,
-        invite_addresses: Vec<String>,
+        net_code: Option<String>,
         roster: Vec<SessionRosterRow>,
         self_display_name: String,
     ) {
@@ -156,9 +196,21 @@ impl SessionPanelState {
         self.reconnecting = reconnecting;
         self.session_ended = session_ended;
         self.peer_count = peer_count;
-        self.invite_addresses = invite_addresses;
+        self.net_code = net_code;
         self.roster = roster;
         self.self_display_name = self_display_name;
+    }
+
+    /// Refreshes the net-lane health note (why the net lane is degraded, if
+    /// it is). Orchestration-owned memory; cleared by passing `None`.
+    pub fn sync_relay_note(&mut self, relay_note: Option<String>) {
+        self.relay_note = relay_note;
+    }
+
+    /// Refreshes the discovery truth from the newest finished scan. An empty
+    /// scan is real truth: "none found".
+    pub fn sync_discovered(&mut self, discovered: Vec<SessionDiscoveredHost>) {
+        self.discovered = discovered;
     }
 
     fn queue_action(&mut self, action: SessionPanelAction) {
@@ -185,14 +237,14 @@ fn push_text(cells: &mut Vec<Cell>, x: i32, y: i32, glyph: char, color: CellColo
 
 fn push_line(cells: &mut Vec<Cell>, y: i32, line: &str, color: CellColor, width: usize) {
     // Text starts one content column in, matching the roster rows' left pad.
-    for (index, glyph) in truncate_to_width(line, width).chars().enumerate() {
+    for (index, glyph) in truncate_to_width(line, width.saturating_sub(1)).chars().enumerate() {
         push_text(cells, content_x_of(index as i32 + 1), y, glyph, color);
     }
 }
 
 /// The click-open session detail panel in standard module form: gizmo-bar
-/// chrome, command-bar recall, roster, invite copy, join field, name edit,
-/// and the log-lite event lines.
+/// chrome, command-bar recall, the two visible join lanes offline, roster +
+/// invite/end in-session, and the log-lite event lines.
 pub struct SessionPanelModule {
     id: String,
     rect: ModuleRect,
@@ -202,21 +254,26 @@ pub struct SessionPanelModule {
     gizmo_state: GizmoState,
     hidden: bool,
     focus: FieldFocus,
-    join_draft: String,
     name_draft: String,
+    /// The join-local selector's position in the synced discovery list.
+    selector_index: usize,
 }
 
 /// Content rows (local to `PanelChrome::content_origin`, bottom-up) shared
 /// by draw and hit-test.
 const ROW_EVENTS_BASE: i32 = 0;
-const ROW_NAME: i32 = 4;
-const ROW_BUTTONS: i32 = 5;
-/// In-session only: the live invite, shown verbatim while hosting (row 6 is
-/// the join field when offline). Clicking it copies, like [COPY INVITE].
-const ROW_INVITE: i32 = 6;
-const ROW_ROSTER_BASE: i32 = 7;
-const ROW_JOIN: i32 = 6;
-const ROW_HOST: i32 = 8;
+const ROW_HOST_BTN: i32 = 4;
+const ROW_SELECTOR: i32 = 6;
+const ROW_JOIN_LOCAL_BTN: i32 = 7;
+const ROW_CODE_FIELD: i32 = 9;
+const ROW_CODE_BTNS: i32 = 10;
+const ROW_CODE_TITLE: i32 = 11;
+/// In-session rows: roster climbs from here (hosting leaves room for the
+/// code + note rows above).
+const ROW_ROSTER_BASE: i32 = 6;
+const ROW_BUTTONS: i32 = 4;
+const ROW_CODE: i32 = 12;
+const ROW_RELAY_NOTE: i32 = 11;
 
 impl SessionPanelModule {
     pub fn new(
@@ -233,8 +290,8 @@ impl SessionPanelModule {
             gizmo_state: GizmoState::new(),
             hidden: false,
             focus: FieldFocus::None,
-            join_draft: String::new(),
             name_draft: String::new(),
+            selector_index: 0,
         }
     }
 
@@ -266,16 +323,24 @@ impl SessionPanelModule {
             .then_some((local_x, local_y))
     }
 
-    /// Roster rows the panel can show; the rest scroll off (v1 keeps the
-    /// panel small — more users than fits is past LAN-v1 honesty anyway).
-    fn visible_roster_rows(&self) -> usize {
-        let fit = (self.content_height() - 1 - ROW_ROSTER_BASE).max(0) as usize;
-        self.state.borrow().roster.len().min(fit)
+    /// The selected discovered host, if the synced list has one at the
+    /// (clamped) selector position.
+    fn selected_host(&self, state: &SessionPanelState) -> Option<SessionDiscoveredHost> {
+        if state.discovered.is_empty() {
+            return None;
+        }
+        let index = self.selector_index.min(state.discovered.len() - 1);
+        Some(state.discovered[index].clone())
     }
 
-    fn roster_row_at(&self, count: usize, row: i32) -> Option<usize> {
-        let index = (row - ROW_ROSTER_BASE) as usize;
-        (index < count).then_some(index)
+    /// The highest content row the roster may occupy (below the status row;
+    /// hosting stops below the code + note rows).
+    fn roster_top(&self, state: &SessionPanelState) -> i32 {
+        if state.is_host {
+            ROW_RELAY_NOTE - 1
+        } else {
+            self.content_height() - 2
+        }
     }
 
     /// Denial/event text passthrough: the panel shows what actually happened,
@@ -290,11 +355,6 @@ impl SessionPanelModule {
         ))
     }
 
-    fn blur_fields(&mut self) {
-        self.focus = FieldFocus::None;
-        self.join_draft.clear();
-        self.name_draft.clear();
-    }
 }
 
 impl Module for SessionPanelModule {
@@ -360,10 +420,37 @@ impl Module for SessionPanelModule {
         );
 
         if state.in_session {
+            // Hosting shows the net invite code (click copies) plus the net
+            // lane note when the lane degraded.
+            let roster_base = if state.is_host {
+                if let Some(code) = &state.net_code {
+                    push_line(
+                        &mut cells,
+                        content_y + ROW_CODE,
+                        &format!("CODE> {code}"),
+                        vivid,
+                        width,
+                    );
+                }
+                if let Some(note) = &state.relay_note {
+                    push_line(
+                        &mut cells,
+                        content_y + ROW_RELAY_NOTE,
+                        &format!("* {note}"),
+                        dim,
+                        width,
+                    );
+                }
+                ROW_ROSTER_BASE + 2
+            } else {
+                ROW_ROSTER_BASE
+            };
+
             // Roster rows: entry zero is the host (crowned), you marked.
-            let fit = (self.content_height() - 1 - ROW_ROSTER_BASE).max(0) as usize;
-            for (index, member) in state.roster.iter().take(fit).enumerate() {
-                let row_y = content_y + ROW_ROSTER_BASE + index as i32;
+            let fit = (self.roster_top(&state) - roster_base + 1).max(0) as usize;
+            for (index, member) in state.roster.iter().take(fit).enumerate()
+            {
+                let row_y = content_y + roster_base + index as i32;
                 let color = CellColor::Flat([
                     member.color[0] as f32 / 255.0,
                     member.color[1] as f32 / 255.0,
@@ -380,72 +467,87 @@ impl Module for SessionPanelModule {
                 if member.is_you {
                     label.push_str(" (you)");
                 }
-                for glyph in truncate_to_width(&label, width.saturating_sub(x as usize)).chars() {
+                for glyph in truncate_to_width(&label, width.saturating_sub(x as usize + 1)).chars()
+                {
                     push_text(&mut cells, content_x_of(x), row_y, glyph, text);
                     x += 1;
                 }
             }
 
-            // Buttons row: host copies the invite, everyone can leave.
-            if state.is_host {
-                push_line(
-                    &mut cells,
-                    content_y + ROW_BUTTONS,
-                    "[COPY INVITE]  [LEAVE]",
-                    bright,
-                    width,
-                );
-                // The invite itself on screen: the newest truth from the
-                // host, verbatim — never a reconstructed address.
-                if let Some(address) = state.invite_addresses.first() {
-                    push_line(&mut cells, content_y + ROW_INVITE, address, vivid, width);
-                }
+            // Buttons row: the host ends, a joiner leaves.
+            let button = if state.is_host { "[END SESSION]" } else { "[LEAVE SESSION]" };
+            push_line(&mut cells, content_y + ROW_BUTTONS, button, bright, width);
+        } else {
+            // Offline: both lanes visible, host button below.
+            push_line(&mut cells, content_y + ROW_CODE_TITLE, "JOIN WITH CODE", text, width);
+            let code_color = if state.code_field.is_focused() {
+                vivid
+            } else if state.code_field.is_empty() {
+                dim
             } else {
-                push_line(
-                    &mut cells,
-                    content_y + ROW_BUTTONS,
-                    "[LEAVE]",
-                    bright,
-                    width,
-                );
-            }
-
-            // Name edit row: committed with Enter through the key-capture seam.
-            let (name_text, name_color) = if self.focus == FieldFocus::DisplayName {
-                (format!("{}_", self.name_draft), vivid)
-            } else {
-                (state.self_display_name.clone(), text)
+                text
             };
             push_line(
                 &mut cells,
-                content_y + ROW_NAME,
-                &format!("NAME> {name_text}"),
-                name_color,
+                content_y + ROW_CODE_FIELD,
+                &state.code_field.display(),
+                code_color,
                 width,
             );
-        } else {
-            // Offline: one-click host, one-field join, name edit.
             push_line(
                 &mut cells,
-                content_y + ROW_HOST,
-                "> HOST SESSION",
+                content_y + ROW_CODE_BTNS,
+                "[JOIN CODE]  [PASTE]",
                 bright,
                 width,
             );
-            let (join_text, join_color) = if self.focus == FieldFocus::JoinAddress {
-                (format!("{}_", self.join_draft), vivid)
-            } else if self.join_draft.is_empty() {
-                ("ip:port or code + ENTER".to_string(), dim)
-            } else {
-                (self.join_draft.clone(), text)
-            };
+
+            push_line(&mut cells, content_y + ROW_JOIN_LOCAL_BTN - 1, "JOIN LOCAL", text, width);
+            match self.selected_host(&state) {
+                Some(host) => {
+                    // `< name >` selector: the arrows are the click zones.
+                    let label = truncate_to_width(&host.name, width.saturating_sub(6));
+                    push_text(&mut cells, content_x_of(1), content_y + ROW_SELECTOR, '<', bright);
+                    let mut x = 3;
+                    for glyph in label.chars() {
+                        push_text(&mut cells, content_x_of(x), content_y + ROW_SELECTOR, glyph, text);
+                        x += 1;
+                    }
+                    push_text(
+                        &mut cells,
+                        content_x_of(x + 1),
+                        content_y + ROW_SELECTOR,
+                        '>',
+                        bright,
+                    );
+                }
+                None => {
+                    push_line(
+                        &mut cells,
+                        content_y + ROW_SELECTOR,
+                        "none found",
+                        dim,
+                        width,
+                    );
+                }
+            }
             push_line(
                 &mut cells,
-                content_y + ROW_JOIN,
-                &format!("JOIN> {join_text}"),
-                join_color,
+                content_y + ROW_JOIN_LOCAL_BTN,
+                "[JOIN LOCAL]",
+                bright,
                 width,
             );
+
+            push_line(
+                &mut cells,
+                content_y + ROW_HOST_BTN,
+                "[HOST SESSION]",
+                bright,
+                width,
+            );
+
+            // Name edit row rides the events' top edge offline (row 3).
             let (name_text, name_color) = if self.focus == FieldFocus::DisplayName {
                 (format!("{}_", self.name_draft), vivid)
             } else {
@@ -453,7 +555,7 @@ impl Module for SessionPanelModule {
             };
             push_line(
                 &mut cells,
-                content_y + ROW_NAME,
+                content_y + ROW_HOST_BTN - 1,
                 &format!("NAME> {name_text}"),
                 name_color,
                 width,
@@ -488,7 +590,9 @@ impl Module for SessionPanelModule {
                 {
                     if outcome == GizmoClickOutcome::Gizmo(GizmoKind::Close) {
                         self.hidden = true;
-                        self.blur_fields();
+                        self.name_draft.clear();
+                        self.focus = FieldFocus::None;
+                        self.state.borrow_mut().code_field.blur();
                     }
                     return;
                 }
@@ -501,36 +605,74 @@ impl Module for SessionPanelModule {
                 let mut state = self.state.borrow_mut();
                 if state.in_session {
                     if local_y == ROW_BUTTONS {
-                        if state.is_host && local_x < 14 {
-                            state.queue_action(SessionPanelAction::CopyInvite);
+                        state.queue_action(SessionPanelAction::LeaveRequested);
+                        self.focus = FieldFocus::None;
+                    } else if local_y == ROW_CODE && state.is_host && state.net_code.is_some() {
+                        state.queue_action(SessionPanelAction::CopyCode);
+                        self.focus = FieldFocus::None;
+                    } else {
+                        let roster_base = if state.is_host {
+                            ROW_ROSTER_BASE + 2
                         } else {
-                            state.queue_action(SessionPanelAction::LeaveRequested);
+                            ROW_ROSTER_BASE
+                        };
+                        if state
+                            .roster
+                            .get((local_y - roster_base) as usize)
+                            .is_none()
+                        {
+                            self.focus = FieldFocus::None;
+                        }
+                    }
+                } else if local_y == ROW_CODE_FIELD {
+                    self.focus = FieldFocus::Code;
+                    state.code_field.focus();
+                } else if local_y == ROW_CODE_BTNS {
+                    // Left region: [JOIN CODE] commits the draft; right
+                    // region: [PASTE] flags the clipboard request.
+                    if local_x <= 11 {
+                        state.code_field.handle_key_label("ENTER");
+                        if let Some(code) = state.code_field.take_commit() {
+                            state.queue_action(SessionPanelAction::JoinCodeRequested { code });
                         }
                         self.focus = FieldFocus::None;
-                    } else if local_y == ROW_INVITE && state.is_host {
-                        state.queue_action(SessionPanelAction::CopyInvite);
-                        self.focus = FieldFocus::None;
-                    } else if local_y == ROW_NAME {
-                        self.focus = FieldFocus::DisplayName;
-                        self.name_draft = state.self_display_name.clone();
-                    } else if self
-                        .roster_row_at(self.visible_roster_rows(), local_y)
-                        .is_none()
-                    {
-                        self.focus = FieldFocus::None;
+                    } else {
+                        state.code_field.request_paste();
                     }
-                } else {
-                    if local_y == ROW_HOST {
-                        state.queue_action(SessionPanelAction::HostRequested);
-                        self.focus = FieldFocus::None;
-                    } else if local_y == ROW_JOIN {
-                        self.focus = FieldFocus::JoinAddress;
-                    } else if local_y == ROW_NAME {
-                        self.focus = FieldFocus::DisplayName;
-                        self.name_draft = state.self_display_name.clone();
+                } else if local_y == ROW_SELECTOR {
+                    // Arrow zones scroll the discovery list; the name is the
+                    // middle.
+                    let count = state.discovered.len();
+                    if count > 0 && local_x == 1 {
+                        self.selector_index = self.selector_index.saturating_sub(1);
+                    } else if count > 0 && local_x >= 3 {
+                        let max = count - 1;
+                        let name_width = self.selected_host(&state).map_or(0, |host| {
+                            host.name.chars().count().min(self.content_width() as usize - 6)
+                        });
+                        if local_x >= 3 + name_width as i32 + 1 {
+                            self.selector_index = (self.selector_index + 1).min(max);
+                        } else {
+                            self.focus = FieldFocus::None;
+                        }
                     } else {
                         self.focus = FieldFocus::None;
                     }
+                } else if local_y == ROW_JOIN_LOCAL_BTN {
+                    if let Some(host) = self.selected_host(&state) {
+                        state.queue_action(SessionPanelAction::JoinLocalRequested {
+                            address: host.address,
+                        });
+                    }
+                    self.focus = FieldFocus::None;
+                } else if local_y == ROW_HOST_BTN - 1 {
+                    self.focus = FieldFocus::DisplayName;
+                    self.name_draft = state.self_display_name.clone();
+                } else if local_y == ROW_HOST_BTN {
+                    state.queue_action(SessionPanelAction::HostRequested);
+                    self.focus = FieldFocus::None;
+                } else {
+                    self.focus = FieldFocus::None;
                 }
             }
             ModulePointerEvent::Move { x, y } => {
@@ -553,36 +695,18 @@ impl Module for SessionPanelModule {
         if self.hidden {
             return false;
         }
+        let mut state = self.state.borrow_mut();
         match self.focus {
             FieldFocus::None => false,
-            FieldFocus::JoinAddress => {
-                match label {
-                    "ENTER" => {
-                        let address = self.join_draft.trim().to_string();
-                        self.join_draft.clear();
-                        self.focus = FieldFocus::None;
-                        if !address.is_empty() {
-                            self.state
-                                .borrow_mut()
-                                .queue_action(SessionPanelAction::JoinRequested { address });
-                        }
-                    }
-                    "ESCAPE" => {
-                        self.join_draft.clear();
-                        self.focus = FieldFocus::None;
-                    }
-                    "BACKSPACE" => {
-                        self.join_draft.pop();
-                    }
-                    "SPACE" => {}
-                    single if single.chars().count() == 1 => {
-                        if self.join_draft.chars().count() < 21 {
-                            self.join_draft.push_str(single);
-                        }
-                    }
-                    _ => {}
+            FieldFocus::Code => {
+                let consumed = state.code_field.handle_key_label(label);
+                if let Some(code) = state.code_field.take_commit() {
+                    state.queue_action(SessionPanelAction::JoinCodeRequested { code });
+                    self.focus = FieldFocus::None;
+                } else if label == "ESCAPE" {
+                    self.focus = FieldFocus::None;
                 }
-                true
+                consumed
             }
             FieldFocus::DisplayName => {
                 match label {
@@ -590,10 +714,8 @@ impl Module for SessionPanelModule {
                         let name = self.name_draft.trim().to_string();
                         self.name_draft.clear();
                         self.focus = FieldFocus::None;
-                        if !name.is_empty() && name != self.state.borrow().self_display_name {
-                            self.state
-                                .borrow_mut()
-                                .queue_action(SessionPanelAction::SetDisplayName(name));
+                        if !name.is_empty() && name != state.self_display_name {
+                            state.queue_action(SessionPanelAction::SetDisplayName(name));
                         }
                     }
                     "ESCAPE" => {
@@ -631,7 +753,9 @@ impl Module for SessionPanelModule {
     fn set_hidden(&mut self, hidden: bool) {
         self.hidden = hidden;
         if hidden {
-            self.blur_fields();
+            self.name_draft.clear();
+            self.focus = FieldFocus::None;
+            self.state.borrow_mut().code_field.blur();
         }
     }
 
@@ -666,12 +790,12 @@ mod tests {
     }
 
     fn state() -> Rc<RefCell<SessionPanelState>> {
-        Rc::new(RefCell::new(SessionPanelState::default()))
+        Rc::new(RefCell::new(SessionPanelState::new()))
     }
 
     fn panel(state: Rc<RefCell<SessionPanelState>>) -> SessionPanelModule {
-        // h=17, w=24: content 22x14 at content_origin.
-        SessionPanelModule::new("panel", rect(0, 0, 24, 17), state)
+        // w=28, h=17: content 26x14 at content_origin.
+        SessionPanelModule::new("panel", rect(0, 0, 28, 17), state)
     }
 
     fn content_click(module: &mut SessionPanelModule, local_x: i32, local_y: i32) {
@@ -683,30 +807,15 @@ mod tests {
         });
     }
 
-    #[test]
-    fn host_shows_invite_row_and_clicking_it_copies() {
-        let state = state();
-        state.borrow_mut().sync(
-            true,
-            true,
-            true,
-            false,
-            false,
-            0,
-            vec!["192.168.1.42:4747".to_string()],
-            Vec::new(),
-            "Host".to_string(),
-        );
-        let mut module = panel(state.clone());
-        let group = module.draw();
-
+    fn row_text(module: &SessionPanelModule, row: i32) -> String {
         let (origin_x, origin_y) = PanelChrome::content_origin();
-        let row: String = (1..23)
+        (1..27)
             .filter_map(|x| {
-                group
+                module
+                    .draw()
                     .get(CellPoint {
                         x: origin_x + x,
-                        y: origin_y + ROW_INVITE,
+                        y: origin_y + row,
                         z: 0,
                     })
                     .map(|cell| match cell.graphic {
@@ -714,66 +823,232 @@ mod tests {
                         _ => String::new(),
                     })
             })
-            .collect();
-        assert_eq!(row.trim_end(), "192.168.1.42:4747");
+            .collect()
+    }
 
-        // Clicking the invite row copies, like [COPY INVITE].
-        content_click(&mut module, 3, ROW_INVITE);
+    #[test]
+    fn offline_panel_shows_both_lanes_and_host_button() {
+        let state = state();
+        let module = panel(state);
+        assert_eq!(row_text(&module, ROW_CODE_TITLE).trim_end(), "JOIN WITH CODE");
+        assert!(row_text(&module, ROW_CODE_FIELD).contains("code + enter"));
+        assert_eq!(row_text(&module, ROW_CODE_BTNS).trim_end(), "[JOIN CODE]  [PASTE]");
+        assert_eq!(row_text(&module, ROW_SELECTOR).trim_end(), "none found");
+        assert_eq!(row_text(&module, ROW_JOIN_LOCAL_BTN).trim_end(), "[JOIN LOCAL]");
+        assert_eq!(row_text(&module, ROW_HOST_BTN).trim_end(), "[HOST SESSION]");
+    }
+
+    #[test]
+    fn selector_renders_synced_hosts_and_arrows_scroll() {
+        let state = state();
+        state.borrow_mut().sync_discovered(vec![
+            SessionDiscoveredHost { name: "Living Room".into(), address: "192.168.1.5:4747".into() },
+            SessionDiscoveredHost { name: "Studio".into(), address: "192.168.1.9:4747".into() },
+        ]);
+        let mut module = panel(state.clone());
+
+        assert!(row_text(&module, ROW_SELECTOR).contains("Living Room"));
+        // Click the right arrow: the second host slides in.
+        content_click(&mut module, 16, ROW_SELECTOR);
+        assert!(row_text(&module, ROW_SELECTOR).contains("Studio"));
+        // Left arrow comes back.
+        content_click(&mut module, 1, ROW_SELECTOR);
+        assert!(row_text(&module, ROW_SELECTOR).contains("Living Room"));
+    }
+
+    #[test]
+    fn join_local_requires_a_selected_host() {
+        let state = state();
+        let mut module = panel(state.clone());
+        content_click(&mut module, 3, ROW_JOIN_LOCAL_BTN);
+        assert!(state.borrow_mut().take_pending_action().is_none());
+
+        state.borrow_mut().sync_discovered(vec![SessionDiscoveredHost {
+            name: "Studio".into(),
+            address: "192.168.1.9:4747".into(),
+        }]);
+        content_click(&mut module, 3, ROW_JOIN_LOCAL_BTN);
         assert_eq!(
             state.borrow_mut().take_pending_action(),
-            Some(SessionPanelAction::CopyInvite)
+            Some(SessionPanelAction::JoinLocalRequested {
+                address: "192.168.1.9:4747".into()
+            })
         );
-        // A joiner sees no invite row.
-        let joiner = Rc::new(RefCell::new(SessionPanelState::default()));
-        joiner.borrow_mut().sync(
+    }
+
+    #[test]
+    fn code_field_takes_keys_until_enter_commits_the_code() {
+        let state = state();
+        let mut module = panel(state.clone());
+        content_click(&mut module, 3, ROW_CODE_FIELD); // focus the code field
+
+        for label in ["A", "B", "C"] {
+            assert!(module.on_key_capture(label));
+        }
+        assert!(module.on_key_capture("ENTER"));
+
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(SessionPanelAction::JoinCodeRequested { code: "ABC".into() })
+        );
+        // Focus cleared: keys fall through again.
+        assert!(!module.on_key_capture("A"));
+    }
+
+    #[test]
+    fn join_code_button_commits_the_typed_draft() {
+        let state = state();
+        let mut module = panel(state.clone());
+        content_click(&mut module, 3, ROW_CODE_FIELD);
+        for label in ["A", "B", "C"] {
+            module.on_key_capture(label);
+        }
+        // Click [JOIN CODE] (left region of the buttons row).
+        content_click(&mut module, 3, ROW_CODE_BTNS);
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(SessionPanelAction::JoinCodeRequested { code: "ABC".into() })
+        );
+    }
+
+    #[test]
+    fn paste_button_flags_a_paste_request_action() {
+        let state = state();
+        let mut module = panel(state.clone());
+        content_click(&mut module, 16, ROW_CODE_BTNS); // [PASTE] region
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(SessionPanelAction::PasteCodeRequested)
+        );
+        assert!(state.borrow_mut().take_pending_action().is_none());
+    }
+
+    #[test]
+    fn host_button_queues_one_action_per_frame() {
+        let state = state();
+        let mut module = panel(state.clone());
+
+        content_click(&mut module, 3, ROW_HOST_BTN);
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(SessionPanelAction::HostRequested)
+        );
+        assert!(state.borrow_mut().take_pending_action().is_none());
+
+        content_click(&mut module, 3, ROW_HOST_BTN);
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(SessionPanelAction::HostRequested)
+        );
+    }
+
+    #[test]
+    fn hosting_shows_code_note_roster_and_end_button() {
+        let state = state();
+        {
+            let mut borrowed = state.borrow_mut();
+            borrowed.sync(
+                true,
+                true,
+                true,
+                false,
+                false,
+                1,
+                Some("abc123-def456".into()),
+                vec![
+                    SessionRosterRow {
+                        user_id: "host-1".into(),
+                        display_name: "The Host".into(),
+                        is_host: true,
+                        is_you: true,
+                        color: [255, 0, 0],
+                    },
+                    SessionRosterRow {
+                        user_id: "peer-1".into(),
+                        display_name: "Bob".into(),
+                        is_host: false,
+                        is_you: false,
+                        color: [0, 255, 0],
+                    },
+                ],
+                "The Host".to_string(),
+            );
+            borrowed.sync_relay_note(Some("relay down — lan joins only".into()));
+        }
+        let mut module = panel(state.clone());
+
+        assert!(row_text(&module, ROW_CODE).contains("CODE> abc123-def456"));
+        assert!(row_text(&module, ROW_RELAY_NOTE).contains("relay down"));
+        assert!(row_text(&module, ROW_BUTTONS).trim_end().starts_with("[END SESSION]"));
+
+        // Clicking the code copies it.
+        content_click(&mut module, 3, ROW_CODE);
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(SessionPanelAction::CopyCode)
+        );
+    }
+
+    #[test]
+    fn connected_client_sees_roster_crown_and_leave_button() {
+        let state = state();
+        state.borrow_mut().sync(
             true,
             false,
             true,
             false,
             false,
             1,
-            Vec::new(),
-            Vec::new(),
-            "Joiner".to_string(),
+            None,
+            vec![
+                SessionRosterRow {
+                    user_id: "host-1".into(),
+                    display_name: "The Host".into(),
+                    is_host: true,
+                    is_you: false,
+                    color: [255, 0, 0],
+                },
+                SessionRosterRow {
+                    user_id: "me-1".into(),
+                    display_name: "Me".into(),
+                    is_host: false,
+                    is_you: true,
+                    color: [0, 255, 0],
+                },
+            ],
+            "Me".to_string(),
         );
-        let joiner_panel = panel(joiner);
-        let group = joiner_panel.draw();
-        let joiner_cell = group
-            .get(CellPoint {
-                x: origin_x + 2,
-                y: origin_y + ROW_INVITE,
-                z: 0,
-            })
-            .map(|cell| match cell.graphic {
-                CellGraphic::Glyph(glyph) => glyph.to_string(),
-                _ => String::new(),
-            })
-            .unwrap_or_default();
-        assert_eq!(joiner_cell.trim_end(), "");
+        let mut module = panel(state.clone());
+
+        assert!(row_text(&module, ROW_BUTTONS).trim_end().starts_with("[LEAVE SESSION]"));
+        content_click(&mut module, 3, ROW_BUTTONS);
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(SessionPanelAction::LeaveRequested)
+        );
     }
 
     #[test]
     fn status_label_reflects_only_synced_truth() {
-        let state = state();
+        let mut state = SessionPanelState::new();
 
-        assert_eq!(state.borrow().status_label(), "OFFLINE");
+        assert_eq!(state.status_label(), "OFFLINE");
 
-        state.borrow_mut().in_session = true;
-        state.borrow_mut().is_host = true;
-        state.borrow_mut().invite_addresses = vec!["192.168.1.5:4747".into()];
-        assert_eq!(state.borrow().status_label(), "HOSTING 192.168.1.5:4747");
+        state.in_session = true;
+        state.is_host = true;
+        assert_eq!(state.status_label(), "HOSTING");
 
-        state.borrow_mut().is_host = false;
-        state.borrow_mut().peer_count = 3;
-        assert_eq!(state.borrow().status_label(), "CONNECTED (3)");
+        state.is_host = false;
+        state.peer_count = 3;
+        assert_eq!(state.status_label(), "CONNECTED (3)");
 
-        state.borrow_mut().connected = false;
-        state.borrow_mut().reconnecting = true;
-        assert_eq!(state.borrow().status_label(), "RECONNECTING...");
+        state.connected = false;
+        state.reconnecting = true;
+        assert_eq!(state.status_label(), "RECONNECTING...");
 
-        state.borrow_mut().reconnecting = false;
-        state.borrow_mut().session_ended = true;
-        assert_eq!(state.borrow().status_label(), "ENDED");
+        state.reconnecting = false;
+        state.session_ended = true;
+        assert_eq!(state.status_label(), "ENDED");
     }
 
     #[test]
@@ -785,7 +1060,7 @@ mod tests {
         let group = module.draw();
         assert!(group.iter_cells().next().is_none());
 
-        content_click(&mut module, 3, ROW_HOST);
+        content_click(&mut module, 3, ROW_HOST_BTN);
         assert!(state.borrow_mut().take_pending_action().is_none());
         // Keys fall through while hidden.
         assert!(!module.on_key_capture("1"));
@@ -829,70 +1104,12 @@ mod tests {
     }
 
     #[test]
-    fn host_button_queues_one_action_per_frame() {
-        let state = state();
-        let mut module = panel(state.clone());
-
-        // One click, one action; the take clears it.
-        content_click(&mut module, 3, ROW_HOST);
-        assert_eq!(
-            state.borrow_mut().take_pending_action(),
-            Some(SessionPanelAction::HostRequested)
-        );
-        assert!(state.borrow_mut().take_pending_action().is_none());
-
-        // A second click requeues.
-        content_click(&mut module, 3, ROW_HOST);
-        assert_eq!(
-            state.borrow_mut().take_pending_action(),
-            Some(SessionPanelAction::HostRequested)
-        );
-    }
-
-    #[test]
-    fn join_field_takes_keys_until_enter_commits_the_address() {
-        let state = state();
-        let mut module = panel(state.clone());
-        content_click(&mut module, 3, ROW_JOIN); // focus the join field
-
-        // Unfocused keys fall through before focus; focused keys are consumed.
-        for label in [
-            "1", "9", "2", ".", "1", "6", "8", ".", "1", ".", "5", ":", "4", "7", "4", "7",
-        ] {
-            assert!(module.on_key_capture(label));
-        }
-        assert!(module.on_key_capture("ENTER"));
-
-        assert_eq!(
-            state.borrow_mut().take_pending_action(),
-            Some(SessionPanelAction::JoinRequested {
-                address: "192.168.1.5:4747".into()
-            })
-        );
-        // Focus cleared: keys fall through again.
-        assert!(!module.on_key_capture("A"));
-    }
-
-    #[test]
-    fn join_field_escape_blurs_without_queueing() {
-        let state = state();
-        let mut module = panel(state.clone());
-        content_click(&mut module, 3, ROW_JOIN);
-        assert!(module.on_key_capture("1"));
-        assert!(module.on_key_capture("ESCAPE"));
-
-        assert!(state.borrow_mut().take_pending_action().is_none());
-        assert!(!module.on_key_capture("2"));
-    }
-
-    #[test]
     fn name_commit_queues_rename_only_when_changed() {
         let state = state();
         state.borrow_mut().self_display_name = "J".into();
         let mut module = panel(state.clone());
 
-        content_click(&mut module, 3, ROW_NAME); // focus the name field
-                                                 // The draft starts as the current name; typing appends to it.
+        content_click(&mut module, 3, ROW_HOST_BTN - 1); // focus the name field
         for label in ["J", "2"] {
             assert!(module.on_key_capture(label));
         }
@@ -903,94 +1120,9 @@ mod tests {
         );
 
         // Committing the unchanged name queues nothing.
-        content_click(&mut module, 3, ROW_NAME);
+        content_click(&mut module, 3, ROW_HOST_BTN - 1);
         assert!(module.on_key_capture("ENTER"));
         assert!(state.borrow_mut().take_pending_action().is_none());
-    }
-
-    #[test]
-    fn leave_and_copy_buttons_route_by_side() {
-        let state = state();
-        state.borrow_mut().in_session = true;
-
-        // Client side: one leave button.
-        let mut module = panel(state.clone());
-        content_click(&mut module, 3, ROW_BUTTONS);
-        assert_eq!(
-            state.borrow_mut().take_pending_action(),
-            Some(SessionPanelAction::LeaveRequested)
-        );
-
-        // Host side: the left half copies, the right half leaves.
-        state.borrow_mut().is_host = true;
-        content_click(&mut module, 3, ROW_BUTTONS);
-        assert_eq!(
-            state.borrow_mut().take_pending_action(),
-            Some(SessionPanelAction::CopyInvite)
-        );
-        content_click(&mut module, 16, ROW_BUTTONS);
-        assert_eq!(
-            state.borrow_mut().take_pending_action(),
-            Some(SessionPanelAction::LeaveRequested)
-        );
-    }
-
-    #[test]
-    fn roster_rows_show_crown_and_you_marker_with_presence_colors() {
-        let state = state();
-        state.borrow_mut().in_session = true;
-        state.borrow_mut().roster = vec![
-            SessionRosterRow {
-                user_id: "host-1".into(),
-                display_name: "The Host".into(),
-                is_host: true,
-                is_you: false,
-                color: [255, 0, 0],
-            },
-            SessionRosterRow {
-                user_id: "me-1".into(),
-                display_name: "Me".into(),
-                is_host: false,
-                is_you: true,
-                color: [0, 255, 0],
-            },
-        ];
-        let module = panel(state.clone());
-        let group = module.draw();
-
-        let (origin_x, origin_y) = PanelChrome::content_origin();
-        // Presence dot color rides the real synced color.
-        let host_dot = group
-            .get(CellPoint {
-                x: origin_x + 1,
-                y: origin_y + ROW_ROSTER_BASE,
-                z: 0,
-            })
-            .unwrap();
-        assert_eq!(host_dot.color, CellColor::Flat([1.0, 0.0, 0.0, 1.0]));
-        // Crown on the host row, "(you)" on your row.
-        let crown = group.get(CellPoint {
-            x: origin_x + 3,
-            y: origin_y + ROW_ROSTER_BASE,
-            z: 0,
-        });
-        assert!(crown.is_some());
-        let your_row = origin_y + ROW_ROSTER_BASE + 1;
-        let yours: String = (1..6)
-            .filter_map(|x| {
-                group
-                    .get(CellPoint {
-                        x: origin_x + x,
-                        y: your_row,
-                        z: 0,
-                    })
-                    .map(|cell| match cell.graphic {
-                        CellGraphic::Glyph(glyph) => glyph.to_string(),
-                        _ => String::new(),
-                    })
-            })
-            .collect();
-        assert_eq!(yours, "● Me ");
     }
 
     #[test]
@@ -999,36 +1131,17 @@ mod tests {
         state.borrow_mut().push_event("joined bob");
         state.borrow_mut().push_event("join denied: session-ended");
         let module = panel(state.clone());
-        let group = module.draw();
 
-        let (origin_x, origin_y) = PanelChrome::content_origin();
-        let text_at = |y: i32| -> String {
-            // Content columns 1..=22; the right border lives at rect.x1.
-            (1..23)
-                .filter_map(|x| {
-                    group
-                        .get(CellPoint {
-                            x: origin_x + x,
-                            y: origin_y + y,
-                            z: 0,
-                        })
-                        .map(|cell| match cell.graphic {
-                            CellGraphic::Glyph(glyph) => glyph.to_string(),
-                            _ => String::new(),
-                        })
-                })
-                .collect()
-        };
-        assert_eq!(text_at(ROW_EVENTS_BASE + 1).trim_end(), "joined bob");
+        assert_eq!(row_text(&module, ROW_EVENTS_BASE + 1).trim_end(), "joined bob");
         assert_eq!(
-            text_at(ROW_EVENTS_BASE).trim_end(),
-            "join denied: session-e"
+            row_text(&module, ROW_EVENTS_BASE).trim_end(),
+            "join denied: session-ende"
         ); // truncated to the content width, verbatim otherwise
     }
 
     #[test]
     fn event_log_is_capped_at_three_lines() {
-        let mut state = SessionPanelState::default();
+        let mut state = SessionPanelState::new();
         state.push_event("one");
         state.push_event("two");
         state.push_event("three");
@@ -1040,7 +1153,6 @@ mod tests {
     fn gizmo_move_drag_relocates_the_panel_rect() {
         let state = state();
         let mut module = panel(state);
-        // Click the move gizmo (top border row), then drag.
         module.on_pointer_event(ModulePointerEvent::Click {
             x: 1,
             y: 16,
@@ -1049,7 +1161,7 @@ mod tests {
         module.on_pointer_event(ModulePointerEvent::Move { x: 6, y: 12 });
         module.on_pointer_event(ModulePointerEvent::Up { x: 6, y: 12 });
 
-        assert_eq!(module.rect(), rect(5, -4, 29, 13));
+        assert_eq!(module.rect(), rect(5, -4, 33, 13));
     }
 
     #[test]
@@ -1065,6 +1177,6 @@ mod tests {
 
         assert!(restored.is_hidden());
         assert!(restored.gizmo_state.is_seamless());
-        assert_eq!(restored.rect(), rect(0, 0, 24, 17));
+        assert_eq!(restored.rect(), rect(0, 0, 28, 17));
     }
 }

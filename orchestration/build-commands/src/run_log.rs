@@ -49,8 +49,9 @@ pub fn boot(painter_root: &Path) -> Option<PathBuf> {
     debug_log::info(
         "boot",
         &format!(
-            "thaum-painter {} run started; os={} arch={}",
+            "thaum-painter {}+{} run started; os={} arch={}",
             env!("CARGO_PKG_VERSION"),
+            env!("THAUM_BUILD_COMMIT"),
             std::env::consts::OS,
             std::env::consts::ARCH
         ),

@@ -36,9 +36,10 @@ use thaum_painter_domain::{
     text_entry::{cursor_overlay_group, TextEntryKey, TextEntryOutcome, TextEntryState},
     Canvas, CanvasBounds, DrawingSpaceWheelMode, LayerRow, LayersPanelState,
     PaintCanvasBoundsModule, PaintHand, PaintTool, PainterSelection, PainterUserSessionState,
-    PersistedPainterUiState, SelectionMode, SessionIdentity, SessionPanelAction, SessionPanelState,
-    SessionRosterRow, SharedDocumentPaths, SharedDocumentRuntime, TimelineState, ToolState,
-    UnsupportedFileError, DEFAULT_SELECTION_CHANNEL_ID,
+    PersistedPainterUiState, SelectionMode, SessionDiscoveredHost, SessionIdentity,
+    SessionPanelAction, SessionPanelState, SessionRosterRow, SharedDocumentPaths,
+    SharedDocumentRuntime, TimelineState, ToolState, UnsupportedFileError,
+    DEFAULT_SELECTION_CHANNEL_ID,
 };
 use thaum_renderer_boot::{
     boot_renderer, cell_clip_size_for_state, run_renderer_window_with_state_frame_provider,
@@ -239,6 +240,8 @@ fn apply_session_panel_action(
     shared_document_paths: &mut SharedDocumentPaths,
     net_published: &mut usize,
     active_layer_id: &mut String,
+    session_relay_note: &mut Option<String>,
+    discovery_responder: &mut Option<thaum_painter_workers::DiscoveryResponder>,
     current_breath: u32,
     canvas: &mut Canvas,
 ) {
@@ -259,32 +262,70 @@ fn apply_session_panel_action(
             let lan_seed_records = shared_document.actions_for_file();
             let snapshot_document = lan_snapshot.clone();
             let seed_records = lan_seed_records.clone();
+            let lan_port = thaum_painter_workers::host_port_from_env();
             let result = thaum_painter_workers::SessionNet::host_relay(
                 &relay,
                 Box::new(move || snapshot_document.clone()),
                 thaum_painter_workers::session_user_from_identity(session_identity),
                 seed_records,
+                lan_port,
             )
-            .map(|net| (net, format!("hosting over relay {relay}")))
+            .map(|net| {
+                (
+                    net,
+                    format!("hosting over relay {relay}"),
+                    // Both lanes bound: the net code invites, LAN joins come
+                    // through discovery.
+                    None,
+                )
+            })
             .or_else(|relay_error| {
-                eprintln!(
-                    "relay host dial to {relay} failed ({relay_error}); falling back to LAN direct"
+                thaum_painter_domain::debug_log::error(
+                    "session",
+                    &format!(
+                        "relay host dial to {relay} failed: {relay_error}; falling back to LAN direct"
+                    ),
                 );
-                let port = thaum_painter_workers::host_port_from_env();
                 thaum_painter_workers::SessionNet::host(
                     Box::new(move || lan_snapshot.clone()),
                     thaum_painter_workers::session_user_from_identity(session_identity),
-                    port,
+                    lan_port,
                     lan_seed_records,
                 )
-                .map(|net| (net, format!("hosting on port {port}")))
+                .map(|net| {
+                    (
+                        net,
+                        format!("hosting on port {lan_port}"),
+                        // The net lane degraded; the panel says why so LAN
+                        // play stays obvious and internet invites make sense.
+                        Some("relay down — lan joins only".to_string()),
+                    )
+                })
             });
             match result {
-                Ok((net, event)) => {
+                Ok((net, event, note)) => {
                     // Everything already in the local log is inside the
                     // frozen snapshot — never republished.
                     *net_published = shared_document.actions.len();
-                    let invite = net.invite_addresses().first().cloned();
+                    // The code IS the net invite; LAN joins need no invite.
+                    let invite = net
+                        .invite_addresses()
+                        .into_iter()
+                        .find(|address| !address.contains(':'));
+                    // LAN discoverability rides the LAN lane when it bound.
+                    *discovery_responder = net.lan_port().and_then(|port| {
+                        thaum_painter_workers::spawn_discovery_responder(
+                            session_identity.display_name.clone(),
+                            port,
+                        )
+                        .map_err(|error| {
+                            thaum_painter_domain::debug_log::error(
+                                "session",
+                                &format!("discovery responder unavailable: {error}"),
+                            )
+                        })
+                        .ok()
+                    });
                     let event = match &invite {
                         Some(invite) => format!("{event}; invite {invite}"),
                         None => event,
@@ -297,6 +338,7 @@ fn apply_session_panel_action(
                             net.invite_addresses()
                         ),
                     );
+                    *session_relay_note = note;
                     *session_net = Some(net);
                 }
                 Err(error) => {
@@ -308,77 +350,84 @@ fn apply_session_panel_action(
                 }
             }
         }
-        SessionPanelAction::JoinRequested { address } => {
-            // Shape routing (settled): contains ':' → ip:port LAN join;
-            // otherwise → relay invite code, relayed through
-            // THAUM_SESSION_RELAY. The panel stays a dumb view.
-            let result = if address.contains(':') {
-                let address = thaum_painter_workers::join_address(&address);
-                thaum_painter_workers::SessionNet::join(
-                    &address,
-                    thaum_painter_workers::session_user_from_identity(session_identity),
-                )
-                .map(|(net, snapshot)| (net, snapshot, address))
-            } else {
-                // A code-shaped join without an explicit relay env dials
-                // the built-in relay — the consumer path. THAUM_SESSION_RELAY
-                // overrides.
-                let relay = std::env::var("THAUM_SESSION_RELAY")
-                    .ok()
-                    .filter(|r| !r.is_empty())
-                    .unwrap_or_else(
-                        || thaum_painter_workers::session_relay::DEFAULT_RELAY_ADDRESS.to_string(),
-                    );
-                thaum_painter_workers::SessionNet::join_relay(
-                    &relay,
-                    &address,
-                    thaum_painter_workers::session_user_from_identity(session_identity),
-                )
-                .map(|(net, snapshot)| (net, snapshot, format!("relay {relay} code {address}")))
-            };
-            match result {
-                Ok((net, snapshot, label)) => {
-                    // Figma's fresh-copy model: the runtime rebuilds from the
-                    // host's snapshot exactly like the env-boot join path.
-                    *shared_document = SharedDocumentRuntime::new(snapshot);
-                    *shared_document_paths =
-                        painter_shared_document_paths(&shared_document.document.document_id);
-                    *active_layer_id =
-                        resolved_active_layer_id(shared_document, Some(active_layer_id.as_str()));
-                    sync_canvas_from_active_layer(
-                        shared_document,
-                        active_layer_id,
-                        current_breath,
-                        canvas,
-                    );
-                    *net_published = 0;
-                    panel.push_event(format!("joined {label}"));
-                    *session_net = Some(net);
+        SessionPanelAction::JoinLocalRequested { address } => {
+            // The LAN lane, dialed verbatim: the address came from the
+            // discovery selector, so it is a same-network host by
+            // construction — no shape guessing, no fallback.
+            let result = thaum_painter_workers::SessionNet::join(
+                &address,
+                thaum_painter_workers::session_user_from_identity(session_identity),
+            )
+            .map(|(net, snapshot)| (net, snapshot, address.clone()));
+            apply_join_result(
+                result,
+                session_net,
+                session_identity,
+                shared_document,
+                shared_document_paths,
+                net_published,
+                active_layer_id,
+                current_breath,
+                canvas,
+                &mut panel,
+            );
+        }
+        SessionPanelAction::JoinCodeRequested { code } => {
+            // The net lane: a code-shaped join dials the built-in relay —
+            // the consumer path. THAUM_SESSION_RELAY overrides.
+            let relay = std::env::var("THAUM_SESSION_RELAY")
+                .ok()
+                .filter(|r| !r.is_empty())
+                .unwrap_or_else(
+                    || thaum_painter_workers::session_relay::DEFAULT_RELAY_ADDRESS.to_string(),
+                );
+            let result = thaum_painter_workers::SessionNet::join_relay(
+                &relay,
+                &code,
+                thaum_painter_workers::session_user_from_identity(session_identity),
+            )
+            .map(|(net, snapshot)| (net, snapshot, format!("relay {relay} code {code}")));
+            apply_join_result(
+                result,
+                session_net,
+                session_identity,
+                shared_document,
+                shared_document_paths,
+                net_published,
+                active_layer_id,
+                current_breath,
+                canvas,
+                &mut panel,
+            );
+        }
+        SessionPanelAction::PasteCodeRequested => {
+            // The panel only flags intent; OS-clipboard timing lives here.
+            match read_text_from_clipboard() {
+                Ok(text) if !text.trim().is_empty() => {
+                    panel.code_field.insert_text(text.trim());
                 }
-                Err(error) => {
-                    panel.push_event(format!("join denied: {error}"));
-                    thaum_painter_domain::debug_log::error(
-                        "session",
-                        &format!("panel: join to {address} failed: {error}"),
-                    );
-                }
+                Ok(_) => panel.push_event("clipboard empty"),
+                Err(error) => panel.push_event(format!("clipboard failed: {error}")),
             }
         }
-        SessionPanelAction::CopyInvite => {
-            let addresses = session_net
+        SessionPanelAction::CopyCode => {
+            // One artifact, one paste: the net invite code is the whole
+            // invite — no ip:port list, no lane guessing on the joiner.
+            let code = session_net
                 .as_ref()
-                .map(|net| net.invite_addresses())
-                .unwrap_or_default();
-            match copy_text_to_clipboard(&addresses.join("\n")) {
-                Ok(()) => {
+                .and_then(|net| {
+                    net.invite_addresses()
+                        .into_iter()
+                        .find(|address| !address.contains(':'))
+                });
+            match code {
+                Some(code) => match copy_text_to_clipboard(&code) {
                     // Show what was copied, verbatim, so the invite is on
                     // screen even when the OS clipboard eats it.
-                    panel.push_event(format!(
-                        "copied {}",
-                        addresses.first().map(String::as_str).unwrap_or("none")
-                    ));
-                }
-                Err(error) => panel.push_event(format!("clipboard failed: {error}")),
+                    Ok(()) => panel.push_event(format!("copied {code}")),
+                    Err(error) => panel.push_event(format!("clipboard failed: {error}")),
+                },
+                None => panel.push_event("no invite code (not hosting over relay)"),
             }
         }
         SessionPanelAction::LeaveRequested => {
@@ -405,6 +454,11 @@ fn apply_session_panel_action(
             }
             *session_net = None;
             *net_published = 0;
+            // The host stops advertising the dead session immediately.
+            if let Some(mut responder) = discovery_responder.take() {
+                responder.stop();
+            }
+            *session_relay_note = None;
             panel.push_event(if was_host {
                 "session ended".to_string()
             } else {
@@ -420,6 +474,49 @@ fn apply_session_panel_action(
             }
             session_identity.display_name = name.clone();
             panel.push_event(format!("name set: {name}"));
+        }
+    }
+}
+
+/// Applies a finished join attempt (either lane) onto the runtime: rebuild
+/// from the host's snapshot, reset the publish cursor, mirror the outcome
+/// into the panel. The orchestration half of both join arms' shared tail.
+#[allow(clippy::too_many_arguments)]
+fn apply_join_result(
+    result: Result<
+        (thaum_painter_workers::SessionNet, thaum_painter_domain::SharedDocumentFile, String),
+        thaum_painter_workers::SessionClientError,
+    >,
+    session_net: &mut Option<thaum_painter_workers::SessionNet>,
+    _session_identity: &SessionIdentity,
+    shared_document: &mut SharedDocumentRuntime,
+    shared_document_paths: &mut SharedDocumentPaths,
+    net_published: &mut usize,
+    active_layer_id: &mut String,
+    current_breath: u32,
+    canvas: &mut Canvas,
+    panel: &mut SessionPanelState,
+) {
+    match result {
+        Ok((net, snapshot, label)) => {
+            // Figma's fresh-copy model: the runtime rebuilds from the
+            // host's snapshot exactly like the env-boot join path.
+            *shared_document = SharedDocumentRuntime::new(snapshot);
+            *shared_document_paths =
+                painter_shared_document_paths(&shared_document.document.document_id);
+            *active_layer_id =
+                resolved_active_layer_id(shared_document, Some(active_layer_id.as_str()));
+            sync_canvas_from_active_layer(shared_document, active_layer_id, current_breath, canvas);
+            *net_published = 0;
+            panel.push_event(format!("joined {label}"));
+            *session_net = Some(net);
+        }
+        Err(error) => {
+            panel.push_event(format!("join denied: {error}"));
+            thaum_painter_domain::debug_log::error(
+                "session",
+                &format!("panel: join failed: {error}"),
+            );
         }
     }
 }
@@ -1809,6 +1906,15 @@ fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
     })
 }
 
+/// Reads text from the OS clipboard. One-shot handle: unlike the copy path,
+/// a paste does not need to serve the clipboard afterward, so a fresh
+/// connection per read keeps the seam stateless.
+fn read_text_from_clipboard() -> Result<String, String> {
+    arboard::Clipboard::new()
+        .and_then(|mut clipboard| clipboard.get_text())
+        .map_err(|error| error.to_string())
+}
+
 /// Live painter behavior for one registry action. One entry per action the
 /// dispatcher handles; `LIVE_PAINTER_ACTIONS` and the dispatch match below
 /// must stay in sync, which the drift tests assert in both directions.
@@ -2070,6 +2176,7 @@ fn main() -> Result<()> {
                 Box::new(move || boot_document.clone()),
                 thaum_painter_workers::session_user_from_identity(&session_identity),
                 seed_records,
+                thaum_painter_workers::host_port_from_env(),
             );
             match net {
                 Ok(net) => {
@@ -2139,6 +2246,15 @@ fn main() -> Result<()> {
     } else {
         0
     };
+    // Why the net lane is degraded while hosting (relay dial failed), mirrored
+    // into the panel every frame; `None` = nothing degraded.
+    let mut session_relay_note: Option<String> = None;
+    // The host-side discovery responder (answers LAN probes while hosting);
+    // dropped on leave so the host stops advertising a dead session.
+    let mut discovery_responder: Option<thaum_painter_workers::DiscoveryResponder> = None;
+    // The joiner-side discovery poller: the frame loop feeds it the session
+    // panel's visibility and mirrors its newest scan into the panel.
+    let mut discovery_poller = thaum_painter_workers::DiscoveryPoller::new();
     let mut current_document_root: Option<PathBuf> = None;
 
     let mut state = boot_renderer(config)?;
@@ -2859,6 +2975,18 @@ fn main() -> Result<()> {
                 .map(|row| row.display_name.clone())
                 .unwrap_or_else(|| session_identity.display_name.clone());
             let peer_count = roster.len().saturating_sub(1);
+            // The net invite code while hosting: the first code-shaped invite
+            // (no ':'), i.e. the relay lane's minted code. LAN-only hosts
+            // sync `None` — the panel's LAN presence rides discovery.
+            let net_code = if net.is_some_and(|net| net.is_host()) {
+                net.and_then(|net| {
+                    net.invite_addresses()
+                        .into_iter()
+                        .find(|address| !address.contains(':'))
+                })
+            } else {
+                None
+            };
             session_panel_state.borrow_mut().sync(
                 net.is_some(),
                 net.is_some_and(|net| net.is_host()),
@@ -2866,10 +2994,33 @@ fn main() -> Result<()> {
                 net.is_some_and(|net| net.is_reconnecting()),
                 net.is_some_and(|net| net.session_ended()),
                 peer_count,
-                net.map(|net| net.invite_addresses()).unwrap_or_default(),
+                net_code,
                 roster,
                 self_display_name,
             );
+            // The relay note and discovery truth ride the same per-frame
+            // mirror; the poller scans while the panel is visible and the
+            // newest scan (empty = "none found") lands in the selector.
+            let panel_visible = !modules
+                .is_hidden("painter_session_panel")
+                .unwrap_or(true);
+            discovery_poller.set_active(panel_visible && net.is_none());
+            if let Some(discovered) = discovery_poller.take_discovered() {
+                session_panel_state
+                    .borrow_mut()
+                    .sync_discovered(
+                        discovered
+                            .into_iter()
+                            .map(|host| SessionDiscoveredHost {
+                                name: host.name,
+                                address: host.address,
+                            })
+                            .collect(),
+                    );
+            }
+            session_panel_state
+                .borrow_mut()
+                .sync_relay_note(session_relay_note.clone());
         }
         // Take first, then apply: `apply_session_panel_action` re-borrows the
         // state, so holding the `RefMut` here paniced on every panel action.
@@ -2884,6 +3035,8 @@ fn main() -> Result<()> {
                 &mut shared_document_paths,
                 &mut net_published,
                 &mut active_layer_id,
+                &mut session_relay_note,
+                &mut discovery_responder,
                 timeline_state.borrow().current_breath,
                 &mut canvas,
             );

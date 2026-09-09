@@ -54,13 +54,21 @@ pub enum SessionNet {
     },
 }
 
-/// Host-side transport: a direct LAN listener or the relay bridge.
+/// Host-side transport: a direct LAN listener, the relay bridge, or both
+/// at once (one hosted session reachable over either lane — LAN joiners
+/// dial the listener, internet joiners dial the relay with the code).
 pub enum HostTransport {
     /// Direct LAN TCP server; dropping it ends the accept loop.
     Lan(SessionHostServer),
     /// Relay lane: the handle carries the minted invite code; dropping it
     /// tears the bridge down (the relay room closes, joiners auto-rejoin).
     Relay(RelayHostHandle),
+    /// Both lanes on one hosted session: the relay invite code AND a LAN
+    /// listener. The net-level answer to mixed LAN + internet parties.
+    Both {
+        server: SessionHostServer,
+        handle: RelayHostHandle,
+    },
 }
 
 /// Client-owned rejoin state. Backoff starts at `REJOIN_INITIAL_BACKOFF`,
@@ -120,15 +128,17 @@ impl SessionNet {
         })
     }
 
-    /// Starts hosting over the relay lane: dials `relay_address`, claims a
-    /// room, and drives the same host core through the relay bridge. The
-    /// minted `<room6>-<token10>` invite code is the whole invite — joiners
-    /// need no IP, no port forwarding, no same-LAN.
+    /// Starts hosting over the relay lane with a LAN listener alongside:
+    /// the minted `<room6>-<token10>` invite code covers internet joiners
+    /// and the bound LAN port covers same-network joiners (via discovery or
+    /// direct dial) — one hosted session, both lanes. If the relay dial
+    /// fails the caller falls back to `host` (LAN-only) and reports why.
     pub fn host_relay(
         relay_address: &str,
         snapshot_source: Box<dyn Fn() -> SharedDocumentFile + Send>,
         user: SessionUser,
         seed_records: Vec<SharedDocumentActionRecord>,
+        lan_port: u16,
     ) -> std::io::Result<Self> {
         let mut host = SessionHost::new();
         host.set_snapshot_source(snapshot_source);
@@ -137,20 +147,30 @@ impl SessionNet {
         host.seed_log(seed_records);
         let host = Arc::new(Mutex::new(host));
         let handle = spawn_relay_host_bridge(Arc::clone(&host), relay_address)?;
+        // The LAN listener is best-effort: losing it (port in use, firewall)
+        // degrades to relay-only hosting instead of failing the whole start.
+        let server = spawn_session_host_server(Arc::clone(&host), lan_port).ok();
         debug_log::info(
             "session",
             &format!(
-                "hosting over relay {} as {} (invite {})",
+                "hosting over relay {} as {} (invite {}); lan lane {}",
                 relay_address,
                 user.user_id,
-                handle.code
+                handle.code,
+                match &server {
+                    Some(_) => format!("listening on {lan_port}"),
+                    None => "unavailable (relay-only)".to_string(),
+                }
             ),
         );
         Ok(Self::Host {
             host,
             user_id: user.user_id,
             consumed,
-            transport: HostTransport::Relay(handle),
+            transport: match server {
+                Some(server) => HostTransport::Both { server, handle },
+                None => HostTransport::Relay(handle),
+            },
         })
     }
 
@@ -244,7 +264,9 @@ impl SessionNet {
                 // Relay lane: the core eviction must also close the wire, or
                 // the evicted joiner's relay id stays claimed and their rejoin
                 // is denied user-id-in-use until the stale-prune timeout.
-                if let HostTransport::Relay(handle) = transport {
+                if let HostTransport::Relay(handle)
+                | HostTransport::Both { handle, .. } = transport
+                {
                     handle.kick_all();
                 }
                 Ok(records)
@@ -287,51 +309,42 @@ impl SessionNet {
 
     /// The bound LAN port (host mode, direct lane); relay hosts have none.
     /// Test and tooling exposure — the panel reads `invite_addresses()`.
+    /// The LAN port this hosted session listens on, when the LAN lane is
+    /// live (direct LAN hosting, or the both-lanes transport). Discovery
+    /// advertising rides the same truth.
     pub fn lan_port(&self) -> Option<u16> {
         match self {
             Self::Host {
                 transport: HostTransport::Lan(server),
+                ..
+            }
+            | Self::Host {
+                transport: HostTransport::Both { server, .. },
                 ..
             } => Some(server.port),
             _ => None,
         }
     }
 
-    /// The addresses a joiner should type to reach this hosted session.
-    /// LAN lane: every reachable non-loopback IPv4 interface first, loopback
-    /// last. Relay lane: the minted invite code, rendered verbatim — the
-    /// single source of invite truth either way; the panel renders these and
-    /// nothing else computes them. Client mode (and offline hosts) have no
-    /// invite.
+    /// The addresses a joiner should type to reach this hosted session. LAN
+    /// lane: every reachable non-loopback IPv4 interface first, loopback
+    /// last. Relay lane: the minted invite code. Both lanes: the code first
+    /// (the low-friction invite), then the LAN addresses — the panel renders
+    /// these and nothing else computes them. Client mode (and offline hosts)
+    /// have no invite.
     pub fn invite_addresses(&self) -> Vec<String> {
         match self {
-            Self::Host {
-                transport: HostTransport::Relay(handle),
-                ..
-            } => {
-                return vec![handle.code.clone()];
-            }
-            Self::Host {
-                transport: HostTransport::Lan(server),
-                ..
-            } => {
-                let port = server.port;
-                let mut reachable = Vec::new();
-                let mut loopback: Option<String> = None;
-                for interface in if_addrs::get_if_addrs().into_iter().flatten() {
-                    let IpAddr::V4(ip) = interface.ip() else {
-                        continue;
-                    };
-                    let address = format!("{ip}:{port}");
-                    if ip.is_loopback() {
-                        loopback = Some(address);
-                    } else if !reachable.contains(&address) {
-                        reachable.push(address);
-                    }
+            Self::Host { transport, .. } => match transport {
+                HostTransport::Relay(handle) => vec![handle.code.clone()],
+                HostTransport::Both { server, handle } => {
+                    // Both lanes: the code leads (the low-friction invite),
+                    // the LAN addresses follow.
+                    let mut invites = vec![handle.code.clone()];
+                    invites.extend(lan_addresses(server.port));
+                    invites
                 }
-                reachable.extend(loopback);
-                reachable
-            }
+                HostTransport::Lan(server) => lan_addresses(server.port),
+            },
             Self::Client { .. } => Vec::new(),
         }
     }
@@ -518,12 +531,12 @@ impl SessionNet {
     }
 
     /// Connected flag (client side); the host is "connected" while its LAN
-    /// server accepts or its relay bridge holds the room. Used by the frame
-    /// loop to stop publishing after a loss.
+    /// server accepts, its relay bridge holds the room, or both. Used by the
+    /// frame loop to stop publishing after a loss.
     pub fn is_connected(&self) -> bool {
         match self {
             Self::Host { transport, .. } => match transport {
-                HostTransport::Lan(_) => true,
+                HostTransport::Lan(_) | HostTransport::Both { .. } => true,
                 HostTransport::Relay(handle) => handle.is_alive(),
             },
             Self::Client { client, .. } => client.is_connected(),
@@ -540,6 +553,26 @@ pub fn session_user_from_identity(identity: &thaum_painter_domain::SessionIdenti
         display_name: identity.display_name.clone(),
         presence_color: identity.presence_color,
     }
+}
+
+/// Every reachable LAN address for a served port: non-loopback IPv4
+/// interfaces first, loopback last. The LAN-lane invite list.
+fn lan_addresses(port: u16) -> Vec<String> {
+    let mut reachable = Vec::new();
+    let mut loopback: Option<String> = None;
+    for interface in if_addrs::get_if_addrs().into_iter().flatten() {
+        let IpAddr::V4(ip) = interface.ip() else {
+            continue;
+        };
+        let address = format!("{ip}:{port}");
+        if ip.is_loopback() {
+            loopback = Some(address);
+        } else if !reachable.contains(&address) {
+            reachable.push(address);
+        }
+    }
+    reachable.extend(loopback);
+    reachable
 }
 
 /// The env-driven session boot shape, parsed once at entrypoint boot:
@@ -1075,14 +1108,15 @@ mod tests {
             Box::new(move || source_document.clone()),
             user("host-user"),
             Vec::new(),
+            0,
         )
         .expect("relay host boots");
 
-        // The code IS the invite: single entry, no ip anywhere.
+        // Both lanes by default now: the code leads, LAN addresses follow.
         let invite = host_net.invite_addresses();
-        assert_eq!(invite.len(), 1);
         assert!(crate::session_relay::parse_code(&invite[0]).is_some());
-        assert_eq!(host_net.lan_port(), None);
+        assert!(invite.len() >= 2, "relay+lan invites, got {invite:?}");
+        assert!(host_net.lan_port().is_some());
 
         let (mut client_net, snapshot) =
             SessionNet::join_relay(&relay_address, &invite[0], user("client-1")).expect("relay join");
@@ -1136,6 +1170,7 @@ mod tests {
             Box::new(move || source_document.clone()),
             user("host-user"),
             Vec::new(),
+            0,
         )
         .expect("relay host boots");
         let invite = host_net.invite_addresses().remove(0);
@@ -1205,6 +1240,7 @@ mod tests {
             Box::new(move || doc_a_for_closure.clone()),
             user("host-user"),
             Vec::new(),
+            0,
         )
         .expect("relay host boots");
         let invite = host_net.invite_addresses().remove(0);
@@ -1276,6 +1312,7 @@ mod tests {
             Box::new(move || source_document.clone()),
             user("host-user"),
             Vec::new(),
+            0,
         )
         .expect("relay host boots");
         let invite = host_net.invite_addresses().remove(0);

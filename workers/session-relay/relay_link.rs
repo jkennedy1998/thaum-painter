@@ -21,6 +21,7 @@
 //! every slice so the writer half always gets its turn (the same shape the
 //! relay server core uses per connection).
 
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -163,19 +164,25 @@ pub fn spawn_relay_host_bridge(
     };
 
     let alive = Arc::new(AtomicBool::new(true));
+    // The relay joiner ids this bridge owns. One host core can drive both
+    // lanes (relay invite + LAN listener); each transport's pump must drain
+    // only its own users' queues or it eats the other lane's messages.
+    let relay_users: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
     // All relay reads AND writes share one lock: the route thread's reads
     // slice so the pump's drained queue frames and deny replies interleave.
     let shared = Arc::clone(&link.shared);
     let route_alive = Arc::clone(&alive);
+    let route_users = Arc::clone(&relay_users);
     let pump_host = Arc::clone(&host);
     let pump_shared = Arc::clone(&shared);
     let pump_alive = Arc::clone(&alive);
+    let pump_users = Arc::clone(&relay_users);
     let route_thread = thread::Builder::new()
         .name("relay-host-route".into())
-        .spawn(move || relay_host_route_loop(shared, host, route_alive))?;
+        .spawn(move || relay_host_route_loop(shared, host, route_alive, route_users))?;
     let pump_thread = thread::Builder::new()
         .name("relay-host-pump".into())
-        .spawn(move || relay_host_pump_loop(pump_host, pump_shared, pump_alive))?;
+        .spawn(move || relay_host_pump_loop(pump_host, pump_shared, pump_alive, pump_users))?;
     Ok(RelayHostHandle {
         code: format!("{room}-{token}"),
         alive,
@@ -190,6 +197,7 @@ fn relay_host_route_loop(
     shared: SharedStream,
     host: Arc<Mutex<SessionHost>>,
     alive: Arc<AtomicBool>,
+    relay_users: Arc<Mutex<HashSet<String>>>,
 ) {
     loop {
         let frame = match read_frame_shared(&shared, DEFAULT_MAX_FRAME_BYTES) {
@@ -200,9 +208,13 @@ fn relay_host_route_loop(
         // from the host core exactly like a LAN socket EOF (roster shrink,
         // instant user-id freeing for the honest rejoin).
         if let Ok(ServerFrame::MemberLeft { user }) = serde_json::from_str::<ServerFrame>(&frame) {
+            relay_users
+                .lock()
+                .expect("relay users lock")
+                .remove(&user);
             let mut host = host.lock().expect("session host lock");
             host.disconnect(&user);
-            drain_and_route_relay(&mut host, &shared);
+            drain_and_route_relay(&mut host, &shared, &relay_users);
             continue;
         }
         let Ok(data) = serde_json::from_str::<DataToHost>(&frame) else {
@@ -229,11 +241,18 @@ fn relay_host_route_loop(
                 break;
             }
         }
+        // This peer is now wired to the relay lane: register it BEFORE the
+        // host core handles the message so the pump never drains its queue
+        // into a transport that cannot deliver it.
+        relay_users
+            .lock()
+            .expect("relay users lock")
+            .insert(data.from.clone());
         let denied_reason = {
             let mut host = host.lock().expect("session host lock");
             match host.handle_client_message(&data.from, message) {
                 Ok(()) => {
-                    drain_and_route_relay(&mut host, &shared);
+                    drain_and_route_relay(&mut host, &shared, &relay_users);
                     None
                 }
                 Err(rejection) => Some(rejection_reason(rejection)),
@@ -255,6 +274,7 @@ fn relay_host_pump_loop(
     host: Arc<Mutex<SessionHost>>,
     shared: SharedStream,
     alive: Arc<AtomicBool>,
+    relay_users: Arc<Mutex<HashSet<String>>>,
 ) {
     loop {
         if !alive.load(Ordering::SeqCst) {
@@ -263,7 +283,7 @@ fn relay_host_pump_loop(
         {
             let mut host = host.lock().expect("session host lock");
             host.prune_stale_clients(CLIENT_SEEN_TIMEOUT);
-            drain_and_route_relay(&mut host, &shared);
+            drain_and_route_relay(&mut host, &shared, &relay_users);
         }
         thread::sleep(HOST_PUMP_INTERVAL);
     }
@@ -281,10 +301,20 @@ fn send_host_frame(shared: &SharedStream, to: &str, message: &HostMessage) {
     }
 }
 
-fn drain_and_route_relay(host: &mut SessionHost, shared: &SharedStream) {
-    for user in host.roster() {
-        for message in host.take_outgoing(&user.user_id) {
-            send_host_frame(shared, &user.user_id, &message);
+fn drain_and_route_relay(
+    host: &mut SessionHost,
+    shared: &SharedStream,
+    relay_users: &Arc<Mutex<HashSet<String>>>,
+) {
+    // Relay-lane users only: a shared-core LAN listener's pump owns the
+    // rest of the roster's queues.
+    let users: Vec<String> = {
+        let users = relay_users.lock().expect("relay users lock");
+        users.iter().cloned().collect()
+    };
+    for user in users {
+        for message in host.take_outgoing(&user) {
+            send_host_frame(shared, &user, &message);
         }
     }
 }

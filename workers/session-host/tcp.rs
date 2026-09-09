@@ -262,13 +262,21 @@ fn drain_and_route(
     host: &mut SessionHost,
     senders: &Arc<Mutex<HashMap<String, mpsc::Sender<String>>>>,
 ) {
-    let senders = senders.lock().expect("senders lock");
-    for user in host.roster() {
-        for message in host.take_outgoing(&user.user_id) {
+    // Drain only for users wired to THIS transport. When one host core
+    // drives both lanes (relay invite + LAN listener), the other lane's
+    // pump owns its users' queues — taking their messages here would drop
+    // them into a senderless void.
+    let wired: Vec<(String, mpsc::Sender<String>)> = {
+        let senders = senders.lock().expect("senders lock");
+        senders
+            .iter()
+            .map(|(user, sender)| (user.clone(), sender.clone()))
+            .collect()
+    };
+    for (user, sender) in wired {
+        for message in host.take_outgoing(&user) {
             if let Ok(text) = serde_json::to_string(&message) {
-                if let Some(sender) = senders.get(&user.user_id) {
-                    let _ = sender.send(text);
-                }
+                let _ = sender.send(text);
             }
         }
     }

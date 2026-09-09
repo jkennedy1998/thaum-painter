@@ -6,6 +6,8 @@ pub mod session_host;
 pub mod session_host_tcp;
 #[path = "session-net/session_net.rs"]
 pub mod session_net;
+#[path = "session-net/session_discovery.rs"]
+pub mod session_discovery;
 #[path = "session-relay/mod.rs"]
 pub mod session_relay;
 
@@ -17,3 +19,4 @@ pub use session_host_tcp::{host_port_from_env, spawn_session_host_server, Sessio
 pub use session_net::{
     join_address, session_net_boot_from_env, session_user_from_identity, SessionNet, SessionNetBoot,
 };
+pub use session_discovery::{spawn_discovery_responder, DiscoveryPoller, DiscoveryResponder, DiscoveredHost};
