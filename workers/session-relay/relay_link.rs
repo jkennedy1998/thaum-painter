@@ -37,7 +37,7 @@ use crate::session_relay::relay_protocol::{
     ServerFrame, BROADCAST_TARGET, DEFAULT_MAX_FRAME_BYTES,
 };
 use crate::session_relay::relay_server::{
-    read_frame_shared, ConnState, SharedStream, RELAY_STREAM_READ_SLICE,
+    read_frame_shared, SharedStream, RELAY_STREAM_READ_SLICE,
 };
 use crate::session_relay::relay_tls::{self, RelayClientLink, HANDSHAKE_TIMEOUT};
 use thaum_painter_domain::debug_log;

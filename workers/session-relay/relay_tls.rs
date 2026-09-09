@@ -24,8 +24,7 @@ use rustls_pemfile::certs;
 use rustls::RootCertStore;
 
 use crate::session_relay::relay_server::{
-    ConnState, RelayConnectionUpgrader, RelayReadWrite, RelayStreamBox, SharedStream,
-    RELAY_STREAM_READ_SLICE,
+    ConnState, RelayConnectionUpgrader, RelayStreamBox, SharedStream, RELAY_STREAM_READ_SLICE,
 };
 
 /// Handshake window: a relay that doesn't finish the TLS or claim exchange in

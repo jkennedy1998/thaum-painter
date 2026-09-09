@@ -8,7 +8,7 @@ use std::rc::Rc;
 use thaum_painter_domain::{
     GraphicPickerModule, HandSettingsModule, LayersPanelModule, LayersPanelState,
     MaterialPickerModule, PaintCanvasBoundsModule, PaintColorBlockModule, PaintColorPickerModule,
-    PaintTool, PainterSelection, SessionPanelModule, SessionPanelState, SessionRosterRow, ToolDef,
+    PaintTool, PainterSelection, SessionPanelModule, SessionPanelState, ToolDef,
     ToolState, ToolboxModule,
 };
 use thaum_renderer_domain::{
