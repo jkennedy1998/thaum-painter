@@ -339,6 +339,10 @@ fn apply_session_panel_action(
                         ),
                     );
                     *session_relay_note = note;
+                    // Host-owned disk truth: while a session lives, the host is
+                    // the one writer of its document dir (foreign records arrive
+                    // via sync), so the guarded save's multi-writer guards are off.
+                    shared_document.session_hosting = true;
                     *session_net = Some(net);
                 }
                 Err(error) => {
@@ -435,6 +439,21 @@ fn apply_session_panel_action(
             if let Some(net) = session_net {
                 if was_host {
                     net.end_session();
+                    // The host's runtime holds the full session truth (own +
+                    // foreign records); force-save it so solo guarded saves
+                    // resume from a consistent disk (J 2026-09-09).
+                    match force_save_shared_document_snapshot(shared_document_paths, shared_document)
+                    {
+                        Ok(()) => thaum_painter_domain::debug_log::info(
+                            "session",
+                            "host left session; session state force-saved to disk",
+                        ),
+                        Err(error) => thaum_painter_domain::debug_log::error(
+                            "session",
+                            &format!("host leave force-save failed: {error:#}"),
+                        ),
+                    }
+                    shared_document.session_hosting = false;
                 }
             }
             // Client leave: the live runtime holds this machine's freshest
@@ -2133,6 +2152,8 @@ fn main() -> Result<()> {
                         ),
                     );
                     session_net = Some(net);
+                    // Host-owned disk truth (see the panel host path).
+                    shared_document.session_hosting = true;
                 }
                 Err(error) => {
                     eprintln!("failed to host session on port {port}: {error}");
@@ -2198,6 +2219,8 @@ fn main() -> Result<()> {
                         ),
                     );
                     session_net = Some(net);
+                    // Host-owned disk truth (see the panel host path).
+                    shared_document.session_hosting = true;
                 }
                 Err(error) => {
                     eprintln!("failed to host session over relay {relay}: {error}");

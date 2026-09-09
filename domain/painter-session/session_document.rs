@@ -226,6 +226,16 @@ pub fn recover_snapshot_conflict(
         "storage",
         "shared document changed on disk; reloading the other writer's version",
     );
+    if !paths.document_file_path.exists() {
+        // No document on disk = no other writer's truth to reload. This is
+        // the first-save race (content appends landed before any snapshot),
+        // not a lost conflict — reloading would only spam the error log.
+        crate::debug_log::info(
+            "storage",
+            "document not on disk yet; nothing to reload — the next save writes it",
+        );
+        return false;
+    }
     if let Err(reload_error) = runtime.reload_from_disk(paths) {
         crate::debug_log::error(
             "storage",

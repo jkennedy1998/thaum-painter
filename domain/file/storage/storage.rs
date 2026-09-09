@@ -765,6 +765,13 @@ pub struct SharedDocumentRuntime {
     baseline: Vec<SharedDocumentActionRecord>,
     /// How many entries of `actions` (the oldest ones) the baseline already covers.
     squashed_through: usize,
+    /// True while this machine hosts a live session: foreign joiner records
+    /// reach the runtime through sync (never through this disk's append
+    /// path), so the runtime log legitimately outgrows the solo log and the
+    /// multi-writer conflict guards would false-fire on every save. The host
+    /// IS the one disk writer while it hosts — its snapshot is written
+    /// guard-free (J 2026-09-09 doc-reload spam + refused host saves).
+    pub session_hosting: bool,
 }
 
 impl SharedDocumentRuntime {
@@ -818,6 +825,7 @@ impl SharedDocumentRuntime {
             revision,
             baseline: Vec::new(),
             squashed_through: 0,
+            session_hosting: false,
         }
     }
 
@@ -2995,7 +3003,14 @@ pub fn save_shared_document_snapshot(
     // since this runtime loaded it. Without this, a second writer's structure
     // edits (document.json) and this writer's content (actions.jsonl) would
     // silently split the document's truth across both files.
-    if paths.document_file_path.exists() {
+    // Skipped while this machine hosts a live session: foreign joiner records
+    // reach the runtime through sync, not this disk's append path, so the
+    // runtime log legitimately outgrows the solo log and both guards would
+    // false-fire forever — the reload they trigger would then DISCARD the
+    // joiner's edits (J 2026-09-09 doc-reload spam). The host is the one
+    // disk writer while it hosts.
+    let guarding = !runtime.session_hosting;
+    if guarding && paths.document_file_path.exists() {
         let on_disk = load_document_file(&paths.document_file_path)?;
         if on_disk.revision != runtime.revision {
             return Err(anyhow::anyhow!(
@@ -3016,7 +3031,7 @@ pub fn save_shared_document_snapshot(
     // append-only case where the revision did not move. Only applies when the
     // target log already exists — a fresh root (save-as) has nothing to diverge
     // from, and comparing it against this runtime's history would always fail.
-    if paths.actions_file_path.exists() {
+    if guarding && paths.actions_file_path.exists() {
         let on_disk_record_count = count_action_records(&paths.actions_file_path)?;
         let expected_record_count = runtime.actions_for_file().len();
         if on_disk_record_count != expected_record_count {
@@ -3344,6 +3359,48 @@ mod tests {
 
         assert!(paths.document_file_path.exists());
         assert!(paths.actions_file_path.exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_hosting_runtime_saves_past_the_action_log_guard() {
+        // J 2026-09-09 doc-reload spam: foreign joiner records reach the host
+        // runtime through sync (never through this disk's append path), so the
+        // runtime log legitimately outgrows the solo log and the guarded save
+        // false-fired "changed on disk" forever, then failed to reload a
+        // document.json that was never written. While hosting, the host is the
+        // one disk writer — the guards are off.
+        let unique = format!(
+            "thaum-painter-host-save-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let paths = SharedDocumentPaths::new(root.clone());
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        runtime.session_hosting = true;
+        // A foreign record the solo disk log knows nothing about.
+        let foreign = SharedDocumentActionRecord::cell_patch_set(
+            "a1",
+            "doc-1",
+            "layer-1",
+            "joiner-1",
+            "1",
+            vec![SharedCellPatch::new(point(3, 3), None, Some(&cell('#')))],
+            Some("block-1".to_string()),
+        );
+        runtime.push_history_record(foreign);
+
+        save_shared_document_snapshot(&paths, &mut runtime).unwrap();
+
+        assert!(paths.document_file_path.exists());
+        // The host's save writes the full runtime truth, foreign records included.
+        assert_eq!(count_action_records(&paths.actions_file_path).unwrap(), 1);
 
         let _ = fs::remove_dir_all(root);
     }
