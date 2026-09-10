@@ -29,6 +29,14 @@ use crate::storage::{parse_move_offset, SharedDocumentPropertyBlock};
 /// perception. Pure function of breath: no state, so scrubbing, multiplayer
 /// determinism, and the fractional-playback seam are unaffected. All axes
 /// clamp back together at t = 1, so arrival on the next keyframe stays exact.
+///
+/// The stagger is weighted by `min(2 × eased progress, 1)` (J 2026-09-10
+/// live repro: a full-strength stagger handed y/z a progress head start at
+/// the empty's FIRST breath — z teleported 2-3 cells the instant motion
+/// began, while x stepped one). Zero eased progress means zero offset, so
+/// entry into the transition stays a unit step on every axis; the weight
+/// reaches full strength at the halfway point and the whole back half of the
+/// transition — including the clamped arrival — behaves exactly as before.
 pub(crate) const AXIS_STAGGER_BREATHS: f32 = 1.0 / 8.0;
 
 /// Resolves the move offset authored for `breath` across one property track's
@@ -213,15 +221,19 @@ pub(crate) fn empty_progress(blank: &SharedDocumentPropertyBlock, breath: u32) -
 
 /// Per-axis eased progress across one empty's span at `breath`: the shared
 /// time `t` (fractional during playback, whole otherwise) evaluated once per
-/// axis with the axis's stagger added — see `AXIS_STAGGER_BREATHS`. Clamped
-/// to 1.0 so all axes converge on the next keyframe exactly.
+/// axis with the axis's stagger added — see `AXIS_STAGGER_BREATHS`. The
+/// stagger weight ramps in with the eased progress (`min(2p, 1)`) so the
+/// empty's first breath carries no head start, and clamps to 1.0 so all
+/// axes converge on the next keyframe exactly.
 fn staggered_axis_progresses(blank: &SharedDocumentPropertyBlock, breath: f32) -> [f32; 3] {
     let length = blank.length_breaths.max(1) as f32;
     let raw = breath - blank.start_breath as f32;
     let t = ((raw + 1.0) / (length + 1.0)).clamp(0.0, 1.0);
+    let base = bezier_eased_progress(t, blank.ease_out_percent, blank.ease_in_percent);
+    let weight = (2.0 * base).min(1.0);
     let mut progresses = [0.0f32; 3];
     for (axis, progress) in progresses.iter_mut().enumerate() {
-        let shifted = (t + axis as f32 * AXIS_STAGGER_BREATHS).min(1.0);
+        let shifted = (t + axis as f32 * AXIS_STAGGER_BREATHS * weight).min(1.0);
         *progress = bezier_eased_progress(shifted, blank.ease_out_percent, blank.ease_in_percent);
     }
     progresses
@@ -633,6 +645,34 @@ mod tests {
     }
 
     #[test]
+    fn the_stagger_ramp_keeps_the_entry_step_unit_sized() {
+        // The live repro (J 2026-09-10): with a full-strength stagger, the
+        // empty's FIRST breath teleported the leading axes — a (10,10) move
+        // over 10 breaths opened on (1, 2, 3) instead of stepping in. The
+        // ramp (weight = min(2 × progress, 1)) holds every axis to one cell
+        // on entry, then hands off to the full stagger.
+        let blocks = vec![
+            solid("a", 0, 2, [0, 0, 0]),
+            blank("b", 2, 10, None, None, None),
+            solid("c", 12, 2, [10, 10, 10]),
+            blank("tail", 14, 1, None, None, None),
+        ];
+        assert_eq!(resolve_move_offset(&blocks, 2), Some([1, 1, 1]));
+        // The eased variant enters just as gently.
+        let eased = vec![
+            solid("a", 0, 2, [0, 0, 0]),
+            blank("b", 2, 10, Some("interpolate"), Some(100), Some(100)),
+            solid("c", 12, 2, [10, 10, 10]),
+            blank("tail", 14, 1, None, None, None),
+        ];
+        let entry = resolve_move_offset(&eased, 2).unwrap();
+        assert!(
+            entry[0].abs() <= 1 && entry[1].abs() <= 1,
+            "entry must be unit-sized per axis, got {entry:?}"
+        );
+    }
+
+    #[test]
     fn a_track_with_no_values_resolves_nothing() {
         let blocks = vec![blank("tail", 0, 24, None, None, None)];
         assert_eq!(resolve_move_offset(&blocks, 5), None);
@@ -657,10 +697,10 @@ mod tests {
         assert_eq!(resolve_move_offset(&blocks, 5), None);
         // The interpolating empty lerps identity -> {0,-3,-3}: real motion.
         // Progress at breath 6 = 1/12 (linear), at breath 16 = 11/12. The
-        // axis stagger (J 2026-09-10) shifts y/z a hair later, so breath 6's
-        // y/z cross their first rounding threshold one step earlier than the
-        // un-staggered result — breaths 11/16 still land on the same cells.
-        assert_eq!(resolve_move_offset(&blocks, 6), Some([0, -1, -1]));
+        // stagger ramp (J 2026-09-10) keeps breath 6's offset small enough
+        // that y/z still show their first cell exactly when x does; breaths
+        // 11/16 land on the same cells as the un-ramped stagger.
+        assert_eq!(resolve_move_offset(&blocks, 6), Some([0, 0, 0]));
         assert_eq!(resolve_move_offset(&blocks, 11), Some([0, -2, -2]));
         assert_eq!(resolve_move_offset(&blocks, 16), Some([0, -3, -3]));
         // The keyframe and its trailing empty hold as before.
