@@ -1093,10 +1093,23 @@ impl SharedDocumentRuntime {
     /// edge-locked loop repeats). Zero offset when the layer has no move track
     /// or nothing resolves — move offsets are optional metadata.
     pub fn move_offset_for_layer(&self, layer_id: &str, breath: u32) -> WorldPoint {
+        self.move_offset_fractional_for_layer(layer_id, breath, 0.0)
+    }
+
+    /// Fractional-breath move resolution for playback: `fraction` (0..1) is the
+    /// elapsed portion of the current breath, so the eased curve samples per
+    /// display frame. Scrub/edit callers use `move_offset_for_layer` (fraction
+    /// 0) — the two agree exactly at whole breaths.
+    pub fn move_offset_fractional_for_layer(
+        &self,
+        layer_id: &str,
+        breath: u32,
+        fraction: f32,
+    ) -> WorldPoint {
         let Some(track) = self.property_track(layer_id, "move") else {
             return WorldPoint::origin();
         };
-        crate::interp_move::resolve_move_offset(&track.blocks, breath)
+        crate::interp_move::resolve_move_offset_fractional(&track.blocks, breath, fraction)
             .map(|offset| WorldPoint {
                 x: offset[0],
                 y: offset[1],
@@ -5439,6 +5452,36 @@ mod tests {
         assert_eq!(runtime.move_offset_for_layer("layer-1", 2).x, 12);
         assert_eq!(runtime.move_offset_for_layer("layer-1", 12).x, 12);
         assert_eq!(runtime.move_offset_for_layer("layer-1", 20).x, 12);
+    }
+
+    #[test]
+    fn fractional_move_playback_samples_between_breaths() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+        assert!(runtime.add_move_offset("layer-1", 2, WorldPoint { x: 2, y: 0, z: 0 }));
+        let right = runtime
+            .split_property_block("layer-1", "move", "block-1", 6)
+            .unwrap();
+        runtime.blank_property_block("layer-1", "move", &right);
+        // A drag strictly inside the empty lands a one-breath keyframe
+        // carrying resolved + delta: solid 0..6 {2}, interpolating empty
+        // 6..23, solid 23 {12} — a linear 10-cell transition across 17 breaths.
+        assert!(runtime.add_move_offset("layer-1", 23, WorldPoint { x: 10, y: 0, z: 0 }));
+        // Fraction 0 is exactly the whole-breath result.
+        assert_eq!(
+            runtime.move_offset_fractional_for_layer("layer-1", 22, 0.0).x,
+            runtime.move_offset_for_layer("layer-1", 22).x
+        );
+        assert_eq!(runtime.move_offset_for_layer("layer-1", 22).x, 11);
+        // The breath's final fraction has reached the next keyframe, so
+        // playback is continuous across the empty/keyframe boundary.
+        assert_eq!(
+            runtime
+                .move_offset_fractional_for_layer("layer-1", 22, 0.999)
+                .x,
+            12
+        );
     }
 
     #[test]

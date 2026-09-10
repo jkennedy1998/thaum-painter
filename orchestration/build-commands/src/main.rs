@@ -2651,7 +2651,8 @@ fn main() -> Result<()> {
             || frame.input.cursor_position != last_frame_cursor
             || frame.input.pointer_down != last_pointer_down
             || frame.input.right_pointer_down != last_right_pointer_down;
-        let playback_due = timeline_state.borrow().playing
+        let playback_playing = timeline_state.borrow().playing;
+        let playback_due = playback_playing
             && last_playback_step.elapsed() >= PLAYBACK_BREATH_INTERVAL;
         let blink_due =
             typing_mode.is_active() && cursor_blink_at.elapsed() >= CURSOR_BLINK_INTERVAL;
@@ -2757,6 +2758,7 @@ fn main() -> Result<()> {
         }
         let release_status_pending = release_status_check.is_pending();
         if !input_dirty
+            && !playback_playing
             && !playback_due
             && !blink_due
             && !session_dirty
@@ -3810,9 +3812,21 @@ fn main() -> Result<()> {
         let pending_move_offset = pointer_strokes
             .pending_move_offset()
             .map(|delta| (active_layer_id.clone(), delta));
+        // Fractional-breath playback sampling (J 2026-09-10): while playing,
+        // the move offset resolves against the elapsed portion of the current
+        // breath, so eased empties render one position per display frame
+        // instead of one per breath. Paused/scrubbing stays at whole breaths.
+        let breath_fraction = if playback_playing {
+            (last_playback_step.elapsed().as_secs_f32()
+                / PLAYBACK_BREATH_INTERVAL.as_secs_f32())
+            .min(0.999)
+        } else {
+            0.0
+        };
         let mut groups = build_document_layer_cell_groups(
             &shared_document,
             timeline_state.borrow().current_breath,
+            breath_fraction,
             pending_move_offset
                 .as_ref()
                 .map(|(layer_id, delta)| (layer_id.as_str(), *delta)),

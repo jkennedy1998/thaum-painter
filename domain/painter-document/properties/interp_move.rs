@@ -27,6 +27,26 @@ pub fn resolve_move_offset(
     blocks: &[SharedDocumentPropertyBlock],
     breath: u32,
 ) -> Option<[i32; 3]> {
+    resolve_move_offset_fractional(blocks, breath, 0.0)
+}
+
+/// Fractional-breath resolution (J 2026-09-10): playback samples the eased
+/// curve BETWEEN breaths — `fraction` (0..1) is the elapsed portion of the
+/// current breath — so an interpolating empty renders one offset per display
+/// frame instead of one per breath. Positions still snap to the integer grid
+/// (no AA); the perceived smoothness comes from unequal per-cell dwell times,
+/// which is how coarse-grid easing reads as a parabolic speed graph. Solids
+/// hold across their spans regardless of fraction; scrub/edit paths pass 0.0
+/// and resolve identically to `resolve_move_offset`.
+pub fn resolve_move_offset_fractional(
+    blocks: &[SharedDocumentPropertyBlock],
+    breath: u32,
+    fraction: f32,
+) -> Option<[i32; 3]> {
+    // Strictly below 1.0: the fraction belongs to THIS breath — at exactly 1.0
+    // a loop blank's mirror distance goes negative and the wrap lookup can
+    // miss, and the next frame's tick re-anchors at the next breath anyway.
+    let fraction = fraction.clamp(0.0, 0.999);
     let index = blocks
         .iter()
         .position(|block| {
@@ -39,7 +59,7 @@ pub fn resolve_move_offset(
                 .filter(|block| block.is_blank)
                 .map(|_| blocks.len() - 1)
         })?;
-    resolve_block(blocks, index, breath)
+    resolve_block(blocks, index, breath as f32 + fraction)
 }
 
 /// Resolves one block at `breath` (the breath is always inside the block's span
@@ -47,7 +67,7 @@ pub fn resolve_move_offset(
 fn resolve_block(
     blocks: &[SharedDocumentPropertyBlock],
     index: usize,
-    breath: u32,
+    breath: f32,
 ) -> Option<[i32; 3]> {
     let block = &blocks[index];
     if !block.is_blank {
@@ -74,13 +94,13 @@ fn resolve_hold(blocks: &[SharedDocumentPropertyBlock], index: usize) -> Option<
 fn resolve_interpolate(
     blocks: &[SharedDocumentPropertyBlock],
     index: usize,
-    breath: u32,
+    breath: f32,
 ) -> Option<[i32; 3]> {
     let previous = solid_value_before(blocks, index);
     let next = solid_value_after(blocks, index);
     match (previous, next) {
         (Some(from), Some(to)) => {
-            let progress = empty_progress(&blocks[index], breath);
+            let progress = empty_progress_fractional(&blocks[index], breath);
             Some(lerp_offset(from, to, progress))
         }
         (only, None) => only,
@@ -98,7 +118,7 @@ fn resolve_interpolate(
 fn resolve_loop(
     blocks: &[SharedDocumentPropertyBlock],
     index: usize,
-    breath: u32,
+    breath: f32,
     mirror: bool,
 ) -> Option<[i32; 3]> {
     let blank = &blocks[index];
@@ -110,16 +130,20 @@ fn resolve_loop(
     if loop_len == 0 {
         return None;
     }
+    // The playhead's fractional part carries through the wrap, so a loop edge
+    // also plays smoothly between breaths. The integer part drives the block
+    // lookup; the fraction rides along into the mapped block's resolver.
     let mapped = if mirror {
-        let blank_end = blank.start_breath + blank.length_breaths;
-        let distance = blank_end.saturating_sub(1).saturating_sub(breath);
-        region_end - 1 - (distance % loop_len)
+        let blank_end = (blank.start_breath + blank.length_breaths) as f32;
+        let distance = (blank_end - 1.0) - breath;
+        region_end as f32 - 1.0 - (distance % loop_len as f32)
     } else {
-        let distance = breath.saturating_sub(blank.start_breath);
-        region_start + (distance % loop_len)
+        let distance = breath - blank.start_breath as f32;
+        region_start as f32 + (distance % loop_len as f32)
     };
+    let mapped_breath = mapped.floor().max(0.0) as u32;
     let mapped_index = blocks.iter().position(|block| {
-        crate::properties::breath_in_span(mapped, block.start_breath, block.length_breaths)
+        crate::properties::breath_in_span(mapped_breath, block.start_breath, block.length_breaths)
     })?;
     resolve_block(blocks, mapped_index, mapped)
 }
@@ -163,10 +187,22 @@ fn solid_keyframe_value(block: &SharedDocumentPropertyBlock) -> [i32; 3] {
 /// constant across their own spans, so the empty's span is the whole
 /// transition: its first breath has just left the previous keyframe, and the
 /// breath after the empty lands on the next one exactly. Shared with the
-/// raster channel's interpolator so both channels bend identically.
+/// raster channel's interpolator so both channels bend identically. The
+/// raster channel keeps sampling whole breaths — its blend behavior is
+/// intentionally untouched by the fractional playback pass.
 pub(crate) fn empty_progress(blank: &SharedDocumentPropertyBlock, breath: u32) -> f32 {
+    empty_progress_fractional(blank, breath as f32)
+}
+
+/// Fractional-breath progress: `breath` may land between breaths during
+/// playback so the eased curve is sampled per display frame. At an integer
+/// breath this is exactly the whole-breath result.
+pub(crate) fn empty_progress_fractional(
+    blank: &SharedDocumentPropertyBlock,
+    breath: f32,
+) -> f32 {
     let length = blank.length_breaths.max(1) as f32;
-    let raw = (breath - blank.start_breath) as f32;
+    let raw = breath - blank.start_breath as f32;
     let t = ((raw + 1.0) / (length + 1.0)).clamp(0.0, 1.0);
     eased_progress(t, blank.ease_out_percent, blank.ease_in_percent)
 }
@@ -310,6 +346,76 @@ mod tests {
             eased > 6,
             "ease-in must decelerate into the target ({eased} > 6)"
         );
+    }
+
+    #[test]
+    fn fractional_breath_zero_matches_the_integer_result() {
+        let blocks = vec![
+            solid("a", 0, 4, [0, 0, 0]),
+            blank("b", 4, 4, Some("interpolate"), Some(100), Some(100)),
+            solid("c", 8, 4, [8, 0, 0]),
+            blank("tail", 12, 1, None, None, None),
+        ];
+        for breath in 0..13u32 {
+            assert_eq!(
+                resolve_move_offset(&blocks, breath),
+                resolve_move_offset_fractional(&blocks, breath, 0.0),
+                "fraction 0 at breath {breath} must be the whole-breath result"
+            );
+        }
+    }
+
+    #[test]
+    fn fractional_breath_samples_the_ease_between_breaths() {
+        // Full ease-out over a 4-breath empty. Whole-breath samples land on
+        // offsets 0, 1, 2, 4; the mid-breath sample lands on 3 — a distinct
+        // position no whole breath ever shows, which is where the smoother
+        // motion comes from.
+        let blocks = vec![
+            solid("a", 0, 4, [0, 0, 0]),
+            blank("b", 4, 4, Some("interpolate"), Some(100), None),
+            solid("c", 8, 4, [8, 0, 0]),
+            blank("tail", 12, 1, None, None, None),
+        ];
+        assert_eq!(resolve_move_offset(&blocks, 6).unwrap()[0], 2);
+        assert_eq!(
+            resolve_move_offset_fractional(&blocks, 6, 0.5).unwrap()[0],
+            3
+        );
+        // The empty's final fraction lands exactly on the next keyframe, so
+        // playback is continuous across the empty/keyframe boundary.
+        assert_eq!(
+            resolve_move_offset_fractional(&blocks, 7, 0.999).unwrap()[0],
+            8
+        );
+        // Monotonic across the sampled fraction of one breath.
+        let at = |fraction: f32| {
+            resolve_move_offset_fractional(&blocks, 5, fraction).unwrap()[0]
+        };
+        assert!(at(0.0) <= at(0.25) && at(0.25) <= at(0.5) && at(0.5) <= at(0.75));
+    }
+
+    #[test]
+    fn fractional_breath_is_ignored_on_solids_hold_and_loop() {
+        // Solids hold their offset across their spans at any fraction.
+        let blocks = vec![
+            solid("a", 0, 4, [3, 0, 0]),
+            blank("b", 4, 4, Some("hold"), None, None),
+            solid("c", 8, 4, [4, 0, 0]),
+            blank("tail", 12, 1, Some("loop_out"), None, None),
+        ];
+        assert_eq!(
+            resolve_move_offset_fractional(&blocks, 2, 0.5),
+            Some([3, 0, 0])
+        );
+        assert_eq!(
+            resolve_move_offset_fractional(&blocks, 6, 0.5),
+            Some([3, 0, 0])
+        );
+        // A loop blank maps the fraction through the wrap: breath 12.5 plays
+        // the region halfway between its breath-0 and breath-1 values.
+        let looped = resolve_move_offset_fractional(&blocks, 12, 0.5).unwrap();
+        assert!(looped[0] >= 3 && looped[0] <= 4, "mapped inside the region");
     }
 
     #[test]

@@ -308,7 +308,7 @@ mod tests {
         );
         runtime.add_move_offset("layer-1", 0, WorldPoint { x: 2, y: 0, z: 3 });
 
-        let groups = build_document_layer_cell_groups(&runtime, 0, None, None);
+        let groups = build_document_layer_cell_groups(&runtime, 0, 0.0, None, None);
         assert_eq!(groups.len(), 1);
         assert!(groups[0]
             .iter_cells()
@@ -318,6 +318,7 @@ mod tests {
         let groups = build_document_layer_cell_groups(
             &runtime,
             0,
+            0.0,
             Some(("layer-1", WorldPoint { x: 1, y: 1, z: 0 })),
             None,
         );
@@ -358,10 +359,15 @@ pub fn build_paint_canvas_cell_group(canvas: &Canvas, move_offset: WorldPoint) -
 /// One scene group per document layer, back-to-front in document order.
 /// Each layer renders shifted by its active move offset, plus one in-flight
 /// vector move drag's pending delta on `pending_layer` — the live WYSIWYG
-/// preview of the offset the drag will commit.
+/// preview of the offset the drag will commit. `breath_fraction` (0..1) is
+/// the elapsed portion of the current breath during playback: the move
+/// offset resolves at the fractional breath so eased motion samples per
+/// display frame (positions still snap to the integer grid). Paused or
+/// scrubbing, pass 0.0.
 pub fn build_document_layer_cell_groups(
     runtime: &SharedDocumentRuntime,
     current_breath: u32,
+    breath_fraction: f32,
     pending_move_offset: Option<(&str, WorldPoint)>,
     graphic_fade: Option<&thaum_renderer_domain::shape_fade::fade::ShapeFade>,
 ) -> Vec<CellGroup> {
@@ -377,7 +383,11 @@ pub fn build_document_layer_cell_groups(
             // halfway cutoff.
             let canvas =
                 runtime.resolved_canvas_for_layer(&layer.layer_id, current_breath, graphic_fade)?;
-            let mut offset = runtime.move_offset_for_layer(&layer.layer_id, current_breath);
+            let mut offset = runtime.move_offset_fractional_for_layer(
+                &layer.layer_id,
+                current_breath,
+                breath_fraction,
+            );
             if let Some((pending_layer, pending)) = pending_move_offset {
                 if pending_layer == layer.layer_id {
                     offset = WorldPoint {
