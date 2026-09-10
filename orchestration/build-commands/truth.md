@@ -24,3 +24,6 @@
 - j-quote: "I don't want to auto update because I don't really agree with that."
 - j-quote: "we should just have the version actually maybe we should dial back on this session module what if we just show it next to the buttons for file and module."
 - j-quote: "We have 3 interactive buttons you can reimplemnt from the dev page for this. They link to the builds already I think."
+- j-quote: "Fully updated \"Click here for the download page, you are seemingly up to date on this build\""
+- j-quote: "Can't tell \"open the downloads page for the painter, cannot assess if you are out of date\""
+- j-quote: "Out of date \"opens the downloads page for the latest build, your current build is out of date!\""

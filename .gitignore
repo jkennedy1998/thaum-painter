@@ -20,7 +20,7 @@ Cargo.lock
 orchestration/builds/
 
 # runtime output (never version these)
-context/painter/painter-files/
+artifacts/painter-files/
 orchestration/artifacts/
 artifacts/debug-logging/
 artifacts/autosave/

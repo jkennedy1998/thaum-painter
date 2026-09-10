@@ -36,13 +36,15 @@ pub fn default_shared_document(document_id: &str) -> SharedDocumentFile {
 }
 
 /// Resolves the painter saved-file root: the `THAUM_PAINTER_FILE_ROOT` env
-/// override, else the repo's `context/painter/painter-files` folder.
+/// override, else the repo's `artifacts/painter-files` folder. Runtime user
+/// output lives under `artifacts/` (J 2026-09-10): `context/` stays
+/// design-truth notes only.
 pub fn resolve_painter_file_root(repo_root: &Path) -> PathBuf {
     if let Ok(path) = env::var("THAUM_PAINTER_FILE_ROOT") {
         return PathBuf::from(path);
     }
 
-    repo_root.join("context/painter/painter-files")
+    repo_root.join("artifacts/painter-files")
 }
 
 pub fn load_document_from_root(
@@ -68,11 +70,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn painter_file_root_defaults_to_repo_context_folder() {
+    fn painter_file_root_defaults_to_repo_artifacts_folder() {
         let root = resolve_painter_file_root(Path::new("/tmp/fake-repo"));
-        assert_eq!(
-            root,
-            PathBuf::from("/tmp/fake-repo/context/painter/painter-files")
-        );
+        assert_eq!(root, PathBuf::from("/tmp/fake-repo/artifacts/painter-files"));
     }
 }

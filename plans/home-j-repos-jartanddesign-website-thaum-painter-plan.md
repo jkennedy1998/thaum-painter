@@ -1,0 +1,64 @@
+# encapsulation plan — jartanddesign.com Thaum Painter download page
+
+linked project plan: `plans/project-thaum-painter-release-status-and-download-page-plan.md` (phase-2)
+
+## implementation-rules
+- Update checklist states while working.
+- Reuse the existing portfolio-page shell, source-entry convention, shared header/footer, components, typegrid, and link interactions.
+- The page is the public download destination; it does not become an installer/updater service.
+
+## status key
+- `[ ]` not done
+- `[+]` implemented
+- `[#]` tested
+
+## pre-implementation-note
+The site already renders Development, Illustration, Design, and Sketchbook through directory routes, `data-portfolio-page`, generated `source/<page>/entries.js`, and shared `components.js`/`style.css`. Thaum Painter is currently one Development slice with three direct GitHub asset links. This work creates an equivalent styled `/thaum-painter/` route owning those links, then converts the Development slice to one link to the new route.
+
+## target-encapsulation
+- `/home/j/Repos/jartanddesign-website/thaum-painter/`: new
+
+## artifacts
+- `thaum-painter/index.html` — route shell using `data-portfolio-page="thaum-painter"`.
+- `source/thaum-painter/2026/1/entry.md` — source-of-truth product slice.
+- `source/thaum-painter/build-entries.mjs` and generated `source/thaum-painter/entries.js` — existing page-source generation shape.
+- `thaum-painter/release.json` — static public manifest: current semantic version and canonical page URL only.
+- edited `source/development/2026/1/entry.md` and regenerated `source/development/entries.js` — one product-page link, no platform downloads.
+
+## tests
+- `node build-entries.mjs` successfully rebuilds both source-entry outputs.
+- static assertion/manual inspection: route has shared shell, exactly three platform asset links, valid manifest, and Development has one `/thaum-painter/` link.
+- responsive/hover manual pass in a browser.
+
+## data
+- none
+
+## phases
+### phase-1 — docs + contract + truth alignment
+- [ ] inspect the existing Development and Sketchbook source/build patterns and preserve generated-versus-source ownership.
+- [ ] record the canonical route and manifest contract consumed by Painter: `https://jartanddesign.com/thaum-painter/release.json` with version/page only.
+- [ ] record that the three GitHub `releases/latest/download` links move wholesale from Development to this page.
+- [ ] define the source files the Painter release command may update and preserve all other portfolio content.
+
+### phase-2 — page route + shared presentation
+- [ ] add the new directory route, source directory, and generator following the existing portfolio-page pattern.
+- [ ] author one Thaum Painter product slice in the existing visual language with product description, compiled current version, and the three interactive platform links.
+- [ ] include concise extraction/run guidance and the existing Mac unsigned/Gatekeeper note without inventing an auto-install flow.
+- [ ] use shared components/styles; add page-local styling only if the shared slice system demonstrably cannot express a needed product fact.
+
+### phase-3 — canonical download ownership + manifest
+- [ ] remove Linux/Windows/Mac archive links from the Development entry and replace them with one `Thaum Painter` page link.
+- [ ] write a valid minimal release manifest matching the initial published Painter version and canonical page URL.
+- [ ] run the root generator so checked-in `entries.js` outputs agree with source entries.
+- [ ] confirm the live route and manifest resolve after website publication, not only from a local file path.
+
+### phase-4 — validation + repo-rule sweep + git commit
+- [ ] validate desktop and narrow layouts, the shared header/footer, link hover behavior, and all three download URLs.
+- [ ] validate the manifest against the app’s parser and confirm it cannot direct an automatic artifact download.
+- [ ] verify generated files have no hand-only drift from their source entries.
+- [ ] run available website checks and review repository conventions.
+- [ ] git commit if approved.
+
+## post-implementation-notes
+- plan-finished: false
+- encapsulation-git-commit: false

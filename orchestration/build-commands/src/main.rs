@@ -1624,10 +1624,10 @@ mod tests {
     }
 
     #[test]
-    fn painter_file_root_defaults_to_repo_context_folder() {
+    fn painter_file_root_defaults_to_repo_artifacts_folder() {
         let root = painter_file_root();
-        assert!(root.ends_with("context/painter/painter-files"));
-        assert!(!root.to_string_lossy().contains("/orchestration/context/"));
+        assert!(root.ends_with("artifacts/painter-files"));
+        assert!(!root.to_string_lossy().contains("context"));
     }
 
     #[test]
