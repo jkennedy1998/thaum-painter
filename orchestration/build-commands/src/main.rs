@@ -59,6 +59,7 @@ use thaum_renderer_domain::{
 use winit::keyboard::KeyCode;
 
 mod painter_modules;
+mod release_status;
 mod run_log;
 
 /// Asset root: `THAUM_RENDERER_ASSET_ROOT` env override, else a
@@ -1240,6 +1241,35 @@ fn reseed_host_session(
     Ok(Some(cursor))
 }
 
+fn root_command_bar_buttons(
+    release_status: release_status::ReleaseStatus,
+) -> Vec<CommandBarButton> {
+    let (status_title, status_description) = release_status.tooltip();
+    let status_color = match release_status {
+        release_status::ReleaseStatus::UpToDate => UiColorRole::Bright,
+        release_status::ReleaseStatus::OutOfDate => UiColorRole::Vivid,
+        release_status::ReleaseStatus::CannotAssess => UiColorRole::Medium,
+    };
+    vec![
+        CommandBarButton::new("menu:file", "FILE").with_tooltip(
+            "FILE",
+            "Create a new painting, open one, or save your work.",
+        ),
+        CommandBarButton::new("menu:modules", "MODULES")
+            .with_tooltip("MODULES", "Show or hide Painter panels."),
+        CommandBarButton::new(
+            "version:downloads",
+            format!("v{}", env!("CARGO_PKG_VERSION")),
+        )
+        .with_idle_color_role(status_color)
+        .with_tooltip(status_title, status_description),
+    ]
+}
+
+fn command_bar_external_url(button_id: &str) -> Option<&'static str> {
+    (button_id == "version:downloads").then_some(release_status::DOWNLOAD_PAGE_URL)
+}
+
 fn handle_command_bar_button(
     button_id: &str,
     modules: &mut ModuleRegistry,
@@ -1256,6 +1286,15 @@ fn handle_command_bar_button(
     session_net: &mut Option<thaum_painter_workers::SessionNet>,
     persist_to_disk: bool,
 ) -> Result<Option<usize>> {
+    if let Some(url) = command_bar_external_url(button_id) {
+        if let Err(error) = webbrowser::open(url) {
+            thaum_painter_domain::debug_log::error(
+                "release-status",
+                &format!("could not open the downloads page: {error}"),
+            );
+        }
+        return Ok(None);
+    }
     if let Some(module_id) = button_id.strip_prefix("module:") {
         if let Some(hidden) = modules.is_hidden(module_id) {
             modules.set_hidden(module_id, !hidden);
@@ -1457,6 +1496,37 @@ mod tests {
     use thaum_painter_domain::text_entry::TextEntryState;
 
     use thaum_renderer_domain::{camera_view_orientation_for_camera, CameraRoll, CameraSwing};
+
+    #[test]
+    fn root_command_bar_declares_tooltips_for_file_modules_and_version() {
+        let buttons = root_command_bar_buttons(release_status::ReleaseStatus::UpToDate);
+        assert_eq!(buttons.len(), 3);
+        assert_eq!(buttons[0].id, "menu:file");
+        assert_eq!(
+            buttons[0].tooltip.as_ref().unwrap().description,
+            "Create a new painting, open one, or save your work."
+        );
+        assert_eq!(buttons[1].id, "menu:modules");
+        assert_eq!(
+            buttons[1].tooltip.as_ref().unwrap().description,
+            "Show or hide Painter panels."
+        );
+        assert_eq!(buttons[2].id, "version:downloads");
+        assert_eq!(buttons[2].idle_color_role, Some(UiColorRole::Bright));
+        assert_eq!(
+            buttons[2].tooltip.as_ref().unwrap().description,
+            "Click here for the download page, you are seemingly up to date on this build"
+        );
+    }
+
+    #[test]
+    fn version_button_is_the_only_command_bar_external_url() {
+        assert_eq!(
+            command_bar_external_url("version:downloads"),
+            Some("https://jartanddesign.com/thaum-painter/")
+        );
+        assert_eq!(command_bar_external_url("menu:file"), None);
+    }
 
     #[test]
     fn arrow_keys_route_into_the_session_and_nudge_the_cursor() {
@@ -2518,11 +2588,10 @@ fn main() -> Result<()> {
         .canvas_for_layer(&active_layer_id, timeline_state.borrow().current_breath)
         .cloned()
         .unwrap_or_default();
+    let mut release_status_check =
+        release_status::ReleaseStatusCheck::start(env!("CARGO_PKG_VERSION"));
     let mut command_bar = CommandBar::new("painter_command_bar", ui_palette.clone())
-        .with_buttons(vec![
-            CommandBarButton::new("menu:file", "FILE"),
-            CommandBarButton::new("menu:modules", "MODULES"),
-        ])
+        .with_buttons(root_command_bar_buttons(release_status_check.status()))
         .with_nested_buttons("menu:file", file_menu_buttons())
         .with_nested_buttons("menu:modules", module_menu_buttons(&modules));
     if let Some(session) = &persisted_session {
@@ -2681,11 +2750,18 @@ fn main() -> Result<()> {
             &mut last_document_autosave_at,
             &mut last_autosave_fingerprint,
         );
+        let release_status_changed = release_status_check.poll();
+        if release_status_changed {
+            command_bar.set_buttons(root_command_bar_buttons(release_status_check.status()));
+        }
+        let release_status_pending = release_status_check.is_pending();
         if !input_dirty
             && !playback_due
             && !blink_due
             && !session_dirty
             && !tooltip_needs_frame
+            && !release_status_changed
+            && !release_status_pending
             && network_applied == 0
         {
             return Ok(());
@@ -3627,15 +3703,21 @@ fn main() -> Result<()> {
             None
         } else {
             hover_point.and_then(|(x, y)| {
-                let id = hovered_id.as_deref()?;
-                modules
-                    .iter()
-                    .find(|module| module.id() == id)
-                    .and_then(|module| {
-                        module
-                            .hotspots()
-                            .into_iter()
-                            .find(|hotspot| hotspot.rect.contains(x, y))
+                command_bar
+                    .hotspots()
+                    .into_iter()
+                    .find(|hotspot| hotspot.rect.contains(x, y))
+                    .or_else(|| {
+                        let id = hovered_id.as_deref()?;
+                        modules
+                            .iter()
+                            .find(|module| module.id() == id)
+                            .and_then(|module| {
+                                module
+                                    .hotspots()
+                                    .into_iter()
+                                    .find(|hotspot| hotspot.rect.contains(x, y))
+                            })
                     })
             })
         };

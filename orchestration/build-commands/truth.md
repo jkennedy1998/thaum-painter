@@ -27,3 +27,9 @@
 - j-quote: "Fully updated \"Click here for the download page, you are seemingly up to date on this build\""
 - j-quote: "Can't tell \"open the downloads page for the painter, cannot assess if you are out of date\""
 - j-quote: "Out of date \"opens the downloads page for the latest build, your current build is out of date!\""
+
+### 26-09-10-07-29-39-06
+- j-quote: "when you do the tool tips do the tool tips for file and modules as well so that users can use the tooltip functions on the bottom bar and that's a little more standard"
+
+### 26-09-10-07-15-59-07
+- settled release ownership: `release-thaum-painter` is the only publisher of the canonical public page's displayed version, GitHub-generated release notes, and verified three-platform download facts after the matching release assets exist.

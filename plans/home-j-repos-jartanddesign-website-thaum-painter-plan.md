@@ -13,21 +13,23 @@ linked project plan: `plans/project-thaum-painter-release-status-and-download-pa
 - `[#]` tested
 
 ## pre-implementation-note
-The site already renders Development, Illustration, Design, and Sketchbook through directory routes, `data-portfolio-page`, generated `source/<page>/entries.js`, and shared `components.js`/`style.css`. Thaum Painter is currently one Development slice with three direct GitHub asset links. This work creates an equivalent styled `/thaum-painter/` route owning those links, then converts the Development slice to one link to the new route.
+The site already renders Development, Illustration, Design, and Sketchbook through directory routes, `data-portfolio-page`, generated `source/<page>/entries.js`, and shared `components.js`/`style.css`. Thaum Painter is currently one Development slice with three direct GitHub asset links. This work creates an equivalent styled `/thaum-painter/` route owning those links and the current GitHub-generated release notes, then converts the Development slice to one link to the new route.
 
 ## target-encapsulation
 - `/home/j/Repos/jartanddesign-website/thaum-painter/`: new
+- `/home/j/Repos/jartanddesign-website/js/components.js` and `css/style.css`: edit only to render an optional source-defined `release notes` section through the existing portfolio slice language; all other slices remain unchanged.
 
 ## artifacts
 - `thaum-painter/index.html` — route shell using `data-portfolio-page="thaum-painter"`.
-- `source/thaum-painter/2026/1/entry.md` — source-of-truth product slice.
+- `source/thaum-painter/2026/1/entry.md` — source-of-truth product slice, including the release-notes section published from the verified GitHub Release.
 - `source/thaum-painter/build-entries.mjs` and generated `source/thaum-painter/entries.js` — existing page-source generation shape.
 - `thaum-painter/release.json` — static public manifest: current semantic version and canonical page URL only.
+- edited `js/components.js` and `css/style.css` — optional generic portfolio release-notes field/rendering; no page-specific parallel UI.
 - edited `source/development/2026/1/entry.md` and regenerated `source/development/entries.js` — one product-page link, no platform downloads.
 
 ## tests
 - `node build-entries.mjs` successfully rebuilds both source-entry outputs.
-- static assertion/manual inspection: route has shared shell, exactly three platform asset links, valid manifest, and Development has one `/thaum-painter/` link.
+- static assertion/manual inspection: route has shared shell, exactly three platform asset links, rendered release notes, valid manifest, and Development has one `/thaum-painter/` link.
 - responsive/hover manual pass in a browser.
 
 ## data
@@ -37,12 +39,13 @@ The site already renders Development, Illustration, Design, and Sketchbook throu
 ### phase-1 — docs + contract + truth alignment
 - [ ] inspect the existing Development and Sketchbook source/build patterns and preserve generated-versus-source ownership.
 - [ ] record the canonical route and manifest contract consumed by Painter: `https://jartanddesign.com/thaum-painter/release.json` with version/page only.
-- [ ] record that the three GitHub `releases/latest/download` links move wholesale from Development to this page.
+- [ ] record that the three GitHub `releases/latest/download` links move wholesale from Development to this page and that the verified GitHub Release body is rendered as its `release notes` section.
 - [ ] define the source files the Painter release command may update and preserve all other portfolio content.
 
 ### phase-2 — page route + shared presentation
 - [ ] add the new directory route, source directory, and generator following the existing portfolio-page pattern.
-- [ ] author one Thaum Painter product slice in the existing visual language with product description, compiled current version, and the three interactive platform links.
+- [ ] extend the generic portfolio source renderer only enough to render an optional `release notes` field; pages without one remain visually/behaviorally unchanged.
+- [ ] author one Thaum Painter product slice in the existing visual language with product description, compiled current version, rendered release notes, and the three interactive platform links.
 - [ ] include concise extraction/run guidance and the existing Mac unsigned/Gatekeeper note without inventing an auto-install flow.
 - [ ] use shared components/styles; add page-local styling only if the shared slice system demonstrably cannot express a needed product fact.
 

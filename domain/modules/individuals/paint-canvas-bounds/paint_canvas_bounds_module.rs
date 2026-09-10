@@ -125,10 +125,25 @@ impl Module for PaintCanvasBoundsModule {
         *self.viewport.borrow()
     }
 
-    /// Tooltip hotspots: the module's gizmo bar, so every gizmo-enabled
-    /// panel grows tooltips from one shared implementation.
+    /// Tooltip hotspots: the module's gizmo bar plus the wheel-mode toggle
+    /// on the border row.
     fn hotspots(&self) -> Vec<Hotspot> {
-        self.gizmos.hotspots(self.rect())
+        let rect = self.rect();
+        let mode = self.wheel_mode.borrow();
+        let mode_description = match *mode {
+            DrawingSpaceWheelMode::Pan => "the wheel scrolls the drawing space around",
+            DrawingSpaceWheelMode::Depth => "the wheel steps through visible depth layers",
+            DrawingSpaceWheelMode::Time => "the wheel steps the playhead through time, wrapping at the loop window",
+        };
+        drop(mode);
+        let x = rect.x0 + self.wheel_mode_local_x();
+        let y = rect.y0 + (rect.y1 - rect.y0 - 1);
+        let custom = vec![Hotspot::new(
+            ModuleRect { x0: x, y0: y, x1: x, y1: y },
+            "wheel mode",
+            format!("{mode_description}; click to cycle pan/depth/time"),
+        )];
+        self.gizmos.hotspots_with(rect, custom)
     }
 
     fn draw(&self) -> CellGroup {

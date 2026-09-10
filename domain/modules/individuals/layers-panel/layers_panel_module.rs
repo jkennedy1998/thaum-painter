@@ -496,6 +496,30 @@ impl LayersPanelModule {
         content_y + content_height - 1 - index as i32
     }
 
+    /// Absolute screen-space hotspot over one content-row span (inclusive
+    /// local x0..x1), matching row hit-testing conventions.
+    fn row_hotspot(
+        &self,
+        row_index: usize,
+        x0: i32,
+        x1: i32,
+        title: &str,
+        description: &str,
+    ) -> Hotspot {
+        let (content_x, _) = PanelChrome::content_origin();
+        let y = self.rect.y0 + self.row_y(row_index);
+        Hotspot::new(
+            ModuleRect {
+                x0: self.rect.x0 + (x0.max(content_x)),
+                y0: y,
+                x1: self.rect.x0 + x1.max(x0),
+                y1: y,
+            },
+            title,
+            description,
+        )
+    }
+
     fn visible_rows(&self) -> Vec<PanelRow> {
         let state = self.state.borrow();
         let mut rows = vec![
@@ -1171,10 +1195,91 @@ impl Module for LayersPanelModule {
         self.rect
     }
 
-    /// Tooltip hotspots: the module's gizmo bar, so every gizmo-enabled
-    /// panel grows tooltips from one shared implementation.
+    /// Tooltip hotspots: the module's gizmo bar plus one hotspot per custom
+    /// control row, so every panel control explains itself through the
+    /// shared tooltip implementation.
     fn hotspots(&self) -> Vec<Hotspot> {
-        self.gizmos.hotspots(self.rect)
+        let (timeline_start, timeline_end) = self.timeline_bounds();
+        let rows = self.visible_rows();
+        let state = self.state.borrow();
+        let mut custom = Vec::new();
+        custom.push(self.row_hotspot(
+            0,
+            1,
+            timeline_start - 2,
+            "auto key",
+            "click to toggle auto-key: canvas drags author keyframes at the playhead",
+        ));
+        custom.push(self.row_hotspot(
+            1,
+            timeline_start,
+            timeline_end,
+            "breath ruler",
+            "click or drag to move the playhead",
+        ));
+        custom.push(self.row_hotspot(
+            2,
+            PLAY_BUTTON_START,
+            PLAY_BUTTON_END,
+            "play",
+            "plays or stops playback over the loop window",
+        ));
+        custom.push(self.row_hotspot(
+            2,
+            LOOP_BUTTON_START,
+            LOOP_BUTTON_END,
+            "loop",
+            "toggles wrap-at-edges playback inside the loop window",
+        ));
+        custom.push(self.row_hotspot(
+            2,
+            timeline_start,
+            timeline_end,
+            "loop window",
+            "drag the bar to move the window, grab an end to trim it",
+        ));
+        custom.push(self.row_hotspot(
+            3,
+            1,
+            12,
+            "new layer",
+            "adds a new layer to the document",
+        ));
+        for (index, row_kind) in rows.into_iter().enumerate().skip(4) {
+            match row_kind {
+                PanelRow::Layer(i) => {
+                    let name = state
+                        .rows
+                        .get(i)
+                        .map(|row| row.name.as_str())
+                        .unwrap_or("layer");
+                    custom.push(self.row_hotspot(
+                        index,
+                        1,
+                        timeline_end,
+                        name,
+                        "eye toggles visibility, lock toggles edits, x deletes; drag the timeline bar to move or trim",
+                    ));
+                }
+                PanelRow::Property(i) => {
+                    let label = state
+                        .property_rows
+                        .get(i)
+                        .map(|row| row.label.as_str())
+                        .unwrap_or("property");
+                    custom.push(self.row_hotspot(
+                        index,
+                        1,
+                        timeline_end,
+                        label,
+                        "property track: click a bar to select, drag to move or trim keyframes",
+                    ));
+                }
+                _ => {}
+            }
+        }
+        drop(state);
+        self.gizmos.hotspots_with(self.rect, custom)
     }
 
     fn draw(&self) -> CellGroup {

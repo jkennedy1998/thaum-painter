@@ -12,9 +12,10 @@ Cargo.lock
 *.pfx
 *.keystore
 
-# maintainer-local launchers and release orchestration stay on the release machine
+# maintainer-local desktop launchers stay on the release machine.
+# `release-thaum-painter` is tracked: it is the reproducible public-release
+# contract and reads credentials only from the machine-local GitHub seam.
 /orchestration/build-commands/*.desktop
-/orchestration/build-commands/release-thaum-painter
 
 # build-commands cargo cache + built binaries (never version these)
 orchestration/builds/

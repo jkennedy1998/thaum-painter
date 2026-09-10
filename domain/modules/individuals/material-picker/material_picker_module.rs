@@ -195,10 +195,32 @@ impl Module for MaterialPickerModule {
         self.rect
     }
 
-    /// Tooltip hotspots: the module's gizmo bar, so every gizmo-enabled
-    /// panel grows tooltips from one shared implementation.
+    /// Tooltip hotspots: the module's gizmo bar plus one row hotspot per
+    /// material, so hovering a material explains assignment.
     fn hotspots(&self) -> Vec<Hotspot> {
-        self.gizmos.hotspots(self.rect)
+        let (_, hits) = self.build_layout();
+        let (content_x, content_width) = {
+            let (x, _) = PanelChrome::content_origin();
+            let (w, _) = PanelChrome::content_size(self.rect);
+            (x, w - 1)
+        };
+        let custom = hits
+            .into_iter()
+            .map(|hit| {
+                let name = hit.material.label().to_ascii_uppercase();
+                Hotspot::new(
+                    ModuleRect {
+                        x0: self.rect.x0 + content_x,
+                        y0: self.rect.y0 + hit.y,
+                        x1: self.rect.x0 + content_x + content_width,
+                        y1: self.rect.y0 + hit.y,
+                    },
+                    name,
+                    "click to assign the material to a hand: left-click left, right-click right",
+                )
+            })
+            .collect();
+        self.gizmos.hotspots_with(self.rect, custom)
     }
 
     fn draw(&self) -> CellGroup {

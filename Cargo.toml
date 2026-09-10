@@ -20,3 +20,6 @@ getrandom = "0.2"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2"
 webpki-roots = "0.26"
+semver = "1"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+webbrowser = "1"

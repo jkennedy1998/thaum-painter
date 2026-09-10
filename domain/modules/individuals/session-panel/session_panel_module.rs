@@ -312,6 +312,30 @@ impl SessionPanelModule {
         height
     }
 
+    /// Absolute screen-space hotspot over one content-row span (inclusive
+    /// content-local x0..x1 at content row `row`).
+    fn row_hotspot(
+        &self,
+        row: i32,
+        x0: i32,
+        x1: i32,
+        title: &str,
+        description: &str,
+    ) -> Hotspot {
+        let (origin_x, origin_y) = PanelChrome::content_origin();
+        let y = self.rect.y0 + origin_y + row;
+        Hotspot::new(
+            ModuleRect {
+                x0: self.rect.x0 + origin_x + x0,
+                y0: y,
+                x1: self.rect.x0 + origin_x + x1.max(x0),
+                y1: y,
+            },
+            title,
+            description,
+        )
+    }
+
     /// Converts an absolute pointer position into content-local coordinates.
     /// `None` when the point is outside the usable content area (gizmo bar,
     /// borders and title row are chrome, not content).
@@ -366,10 +390,104 @@ impl Module for SessionPanelModule {
         self.rect
     }
 
-    /// Tooltip hotspots: the module's gizmo bar, so every gizmo-enabled
-    /// panel grows tooltips from one shared implementation.
+    /// Tooltip hotspots: the module's gizmo bar plus one hotspot per custom
+    /// control, so every button and field explains itself through the shared
+    /// tooltip implementation.
     fn hotspots(&self) -> Vec<Hotspot> {
-        self.gizmos.hotspots(self.rect)
+        let state = self.state.borrow();
+        let width = self.content_width() - 1;
+        let mut custom = Vec::new();
+        if state.in_session {
+            if state.is_host {
+                // CODE> row: clicking copies the invite code.
+                custom.push(self.row_hotspot(
+                    ROW_CODE,
+                    0,
+                    width,
+                    "invite code",
+                    "click to copy the invite code share it with joiners",
+                ));
+            }
+            // Roster rows: entry zero is the host (crowned), you marked.
+            let roster_base = if state.is_host {
+                ROW_ROSTER_BASE + 2
+            } else {
+                ROW_ROSTER_BASE
+            };
+            let fit = (self.roster_top(&state) - roster_base + 1).max(0) as usize;
+            for (index, member) in state.roster.iter().take(fit).enumerate() {
+                let label = if member.is_you {
+                    format!("{} (you)", member.display_name)
+                } else {
+                    member.display_name.clone()
+                };
+                custom.push(self.row_hotspot(
+                    roster_base + index as i32,
+                    0,
+                    width,
+                    &label,
+                    "session member; the crown marks the host",
+                ));
+            }
+            let button = if state.is_host {
+                ("end session", "ends the session for everyone and saves the host's document")
+            } else {
+                ("leave session", "leaves the session this machine keeps its own edits")
+            };
+            custom.push(self.row_hotspot(ROW_BUTTONS, 0, width, button.0, button.1));
+        } else {
+            custom.push(self.row_hotspot(
+                ROW_HOST_BTN - 1,
+                0,
+                width,
+                "display name",
+                "click to edit the name other users see in the session",
+            ));
+            custom.push(self.row_hotspot(
+                ROW_HOST_BTN,
+                0,
+                width,
+                "host session",
+                "starts a session others join by LAN or invite code",
+            ));
+            custom.push(self.row_hotspot(
+                ROW_CODE_FIELD,
+                0,
+                width,
+                "join code",
+                "type an invite code here",
+            ));
+            custom.push(self.row_hotspot(
+                ROW_CODE_BTNS,
+                0,
+                10,
+                "join by code",
+                "commits the typed invite code",
+            ));
+            custom.push(self.row_hotspot(
+                ROW_CODE_BTNS,
+                13,
+                19,
+                "paste",
+                "pastes an invite code from the clipboard",
+            ));
+            custom.push(self.row_hotspot(
+                ROW_SELECTOR,
+                0,
+                width,
+                "host selector",
+                "arrows pick which discovered host to join",
+            ));
+            custom.push(self.row_hotspot(
+                ROW_JOIN_LOCAL_BTN,
+                0,
+                width,
+                "join local",
+                "joins the selected host found on your network",
+            ));
+        }
+        drop(state);
+        self.gizmos.hotspots_with(self.rect, custom)
     }
 
     fn draw(&self) -> CellGroup {

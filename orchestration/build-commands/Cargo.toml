@@ -7,7 +7,11 @@ authors.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+semver.workspace = true
+ureq.workspace = true
+webbrowser.workspace = true
 thaum-painter-domain = { path = "../../domain" }
 thaum-painter-workers = { path = "../../workers" }
 thaum-renderer-boot = { path = "../../../thaum-renderer/orchestration/boot" }

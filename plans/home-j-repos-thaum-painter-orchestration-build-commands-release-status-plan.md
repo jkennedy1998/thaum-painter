@@ -19,11 +19,11 @@ The Painter entrypoint owns the live command bar and the release command. It exp
 - `thaum-painter/orchestration/build-commands/`: edit
 
 ## artifacts
-- website-owned `thaum-painter/release.json` is published by `release-thaum-painter`; Painter does not create a local artifact/cache for update state.
+- website-owned `thaum-painter/release.json` plus the page's displayed version and generated GitHub release notes are published by `release-thaum-painter`; Painter does not create a local artifact/cache for update state.
 
 ## tests
 - inline/new Rust tests for semantic-version comparison, valid/malformed manifest handling, and each three-state button presentation/action mapping.
-- release command test/proof using a controlled website worktree or equivalent static assertions that the source entry, manifest, and generated entries are updated only after release asset verification.
+- release command test/proof using a controlled website worktree or equivalent static assertions that the source entry's version/release notes/stable platform links, manifest, and generated entries are updated only after release asset verification.
 
 ## data
 - none
@@ -42,7 +42,7 @@ The Painter entrypoint owns the live command bar and the release command. It exp
 - [ ] cover `up-to-date`, `out-of-date`, unavailable, malformed, and prerelease policy in pure tests.
 
 ### phase-3 — command-bar interaction
-- [ ] add the direct version-number button beside `FILE` and `MODULES`, never as a nested menu or Session-panel row.
+- [ ] add the direct version-number button beside `FILE` and `MODULES`, never as a nested menu or Session-panel row; configure tooltips for all three root buttons so the bottom bar uses the standard shared-help behavior.
 - [ ] configure the exact idle colors: Bright for current, Vivid for out of date, Medium when unavailable/checking.
 - [ ] provide J's exact shared-tooltip copy: current — `Click here for the download page, you are seemingly up to date on this build`; cannot-assess — `open the downloads page for the painter, cannot assess if you are out of date`; out-of-date — `opens the downloads page for the latest build, your current build is out of date!`.
 - [ ] route its click to the canonical page with a cross-platform system-browser seam; prove no download/install process is started.
@@ -51,7 +51,7 @@ The Painter entrypoint owns the live command bar and the release command. It exp
 ### phase-4 — release-time website publication
 - [ ] require release tag `vMAJOR.MINOR.PATCH` to match `thaum-painter-entrypoint`’s package version before tagging/publishing.
 - [ ] after GitHub Actions completes, verify the tag and all three named archives exist before touching the website worktree.
-- [ ] update the canonical page source’s displayed version, its static manifest, and the Development entry’s single page link; run the existing website source generator.
+- [ ] update the canonical page source’s displayed version and GitHub-generated release notes, its static manifest, and the Development entry’s single page link; run the existing website source generator.
 - [ ] commit/push the exact source and generated website files through the existing GitHub-auth seam.
 - [ ] ensure a failed website publish returns failure visibly and never claims the custom update endpoint is live.
 

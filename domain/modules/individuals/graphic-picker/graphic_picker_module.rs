@@ -522,10 +522,45 @@ impl Module for GraphicPickerModule {
         self.rect
     }
 
-    /// Tooltip hotspots: the module's gizmo bar, so every gizmo-enabled
-    /// panel grows tooltips from one shared implementation.
+    /// Tooltip hotspots: the module's gizmo bar plus one hotspot per
+    /// clickable glyph/sprite cell in the current layout, so every graphic
+    /// explains itself through the shared tooltip implementation.
     fn hotspots(&self) -> Vec<Hotspot> {
-        self.gizmos.hotspots(self.rect)
+        let (_, hits) = self.build_layout();
+        let custom = hits
+            .into_iter()
+            .map(|hit| match hit {
+                LayoutHit::Glyph { x, y, graphic } => {
+                    let title = match graphic {
+                        CellGraphic::Glyph(glyph) => format!("glyph {glyph}"),
+                        _ => "glyph".to_string(),
+                    };
+                    Hotspot::new(
+                        ModuleRect {
+                            x0: self.rect.x0 + x,
+                            y0: self.rect.y0 + y,
+                            x1: self.rect.x0 + x,
+                            y1: self.rect.y0 + y,
+                        },
+                        title,
+                        "click to equip on a hand: left-click left, right-click right",
+                    )
+                }
+                LayoutHit::Sprite { x0, x1, y, .. } | LayoutHit::Recent { x0, x1, y, .. } => {
+                    Hotspot::new(
+                        ModuleRect {
+                            x0: self.rect.x0 + x0,
+                            y0: self.rect.y0 + y,
+                            x1: self.rect.x0 + x1,
+                            y1: self.rect.y0 + y,
+                        },
+                        "sprite",
+                        "click to equip on a hand: left-click left, right-click right",
+                    )
+                }
+            })
+            .collect();
+        self.gizmos.hotspots_with(self.rect, custom)
     }
 
     fn draw(&self) -> CellGroup {
