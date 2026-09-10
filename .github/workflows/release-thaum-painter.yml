@@ -39,6 +39,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: thaum-painter
+      - name: test exact Painter and Renderer sources
+        run: |
+          set -euo pipefail
+          cd thaum-renderer
+          cargo test --workspace
+          cd ../thaum-painter
+          cargo test --workspace
       - name: build and package Linux lane
         working-directory: thaum-painter
         run: |

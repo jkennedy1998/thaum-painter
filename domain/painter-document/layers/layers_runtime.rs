@@ -418,23 +418,17 @@ pub fn apply_layers_panel_action(
         }
     }
     if document_mutated {
-        // Structure rides the record log: any panel-driven structure edit
-        // (layers, tracks, timing, visibility) appends a full-structure sync
-        // record so replay and multiplayer peers converge. Content-only edits
-        // (paint strokes) never route through here.
-        shared_document.push_structure_set_record(
-            next_action_id(shared_action_counter, session_user_id),
-            session_user_id,
-            action_timestamp_string(),
-        );
         // Session-client mode skips the snapshot save: the structure record
-        // above reaches peers through the publish seam and the host owns
+        // below reaches peers through the publish seam and the host owns
         // saves — this machine's disk log diverged at join time, so a guarded
         // save here would always conflict and reload away the edit.
         if persist_to_disk {
             if let Err(error) =
                 save_shared_document_snapshot(shared_document_paths, shared_document)
             {
+                // A conflict reload adopts the other writer's disk truth and
+                // discards this edit — no structure record may follow, it
+                // would capture a structure that is already gone.
                 recover_snapshot_conflict(
                     &error,
                     shared_document,
@@ -445,7 +439,39 @@ pub fn apply_layers_panel_action(
                     selection,
                     shared_action_counter,
                 );
+                return;
             }
+            // Structure rides the record log: any panel-driven structure edit
+            // (layers, tracks, timing, visibility) appends a full-structure
+            // sync record so replay and multiplayer peers converge.
+            // Content-only edits (paint strokes) never route through here.
+            //
+            // The record is pushed AFTER the guarded save and appended to the
+            // disk log: the save's action-log guard compares the on-disk log
+            // against this runtime's not-yet-saved records, so pushing first
+            // made every structure save read "disk has K records, this
+            // session accounts for K+1", conflict, and the recovery reload
+            // then discarded the edit (J's live 2026-09-10 repro: double-click
+            // splits applied, logged, and silently snapped back).
+            let record = shared_document.push_structure_set_record(
+                next_action_id(shared_action_counter, session_user_id),
+                session_user_id,
+                action_timestamp_string(),
+            );
+            if let Err(error) =
+                crate::storage::append_action_record(&shared_document_paths.actions_file_path, &record)
+            {
+                crate::debug_log::error(
+                    "storage",
+                    &format!("failed to append structure record: {error:#}"),
+                );
+            }
+        } else {
+            shared_document.push_structure_set_record(
+                next_action_id(shared_action_counter, session_user_id),
+                session_user_id,
+                action_timestamp_string(),
+            );
         }
     }
 }

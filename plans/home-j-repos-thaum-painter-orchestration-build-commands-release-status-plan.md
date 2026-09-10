@@ -64,5 +64,6 @@ The Painter entrypoint owns the live command bar and the release command. It exp
 
 ## post-implementation-notes
 - audit-2026-09-10: added the missing generated-release-notes publisher path. The guard was exercised for a mismatched package/tag before any authentication, tag, workflow, or website side effect. A real verified three-asset release, live HTTP result, and browser/manual tooltip smoke remain intentionally deferred.
+- release-readiness-audit-2026-09-10: corrected the renderer's `shape_fade_demo` compile failure (the fade needs a mutable binding for `print_fade`), proved its actual run, and added a Linux release-workflow gate that runs both exact checked-out Renderer and Painter workspaces before any archive build/publish. Both workspaces now pass locally; the existing v0.1.2 release exposes all three valid archives, and the canonical website route is deployed.
 - plan-finished: false
-- encapsulation-git-commit: false
+- encapsulation-git-commit: true
