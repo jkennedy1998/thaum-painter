@@ -3,7 +3,7 @@ use std::{cell::RefCell, rc::Rc};
 use thaum_renderer_domain::{
     Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, CellWeight, GizmoBar,
     GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module, ModulePointerEvent, ModuleRect,
-    PanelChrome, PersistedModuleUiState, UiColorRole, UiPalette, WorldPoint,
+    PanelChrome, PersistedModuleUiState, UiColorRole, UiPalette, WorldPoint, title_hotspot,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,7 +138,14 @@ impl Module for PaintCanvasBoundsModule {
         drop(mode);
         let x = rect.x0 + self.wheel_mode_local_x();
         let y = rect.y0 + (rect.y1 - rect.y0 - 1);
-        let custom = vec![Hotspot::new(
+        let custom = vec![
+            title_hotspot(
+                rect,
+                self.title_start_x(),
+                "DRAWING SPACE",
+                "the paint surface: drag its border to resize; the wheel mode toggles what the wheel scrolls",
+            ),
+            Hotspot::new(
             ModuleRect { x0: x, y0: y, x1: x, y1: y },
             "wheel mode",
             format!("{mode_description}; click to cycle pan/depth/time"),

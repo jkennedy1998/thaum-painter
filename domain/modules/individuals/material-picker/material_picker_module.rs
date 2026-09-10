@@ -4,7 +4,7 @@ use thaum_renderer_domain::{
     Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellMaterialId, CellPoint, CellWeight,
     ColorBand, GizmoBar, GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module,
     ModulePointerButton, ModulePointerEvent, ModuleRect, PanelChrome, PersistedModuleUiState,
-    UiColorRole, UiPalette, WorldPoint,
+    UiColorRole, UiPalette, WorldPoint, title_hotspot,
 };
 
 use crate::{
@@ -204,7 +204,14 @@ impl Module for MaterialPickerModule {
             let (w, _) = PanelChrome::content_size(self.rect);
             (x, w - 1)
         };
-        let custom = hits
+        let mut custom = vec![title_hotspot(
+            self.rect,
+            self.gizmos.title_start_x(),
+            "MATERIALS",
+            "assign renderer materials to a hand: the indicator shows which hands use each",
+        )];
+        custom.extend(
+            hits
             .into_iter()
             .map(|hit| {
                 let name = hit.material.label().to_ascii_uppercase();
@@ -218,8 +225,8 @@ impl Module for MaterialPickerModule {
                     name,
                     "click to assign the material to a hand: left-click left, right-click right",
                 )
-            })
-            .collect();
+            }),
+        );
         self.gizmos.hotspots_with(self.rect, custom)
     }
 

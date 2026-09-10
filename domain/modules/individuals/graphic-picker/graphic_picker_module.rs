@@ -4,7 +4,7 @@ use thaum_renderer_domain::{
     Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, CellWeight, GizmoBar,
     GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module, ModulePointerButton,
     ModulePointerEvent, ModuleRect, PanelChrome, PersistedModuleUiState, ScrollState,
-    SpriteGraphic, UiColorRole, UiPalette, WorldPoint,
+    SpriteGraphic, UiColorRole, UiPalette, WorldPoint, title_hotspot,
 };
 
 use crate::tool_state::{HandState, PaintHand, ToolState};
@@ -527,7 +527,14 @@ impl Module for GraphicPickerModule {
     /// explains itself through the shared tooltip implementation.
     fn hotspots(&self) -> Vec<Hotspot> {
         let (_, hits) = self.build_layout();
-        let custom = hits
+        let mut custom = vec![title_hotspot(
+            self.rect,
+            self.gizmos.title_start_x(),
+            "GRAPHICS",
+            "glyph and sprite library: click to equip on a hand",
+        )];
+        custom.extend(
+            hits
             .into_iter()
             .map(|hit| match hit {
                 LayoutHit::Glyph { x, y, graphic } => {
@@ -558,8 +565,8 @@ impl Module for GraphicPickerModule {
                         "click to equip on a hand: left-click left, right-click right",
                     )
                 }
-            })
-            .collect();
+            }),
+        );
         self.gizmos.hotspots_with(self.rect, custom)
     }
 

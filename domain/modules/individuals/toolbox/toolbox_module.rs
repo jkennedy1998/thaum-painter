@@ -4,7 +4,7 @@ use thaum_renderer_domain::{
     Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, CellWeight, GizmoBar,
     GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module, ModulePointerButton,
     ModulePointerEvent, ModuleRect, PanelChrome, PersistedModuleUiState, UiColorRole, UiPalette,
-    WorldPoint,
+    WorldPoint, title_hotspot,
 };
 
 use crate::tool_state::{PaintHand, PaintTool, ToolState};
@@ -100,11 +100,19 @@ impl Module for ToolboxModule {
         self.rect
     }
 
-    /// Tooltip hotspots: the module's gizmo bar plus one row hotspot per
-    /// tool, so hovering a tool explains it ("icon Name" + what it does)
-    /// through the shared tooltip implementation.
+    /// Tooltip hotspots: the module's title (what this panel is) plus one
+    /// row hotspot per tool, so hovering a tool explains it ("icon Name" +
+    /// what it does) through the shared tooltip implementation.
     fn hotspots(&self) -> Vec<Hotspot> {
-        let mut hotspots = self.gizmos.hotspots(self.rect);
+        let mut hotspots = self.gizmos.hotspots_with(
+            self.rect,
+            vec![title_hotspot(
+                self.rect,
+                self.gizmos.title_start_x(),
+                "TOOLS",
+                "paint tools: click one to equip it on the active hand",
+            )],
+        );
         hotspots.extend(self.tool_defs.iter().enumerate().map(|(index, def)| {
             Hotspot::new(
                 self.row_rect(index),

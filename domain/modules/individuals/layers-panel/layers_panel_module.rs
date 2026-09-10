@@ -8,7 +8,7 @@ use crate::pieces::{cell_type_of, classify_bar_piece, BarPiece, CellType};
 use thaum_renderer_domain::{
     Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, GizmoBar, GizmoClickOutcome,
     GizmoKind, GizmoState, Hotspot, Module, ModulePointerButton, ModulePointerEvent, ModuleRect,
-    PanelChrome, PersistedModuleUiState, UiColorRole, UiPalette, WorldPoint,
+    PanelChrome, PersistedModuleUiState, UiColorRole, UiPalette, WorldPoint, title_hotspot,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1202,7 +1202,12 @@ impl Module for LayersPanelModule {
         let (timeline_start, timeline_end) = self.timeline_bounds();
         let rows = self.visible_rows();
         let state = self.state.borrow();
-        let mut custom = Vec::new();
+        let mut custom = vec![title_hotspot(
+            self.rect,
+            self.gizmos.title_start_x(),
+            "LAYERS",
+            "the document's structure: layers with visibility, lock, timing bars, and property tracks",
+        )];
         custom.push(self.row_hotspot(
             0,
             1,

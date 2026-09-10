@@ -32,7 +32,7 @@ use thaum_renderer_domain::{
     text_entry::TextEntryField, Cell, CellColor, CellGraphic, CellGroup, CellGroupIntakeBehavior,
     CellPoint, GizmoBar, GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module,
     ModulePointerButton, ModulePointerEvent, ModuleRect, PanelChrome, PersistedModuleUiState,
-    UiColorRole, UiPalette, WorldPoint,
+    UiColorRole, UiPalette, WorldPoint, title_hotspot,
 };
 
 /// One roster row as synced from the live session. The host is roster entry
@@ -396,7 +396,12 @@ impl Module for SessionPanelModule {
     fn hotspots(&self) -> Vec<Hotspot> {
         let state = self.state.borrow();
         let width = self.content_width() - 1;
-        let mut custom = Vec::new();
+        let mut custom = vec![title_hotspot(
+            self.rect,
+            self.gizmos.title_start_x(),
+            "SESSION",
+            "multiplayer: host a session, join by code or over the network, see the roster and events",
+        )];
         if state.in_session {
             if state.is_host {
                 // CODE> row: clicking copies the invite code.
