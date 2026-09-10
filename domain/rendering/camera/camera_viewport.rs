@@ -120,7 +120,11 @@ pub fn reorient_camera_around_viewport_center(
     *camera = next;
 }
 
-pub fn canvas_bounds_for_viewport(viewport: ModuleRect, camera: &Camera) -> CanvasBounds {
+pub fn canvas_bounds_for_viewport(
+    viewport: ModuleRect,
+    camera: &Camera,
+    move_offset: WorldPoint,
+) -> CanvasBounds {
     let content = viewport_content_rect_in_camera_units(viewport, camera);
     let mut bounds = CanvasBounds {
         x0: 0,
@@ -130,16 +134,39 @@ pub fn canvas_bounds_for_viewport(viewport: ModuleRect, camera: &Camera) -> Canv
         z: active_plane_coordinate_for_camera(camera),
         plane_axis: canvas_plane_axis_for_camera(camera),
     };
-    let lower_left =
-        remap_camera_units_to_active_plane_world(*camera, [content.x0 as f32, content.y0 as f32]);
-    let upper_right =
-        remap_camera_units_to_active_plane_world(*camera, [content.x1 as f32, content.y1 as f32]);
+    // The visible drawing-space rect lives in RENDER space, but the input gate
+    // (and every consumer of these bounds — selection, fill, tool strokes)
+    // works in DOCUMENT space, where positions have had the active layer's
+    // move offset subtracted (J 2026-09-10: the gate used to compare a
+    // document point against render-space bounds, so a layer with a non-
+    // default move shifted the on-screen input region by the move — and a
+    // depth move took the corrected position off the bounds' plane entirely,
+    // blocking input). Subtracting the move here anchors the bounds to the
+    // document, so the accepted region is exactly the visible rect.
+    let to_document = |world: WorldPoint| WorldPoint {
+        x: world.x - move_offset.x,
+        y: world.y - move_offset.y,
+        z: world.z - move_offset.z,
+    };
+    let lower_left = to_document(remap_camera_units_to_active_plane_world(
+        *camera,
+        [content.x0 as f32, content.y0 as f32],
+    ));
+    let upper_right = to_document(remap_camera_units_to_active_plane_world(
+        *camera,
+        [content.x1 as f32, content.y1 as f32],
+    ));
     let (x0, y0) = plane_coordinates(bounds, lower_left);
     let (x1, y1) = plane_coordinates(bounds, upper_right);
     bounds.x0 = x0.min(x1);
     bounds.y0 = y0.min(y1);
     bounds.x1 = x0.max(x1);
     bounds.y1 = y0.max(y1);
+    bounds.z = match bounds.plane_axis {
+        CanvasPlaneAxis::Z => lower_left.z,
+        CanvasPlaneAxis::X => lower_left.x,
+        CanvasPlaneAxis::Y => lower_left.y,
+    };
     bounds
 }
 
@@ -148,8 +175,9 @@ pub fn sync_canvas_bounds_to_camera(
     bounds: &Rc<RefCell<CanvasBounds>>,
     selection: &Rc<RefCell<PainterSelection>>,
     camera: &Camera,
+    move_offset: WorldPoint,
 ) {
-    let next = canvas_bounds_for_viewport(*viewport.borrow(), camera);
+    let next = canvas_bounds_for_viewport(*viewport.borrow(), camera, move_offset);
     *bounds.borrow_mut() = next;
     selection.borrow_mut().set_plane_bounds(next);
 }
@@ -228,19 +256,50 @@ mod tests {
 
     #[test]
     fn canvas_bounds_follow_hud_pan_offset() {
-        let at_rest = canvas_bounds_for_viewport(INITIAL_PAINT_CANVAS_VIEWPORT, &Camera::default());
+        let at_rest = canvas_bounds_for_viewport(
+            INITIAL_PAINT_CANVAS_VIEWPORT,
+            &Camera::default(),
+            WorldPoint::origin(),
+        );
         let panned = canvas_bounds_for_viewport(
             INITIAL_PAINT_CANVAS_VIEWPORT,
             &Camera {
                 hud_pan_offset: CellPoint { x: 4, y: -3, z: 0 },
                 ..Camera::default()
             },
+            WorldPoint::origin(),
         );
 
         assert_eq!(panned.x0, at_rest.x0 + 4);
         assert_eq!(panned.x1, at_rest.x1 + 4);
         assert_eq!(panned.y0, at_rest.y0 - 3);
         assert_eq!(panned.y1, at_rest.y1 - 3);
+    }
+
+    #[test]
+    fn canvas_bounds_shift_into_document_space_by_the_move_offset() {
+        // The bounds gate move-corrected document positions, so a non-default
+        // layer move must shift the bounds by the SAME offset — otherwise the
+        // on-screen input region drifts away from the visible drawing-space
+        // rect (J 2026-09-10).
+        let at_rest = canvas_bounds_for_viewport(
+            INITIAL_PAINT_CANVAS_VIEWPORT,
+            &Camera::default(),
+            WorldPoint::origin(),
+        );
+        let moved = canvas_bounds_for_viewport(
+            INITIAL_PAINT_CANVAS_VIEWPORT,
+            &Camera::default(),
+            WorldPoint { x: 3, y: -2, z: 5 },
+        );
+
+        assert_eq!(moved.x0, at_rest.x0 - 3);
+        assert_eq!(moved.x1, at_rest.x1 - 3);
+        assert_eq!(moved.y0, at_rest.y0 + 2);
+        assert_eq!(moved.y1, at_rest.y1 + 2);
+        // A depth move re-anchors the bounds' plane to the layer's document
+        // plane, so input stays possible at all.
+        assert_eq!(moved.z, at_rest.z - 5);
     }
 
     #[test]

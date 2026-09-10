@@ -3060,11 +3060,19 @@ fn main() -> Result<()> {
             }
         }
 
+        // The active layer's move offset feeds BOTH the bounds sync (the
+        // input gate's CanvasBounds must live in the same document space as
+        // the positions it gates — J 2026-09-10) and the to_world cursor
+        // correction below. The offset is constant across a frame, so
+        // move-drag deltas are unaffected — only the aim point is corrected.
+        let active_move_offset = shared_document
+            .move_offset_for_layer(&active_layer_id, timeline_state.borrow().current_breath);
         sync_canvas_bounds_to_camera(
             &paint_canvas_viewport,
             &paint_canvas_bounds,
             &selection,
             &state.camera,
+            active_move_offset,
         );
 
         // Camera-perspective panel edits land here: the shared profile cells
@@ -3105,10 +3113,6 @@ fn main() -> Result<()> {
         // subtracted here, once, so every tool (strokes, lasso, selection,
         // stamp, text, bounds eligibility) aims at the cell that renders back
         // under the cursor once the render path re-applies the move shift.
-        // The offset is constant across a frame, so move-drag deltas are
-        // unaffected — only the aim point is corrected.
-        let active_move_offset = shared_document
-            .move_offset_for_layer(&active_layer_id, timeline_state.borrow().current_breath);
         let to_world = move |surface_units: [f32; 2]| {
             let world =
                 remap_surface_units_to_active_plane_world(camera, surface_units, cell_clip_size);
