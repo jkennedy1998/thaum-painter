@@ -183,20 +183,24 @@ fn solid_keyframe_value(block: &SharedDocumentPropertyBlock) -> [i32; 3] {
         .unwrap_or([0, 0, 0])
 }
 
-/// Eased progress across one empty's span at `breath` (0..=1). Keyframes hold
-/// constant across their own spans, so the empty's span is the whole
-/// transition: its first breath has just left the previous keyframe, and the
-/// breath after the empty lands on the next one exactly. Shared with the
-/// raster channel's interpolator so both channels bend identically. The
-/// raster channel keeps sampling whole breaths — its blend behavior is
-/// intentionally untouched by the fractional playback pass.
+/// Eased progress across one empty's span at a whole breath (0..=1). The
+/// RASTER channel's path: it keeps the original power ease and whole-breath
+/// sampling — its blend behavior (and the unfinished smear development on
+/// top of it) is intentionally untouched by the move channel's playback
+/// work (J 2026-09-10). Keyframes hold constant across their own spans, so
+/// the empty's span is the whole transition: its first breath has just left
+/// the previous keyframe, and the breath after the empty lands on the next
+/// one exactly.
 pub(crate) fn empty_progress(blank: &SharedDocumentPropertyBlock, breath: u32) -> f32 {
-    empty_progress_fractional(blank, breath as f32)
+    let length = blank.length_breaths.max(1) as f32;
+    let raw = (breath - blank.start_breath) as f32;
+    let t = ((raw + 1.0) / (length + 1.0)).clamp(0.0, 1.0);
+    power_eased_progress(t, blank.ease_out_percent, blank.ease_in_percent)
 }
 
-/// Fractional-breath progress: `breath` may land between breaths during
-/// playback so the eased curve is sampled per display frame. At an integer
-/// breath this is exactly the whole-breath result.
+/// Fractional-breath progress for the MOVE channel: `breath` may land between
+/// breaths during playback so the eased curve is sampled per display frame.
+/// At an integer breath this is exactly the whole-breath result.
 pub(crate) fn empty_progress_fractional(
     blank: &SharedDocumentPropertyBlock,
     breath: f32,
@@ -204,19 +208,83 @@ pub(crate) fn empty_progress_fractional(
     let length = blank.length_breaths.max(1) as f32;
     let raw = breath - blank.start_breath as f32;
     let t = ((raw + 1.0) / (length + 1.0)).clamp(0.0, 1.0);
-    eased_progress(t, blank.ease_out_percent, blank.ease_in_percent)
+    bezier_eased_progress(t, blank.ease_out_percent, blank.ease_in_percent)
 }
 
-/// The ease model (J 2026-09-07, four authored strength steps 0/33/66/100%):
-/// ease-out strength `o` slows the departure from the previous keyframe
-/// (`t^(1+2o)`), ease-in strength `i` slows the arrival at the next keyframe
-/// (`1-(1-x)^(1+2i)`), composed so 0% on both ends is exactly linear. The
-/// composition stays monotonic for every strength combination.
-fn eased_progress(t: f32, ease_out_percent: Option<u8>, ease_in_percent: Option<u8>) -> f32 {
+/// The RASTER channel's ease model (J 2026-09-07, four authored strength
+/// steps 0/33/66/100%): ease-out strength `o` slows the departure from the
+/// previous keyframe (`t^(1+2o)`), ease-in strength `i` slows the arrival at
+/// the next keyframe (`1-(1-x)^(1+2i)`), composed so 0% on both ends is
+/// exactly linear. Kept as-is for raster/smear; the move channel moved to
+/// the AE-style bezier below because this composition COMPOUNDS the two ends
+/// (the ease-in reshapes the already-eased ease-out result), which back-loads
+/// the motion — at both-max the time midpoint reached only 33% of the
+/// distance, reading as a double-slow start and a fast arrival.
+fn power_eased_progress(t: f32, ease_out_percent: Option<u8>, ease_in_percent: Option<u8>) -> f32 {
     let out = ease_out_percent.unwrap_or(0).min(100) as f32 / 100.0;
     let into = ease_in_percent.unwrap_or(0).min(100) as f32 / 100.0;
     let departed = t.powf(1.0 + 2.0 * out);
     1.0 - (1.0 - departed).powf(1.0 + 2.0 * into)
+}
+
+/// The MOVE channel's ease model (J 2026-09-10): one cubic bezier per
+/// transition, the After Effects temporal-ease shape (Adobe: Easy Ease gives
+/// each keyframe speed 0 with 33.33% influence — influence is how much of
+/// the segment's TIME the speed-0 handle spans). The outgoing handle leaves
+/// the previous keyframe at speed 0 spanning `out` of the empty's time;
+/// the incoming handle arrives at speed 0 spanning `in` back from the next
+/// keyframe. The two ends share ONE curve instead of compounding, so equal
+/// strengths bend evenly around the midpoint (f(0.5) = 0.5 exactly, for
+/// every equal-strength pairing) — the fix for the max-eased end reading as
+/// faster than the max-eased start. 33% reads as AE's Easy Ease; 0/0 is
+/// exactly linear; monotonic for every strength combination.
+fn bezier_eased_progress(t: f32, ease_out_percent: Option<u8>, ease_in_percent: Option<u8>) -> f32 {
+    let out = ease_out_percent.unwrap_or(0).min(100) as f32 / 100.0;
+    let into = ease_in_percent.unwrap_or(0).min(100) as f32 / 100.0;
+    if out == 0.0 && into == 0.0 {
+        return t;
+    }
+    cubic_bezier_ease(t, out, 1.0 - into)
+}
+
+/// Evaluates the ease bezier at normalized time `t`: control points
+/// P0=(0,0), P1=(x1,0), P2=(x2,1), P3=(1,1) — y handles pinned to the ends
+/// (speed 0 at both keyframes), x handles carry the influence strengths.
+/// Solves the x parameterization for `t` with Newton-Raphson and a bisection
+/// fallback (the standard CSS/Chromium approach; x1, x2 are in [0,1] so x is
+/// monotonic and a solution always exists — bisection covers the flat-x'
+/// spots near both-max where Newton can stall).
+fn cubic_bezier_ease(t: f32, x1: f32, x2: f32) -> f32 {
+    let x_at = |b: f32| {
+        let u = 1.0 - b;
+        3.0 * u * u * b * x1 + 3.0 * u * b * b * x2 + b * b * b
+    };
+    let mut b = t;
+    for _ in 0..8 {
+        let u = 1.0 - b;
+        let x = x_at(b) - t;
+        let dx = 3.0 * u * u * x1 + 6.0 * u * b * (x2 - x1) + 3.0 * b * b * (1.0 - x2);
+        if dx.abs() < 1e-6 {
+            break;
+        }
+        b -= x / dx;
+        b = b.clamp(0.0, 1.0);
+    }
+    if (x_at(b) - t).abs() > 1e-4 {
+        let (mut lo, mut hi) = (0.0f32, 1.0f32);
+        for _ in 0..32 {
+            let mid = 0.5 * (lo + hi);
+            if x_at(mid) < t {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        b = 0.5 * (lo + hi);
+    }
+    // Y(b) with P1y=0, P2y=1: 3u²b·0 + 3ub²·1 + b³.
+    let u = 1.0 - b;
+    3.0 * u * b * b + b * b * b
 }
 
 fn lerp_offset(from: [i32; 3], to: [i32; 3], progress: f32) -> [i32; 3] {
@@ -319,6 +387,60 @@ mod tests {
     }
 
     #[test]
+    fn equal_strengths_bend_evenly_around_the_midpoint() {
+        // The compounding-bias fix (J 2026-09-10): the old power composition
+        // back-loaded equal-strength eases (both-max reached only 33% of the
+        // distance at the time midpoint). The bezier shares one curve between
+        // the ends, so equal strengths pass exactly 0.5 at t = 0.5 and mirror
+        // around it.
+        for (out, into) in [(33u8, 33u8), (66, 66), (100, 100)] {
+            let mid = bezier_eased_progress(0.5, Some(out), Some(into));
+            assert!(
+                (mid - 0.5).abs() < 1e-4,
+                "out={out} in={into}: midpoint {mid} must be 0.5"
+            );
+            for t in [0.1f32, 0.25, 0.4, 0.6, 0.75, 0.9] {
+                let forward = bezier_eased_progress(t, Some(out), Some(into));
+                let mirrored = 1.0 - bezier_eased_progress(1.0 - t, Some(out), Some(into));
+                assert!(
+                    (forward - mirrored).abs() < 1e-3,
+                    "out={out} in={into}: f({t})={forward} must mirror {mirrored}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_ease_curve_is_exactly_linear_at_zero_strength_and_holds_endpoints() {
+        for t in [0.0f32, 0.1, 0.37, 0.5, 0.83, 1.0] {
+            let linear = bezier_eased_progress(t, None, None);
+            assert!((linear - t).abs() < 1e-6, "0/0 at {t} gave {linear}");
+        }
+        for (out, into) in [(100u8, 100u8), (33, 66), (66, 0)] {
+            assert_eq!(bezier_eased_progress(0.0, Some(out), Some(into)), 0.0);
+            assert_eq!(bezier_eased_progress(1.0, Some(out), Some(into)), 1.0);
+        }
+    }
+
+    #[test]
+    fn the_ease_curve_is_monotonic_for_every_strength_combination() {
+        for out in [0u8, 33, 66, 100] {
+            for into in [0u8, 33, 66, 100] {
+                let mut previous = -1.0f32;
+                for step in 0..=200u32 {
+                    let t = step as f32 / 200.0;
+                    let value = bezier_eased_progress(t, Some(out), Some(into));
+                    assert!(
+                        value >= previous - 1e-5,
+                        "out={out} in={into}: regressed at t={t} ({value} < {previous})"
+                    );
+                    previous = value;
+                }
+            }
+        }
+    }
+
+    #[test]
     fn ease_strengths_bend_interpolate_progress() {
         // Full ease-out: the first breath barely leaves the previous keyframe.
         let blocks = vec![
@@ -367,20 +489,21 @@ mod tests {
 
     #[test]
     fn fractional_breath_samples_the_ease_between_breaths() {
-        // Full ease-out over a 4-breath empty. Whole-breath samples land on
-        // offsets 0, 1, 2, 4; the mid-breath sample lands on 3 — a distinct
-        // position no whole breath ever shows, which is where the smoother
-        // motion comes from.
+        // Full ease-out over a 4-breath empty (values calibrated to the move
+        // channel's AE-style bezier). Whole-breath samples land on offsets 0,
+        // 1, 1, 3; the mid-breath sample lands on 2 — a distinct position no
+        // whole breath ever shows, which is where the smoother motion comes
+        // from.
         let blocks = vec![
             solid("a", 0, 4, [0, 0, 0]),
             blank("b", 4, 4, Some("interpolate"), Some(100), None),
             solid("c", 8, 4, [8, 0, 0]),
             blank("tail", 12, 1, None, None, None),
         ];
-        assert_eq!(resolve_move_offset(&blocks, 6).unwrap()[0], 2);
+        assert_eq!(resolve_move_offset(&blocks, 6).unwrap()[0], 1);
         assert_eq!(
             resolve_move_offset_fractional(&blocks, 6, 0.5).unwrap()[0],
-            3
+            2
         );
         // The empty's final fraction lands exactly on the next keyframe, so
         // playback is continuous across the empty/keyframe boundary.
