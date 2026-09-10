@@ -18,7 +18,7 @@ Thaum Painter currently ships v0.1.2 as portable Linux, Windows, and unsigned Ma
 - `/home/j/Repos/thaum-renderer/domain/command-bar/`: edit
 - `thaum-painter/orchestration/build-commands/`: edit
 - `/home/j/Repos/jartanddesign-website/thaum-painter/` and `/home/j/Repos/jartanddesign-website/thaum-painter.html`: new
-- `/home/j/Repos/jartanddesign-website/js/components.js` and `css/style.css`: edit (optional source-defined release-notes rendering)
+- `/home/j/Repos/jartanddesign-website/js/components.js` and `css/style.css`: edit (optional source-defined release-notes and static-description rendering)
 - `/home/j/Repos/jartanddesign-website/source/development/`: edit
 
 ## encapsulation-plans
