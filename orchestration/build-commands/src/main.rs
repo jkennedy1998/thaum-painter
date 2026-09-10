@@ -848,6 +848,109 @@ fn painter_file_root() -> PathBuf {
     resolve_painter_file_root(&painter_root())
 }
 
+/// Document autosave cadence (J 2026-09-10 power-loss recovery): a
+/// never-saved document snapshots into the vault every 10 minutes under a
+/// generated template name; once a manual save has landed, the document's
+/// own root snapshots every 5 minutes. Mirrors Adobe's AutoRecover shape:
+/// recovery copies live in a painter-owned vault, never next to
+/// user-chosen files.
+const DOCUMENT_AUTOSAVE_UNSAVED_INTERVAL: Duration = Duration::from_secs(600);
+const DOCUMENT_AUTOSAVE_SAVED_INTERVAL: Duration = Duration::from_secs(300);
+
+/// The autosave vault root: `context/painter/autosave` under the same
+/// runtime root as every painter-owned folder, so it resolves safely on
+/// Linux, Windows, and Mac via `painter_root()` (env override > repo >
+/// exe dir) with no compiled-in absolute paths.
+fn painter_autosave_root() -> PathBuf {
+    painter_root().join("context/painter/autosave")
+}
+
+/// Change fingerprint for autosave dirty detection: the document structure
+/// JSON (covers structure and selection truth) plus the action log's tail
+/// (covers strokes, undo/redo, and squash movement). Built only at the
+/// 5/10-minute autosave marks, so the serialize cost is irrelevant.
+fn document_autosave_fingerprint(shared_document: &SharedDocumentRuntime) -> Option<String> {
+    let document_text = serde_json::to_string(&shared_document.document).ok()?;
+    let last_action_id = shared_document
+        .actions
+        .last()
+        .map(|record| record.action_id.as_str())
+        .unwrap_or_default();
+    Some(format!(
+        "{}|{}|{last_action_id}",
+        document_text,
+        shared_document.actions.len()
+    ))
+}
+
+/// One document-autosave tick, run every frame before the demand gate so an
+/// idle painter still snapshots on cadence. Unsaved documents snapshot into
+/// the vault every 10 minutes; saved documents snapshot into their own root
+/// every 5 minutes. Session clients skip — the host owns saves while
+/// multiplayer is live; hosts save through the same guarded seam whose
+/// guards are suspended by the hosting flag.
+#[allow(clippy::too_many_arguments)] // mirrors the frame-loop state seams it ticks
+fn tick_document_autosave(
+    shared_document: &mut SharedDocumentRuntime,
+    current_document_root: &Option<PathBuf>,
+    session_client: bool,
+    autosave_vault_root: &mut Option<PathBuf>,
+    last_document_autosave_at: &mut Instant,
+    last_autosave_fingerprint: &mut Option<String>,
+) {
+    let interval = if current_document_root.is_some() {
+        DOCUMENT_AUTOSAVE_SAVED_INTERVAL
+    } else {
+        DOCUMENT_AUTOSAVE_UNSAVED_INTERVAL
+    };
+    if last_document_autosave_at.elapsed() < interval {
+        return;
+    }
+    *last_document_autosave_at = Instant::now();
+    if session_client {
+        return;
+    }
+    let fingerprint = document_autosave_fingerprint(shared_document);
+    if fingerprint.is_some() && fingerprint == *last_autosave_fingerprint {
+        return;
+    }
+    let unsaved = current_document_root.is_none();
+    let target_paths = if let Some(root) = current_document_root {
+        SharedDocumentPaths::new(root.clone())
+    } else {
+        // Mint the vault root once per document session and reuse it, so
+        // repeated unsaved autosaves overwrite one recovery folder instead
+        // of snowing the vault with timestamped copies.
+        let root = autosave_vault_root.get_or_insert_with(|| {
+            painter_autosave_root().join(format!(
+                "{}-autosave-{}",
+                slugify_file_stem(&shared_document.document.title),
+                action_timestamp_string()
+            ))
+        });
+        SharedDocumentPaths::new(root.clone())
+    };
+    match save_shared_document_snapshot(&target_paths, shared_document) {
+        Ok(()) => {
+            *last_autosave_fingerprint = fingerprint;
+            thaum_painter_domain::debug_log::info(
+                "autosave",
+                &format!(
+                    "document snapshot saved{}: {}",
+                    if unsaved { " to vault" } else { "" },
+                    target_paths.root.display()
+                ),
+            );
+        }
+        Err(error) => {
+            thaum_painter_domain::debug_log::error(
+                "autosave",
+                &format!("document snapshot save failed: {error:#}"),
+            );
+        }
+    }
+}
+
 fn slugify_file_stem(text: &str) -> String {
     let mut slug = String::new();
     let mut last_was_dash = false;
@@ -1536,6 +1639,35 @@ mod tests {
     fn save_as_root_from_dialog_path_uses_slugged_file_stem_for_other_names() {
         let root = save_as_root_from_dialog_path(Path::new("/tmp/example/My Sketch.json"));
         assert_eq!(root, PathBuf::from("/tmp/example/my-sketch"));
+    }
+
+    #[test]
+    fn autosave_fingerprint_is_stable_until_document_or_actions_change() {
+        let mut runtime = new_unsaved_document();
+        let first = document_autosave_fingerprint(&runtime).unwrap();
+        // Same state, same fingerprint: the tick skips no-op saves.
+        assert_eq!(document_autosave_fingerprint(&runtime).unwrap(), first);
+        // A new action record (a stroke commit shape) moves the tail.
+        runtime.actions.push(
+            thaum_painter_domain::SharedDocumentActionRecord::undo(
+                "action-test-1",
+                runtime.document.document_id.clone(),
+                "layer-1",
+                "user-1",
+                "2026-09-10T00:00:00Z",
+            ),
+        );
+        assert_ne!(document_autosave_fingerprint(&runtime).unwrap(), first);
+    }
+
+    #[test]
+    fn autosave_vault_root_lives_under_the_painter_context_folder() {
+        std::env::set_var("THAUM_PAINTER_ROOT", "/tmp/fake-painter-root");
+        assert_eq!(
+            painter_autosave_root(),
+            PathBuf::from("/tmp/fake-painter-root/context/painter/autosave")
+        );
+        std::env::remove_var("THAUM_PAINTER_ROOT");
     }
 
     #[test]
@@ -2298,6 +2430,16 @@ fn main() -> Result<()> {
     // panel's visibility and mirrors its newest scan into the panel.
     let mut discovery_poller = thaum_painter_workers::DiscoveryPoller::new();
     let mut current_document_root: Option<PathBuf> = None;
+    // Document autosave state (J 2026-09-10): the vault root is minted on
+    // the first unsaved autosave and reused for the rest of the document
+    // session. A root/document-id change (save, save-as, open, new) retires
+    // it — the stale vault folder is pruned unless the document now lives
+    // there (a user opening the vault copy promotes it to the live root).
+    let mut autosave_vault_root: Option<PathBuf> = None;
+    let mut autosave_seen_document_id = shared_document.document.document_id.clone();
+    let mut autosave_seen_document_root = current_document_root.clone();
+    let mut last_document_autosave_at = Instant::now();
+    let mut last_autosave_fingerprint: Option<String> = None;
 
     let mut state = boot_renderer(config)?;
     // The shape-fade graph over the loaded typeface (J 2026-09-07): built
@@ -2580,6 +2722,32 @@ fn main() -> Result<()> {
             .as_ref()
             .map(|net| net.is_host())
             .unwrap_or(true);
+        // Document autosave tick (J 2026-09-10): runs BEFORE the demand gate
+        // so an idle painter still snapshots on cadence — a power cut during
+        // an idle hour must not lose the session's strokes. The vault copy is
+        // retired (and pruned) whenever the document's identity or root
+        // changed, which is exactly the save / save-as / open / new set.
+        if autosave_seen_document_id != shared_document.document.document_id
+            || autosave_seen_document_root != current_document_root
+        {
+            autosave_seen_document_id = shared_document.document.document_id.clone();
+            autosave_seen_document_root = current_document_root.clone();
+            if let Some(old_vault) = autosave_vault_root.take() {
+                if Some(&old_vault) != current_document_root.as_ref() {
+                    let _ = fs::remove_dir_all(&old_vault);
+                }
+            }
+            last_autosave_fingerprint = None;
+            last_document_autosave_at = Instant::now();
+        }
+        tick_document_autosave(
+            &mut shared_document,
+            &current_document_root,
+            !persist_to_disk,
+            &mut autosave_vault_root,
+            &mut last_document_autosave_at,
+            &mut last_autosave_fingerprint,
+        );
         if !input_dirty
             && !playback_due
             && !blink_due
