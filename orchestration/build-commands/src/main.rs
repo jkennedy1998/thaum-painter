@@ -565,6 +565,24 @@ fn apply_join_result(
 /// surface. Installs the text tool's typing session when the press starts
 /// one; every other press begins its stroke internally.
 #[allow(clippy::too_many_arguments)]
+/// Overlays (selection, lasso/stamp/move previews, typing cursor) are
+/// document-space annotations of the ACTIVE layer, so they must render
+/// through the same shift as the layer's own cells: the layer's resolved
+/// move offset plus any in-flight move drag delta. (J 2026-09-10: typing
+/// and selection previews ignored the move, so they drifted away from the
+/// content they annotate — and a depth move also gave them a different
+/// parallax depth than the layer.) Shifting the group origin keeps cell
+/// positions in document space while the world transform — move, camera
+/// pan, parallax — then applies uniformly with the layer's content.
+fn shift_overlay_group_origin(
+    group: &mut thaum_renderer_domain::CellGroup,
+    offset: thaum_renderer_domain::WorldPoint,
+) {
+    group.origin.x += offset.x;
+    group.origin.y += offset.y;
+    group.origin.z += offset.z;
+}
+
 fn begin_canvas_press_if_eligible(
     pointer_strokes: &mut CanvasPointerStrokes,
     tool_state: &Rc<RefCell<ToolState>>,
@@ -1497,6 +1515,37 @@ mod tests {
     use thaum_painter_domain::text_entry::TextEntryState;
 
     use thaum_renderer_domain::{camera_view_orientation_for_camera, CameraRoll, CameraSwing};
+
+    #[test]
+    fn overlay_groups_shift_by_the_active_layers_move_offset() {
+        // Typing cursor and selection/preview overlays annotate the active
+        // layer's document-space cells; the layer renders move-shifted, so
+        // the overlay groups must shift identically (J 2026-09-10).
+        let mut group = thaum_renderer_domain::CellGroup::new(thaum_renderer_domain::WorldPoint {
+            x: 2,
+            y: -1,
+            z: 4,
+        });
+        shift_overlay_group_origin(
+            &mut group,
+            thaum_renderer_domain::WorldPoint {
+                x: 3,
+                y: 5,
+                z: -2,
+            },
+        );
+
+        assert_eq!(
+            group.origin,
+            thaum_renderer_domain::WorldPoint { x: 5, y: 4, z: 2 }
+        );
+        // The shift rides the group origin: cell positions stay in document
+        // space so the world transform (pan, parallax) applies uniformly.
+        assert_eq!(
+            group.world_point_for(thaum_renderer_domain::CellPoint { x: 1, y: 1, z: 0 }),
+            thaum_renderer_domain::WorldPoint { x: 6, y: 5, z: 2 }
+        );
+    }
 
     #[test]
     fn root_command_bar_declares_tooltips_for_file_modules_and_version() {
@@ -3839,7 +3888,26 @@ fn main() -> Result<()> {
         groups.extend(modules.iter().map(|module| module.draw()));
         // In-progress stroke overlays live on the seam: plane selection
         // preview, and any open lasso bound with its live interior preview.
-        groups.extend(pointer_strokes.overlay_cell_groups(
+        // Overlays (selection, lasso/stamp/move previews, typing cursor) are
+        // document-space annotations of the ACTIVE layer, so they must render
+        // through the same shift as the layer's own cells: the layer's
+        // resolved move offset plus any in-flight move drag delta. See
+        // `shift_overlay_group_origin`.
+        let mut overlay_move_offset = shared_document.move_offset_fractional_for_layer(
+            &active_layer_id,
+            timeline_state.borrow().current_breath,
+            breath_fraction,
+        );
+        if let Some((pending_layer, pending)) = pending_move_offset.as_ref() {
+            if pending_layer == &active_layer_id {
+                overlay_move_offset = thaum_renderer_domain::WorldPoint {
+                    x: overlay_move_offset.x + pending.x,
+                    y: overlay_move_offset.y + pending.y,
+                    z: overlay_move_offset.z + pending.z,
+                };
+            }
+        }
+        for mut group in pointer_strokes.overlay_cell_groups(
             &mut canvas_pointer_context(
                 &tool_state,
                 &selection,
@@ -3853,7 +3921,10 @@ fn main() -> Result<()> {
             ),
             view_orientation,
             ui_palette.get(UiColorRole::Vivid),
-        ));
+        ) {
+            shift_overlay_group_origin(&mut group, overlay_move_offset);
+            groups.push(group);
+        }
         // Typing cursor: a flashing bright block on the cell that will receive
         // the next character. Composed on top like the selection overlay, never
         // staged into the canvas or document, so it is never part of the drawing.
@@ -3865,7 +3936,12 @@ fn main() -> Result<()> {
         if typing_mode.is_active() {
             if let Some(entry) = text_entry.as_ref() {
                 let glyph = if cursor_blink_on { '█' } else { '□' };
-                groups.push(cursor_overlay_group(entry.cursor_point(), glyph));
+                let mut cursor_group = cursor_overlay_group(entry.cursor_point(), glyph);
+                // Same active-layer shift as the other overlays: the typed
+                // glyphs land in the layer's document space and render
+                // move-shifted, so the cursor must shift identically.
+                shift_overlay_group_origin(&mut cursor_group, overlay_move_offset);
+                groups.push(cursor_group);
             }
         }
         groups.push(command_bar.draw());
