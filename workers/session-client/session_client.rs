@@ -15,7 +15,7 @@
 //! synchronously inside `connect` (snapshot in hand or a loud error), then
 //! reader/writer threads take over.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -64,6 +64,15 @@ pub struct SessionClient {
     /// received and applied. Starts at 0 — joiners replay the full log onto
     /// the snapshot, so pre-join edits converge too.
     consumed_count: u64,
+    /// How many records the host log held at `Welcome`. Records up to this
+    /// count are the initial replay; own records inside it apply onto the
+    /// rebuilt runtime (the frozen snapshot predates them), while own records
+    /// after it are this connection's own echo and stay skipped.
+    log_length: u64,
+    /// Every action id the wire has delivered (replay + live echo). The
+    /// publish side consults this so a rebuilt runtime never re-sends a
+    /// record the host already logged.
+    consumed_action_ids: HashSet<String>,
     roster: Vec<SessionUser>,
     cursors: HashMap<String, Option<[i32; 3]>>,
     inbound: Arc<Mutex<VecDeque<HostMessage>>>,
@@ -234,6 +243,8 @@ impl SessionClient {
         let client = Self {
             user_id: user.user_id,
             consumed_count: 0,
+            log_length,
+            consumed_action_ids: HashSet::new(),
             roster,
             cursors,
             inbound,
@@ -273,8 +284,20 @@ impl SessionClient {
         for message in messages {
             match message {
                 HostMessage::Record { record } => {
+                    // Everything the wire hands us counts as known — replay
+                    // and live echo alike — so the publish side can never
+                    // re-send a record the host already logged.
+                    self.consumed_action_ids
+                        .insert(record.action_id.clone());
+                    // Welcome replay (records predating this connection):
+                    // own records apply too — the rebuilt runtime started
+                    // from the frozen snapshot and holds none of them
+                    // (J 2026-09-09: stint-1 own edits vanished on rejoin).
+                    // Past the replay, own records are this connection's
+                    // echo (applied locally at publish) and stay skipped.
+                    let is_replay = self.consumed_count < self.log_length;
                     self.consumed_count += 1;
-                    if record.user_id != self.user_id {
+                    if record.user_id != self.user_id || is_replay {
                         runtime.apply_action_record(record);
                         applied += 1;
                     }
@@ -327,6 +350,19 @@ impl SessionClient {
 
     pub fn ping(&self) -> Result<(), SessionClientError> {
         self.send(ClientMessage::Ping)
+    }
+
+    /// Clean-leave signal: the host frees this identity immediately, so a
+    /// quick leave -> rejoin is never denied as a duplicate. Best-effort —
+    /// a dead wire just drops the message like any other write.
+    pub fn send_bye(&self) {
+        let _ = self.send(ClientMessage::Bye);
+    }
+
+    /// Whether the wire already delivered this action id (Welcome replay or
+    /// live echo). Publish-side dedupe for rebuilt runtimes.
+    pub fn wire_knows_action(&self, action_id: &str) -> bool {
+        self.consumed_action_ids.contains(action_id)
     }
 
     pub fn is_connected(&self) -> bool {

@@ -110,8 +110,16 @@ pub fn connect_trusting(
     // verifies the real hostname, so a foreign local service fails the
     // handshake and we fall through to the honest dial.
     if !plain {
-        if let Some(link) = try_local_relay(&host, target, &extra_roots) {
-            return link;
+        if let Some(result) = try_local_relay(&host, target, &extra_roots) {
+            // Only a PROVEN local relay answers the hairpin probe: the loop
+            // back dial succeeded AND the TLS handshake verified the real
+            // hostname. Any other loopback listener fails that handshake —
+            // fall through to the honest dial (the comment always promised
+            // this; the code used to return the failure instead,
+            // J 2026-09-09).
+            if let Ok(link) = result {
+                return Ok(link);
+            }
         }
     }
 

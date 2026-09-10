@@ -22,6 +22,11 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+/// Silence window after which a duplicate-identity `Hello` evicts the old
+/// connection instead of denying the rejoin. Live clients keepalive-ping
+/// every couple of seconds, so anything past this is a dead ghost.
+const DUPLICATE_REJOIN_EVICT_AFTER: Duration = Duration::from_secs(5);
+
 use thaum_painter_domain::storage::{SharedDocumentActionRecord, SharedDocumentFile};
 
 /// Bumped on any wire-shape change; a `Hello` with a mismatched version is
@@ -59,6 +64,11 @@ pub enum ClientMessage {
     Rename {
         display_name: String,
     },
+    /// A clean leave: the client is going away on purpose. The host frees the
+    /// identity immediately (roster shrink broadcast included), so a quick
+    /// leave -> rejoin is never denied by the not-yet-reaped old connection
+    /// (J 2026-09-09: `join denied: user-id-in-use` raced the seen-prune).
+    Bye,
     Ping,
 }
 
@@ -243,9 +253,25 @@ impl SessionHost {
                     .host_user
                     .as_ref()
                     .is_some_and(|host_user| host_user.user_id == user_id)
-                    || self.is_connected(user_id)
                 {
                     return Err(ClientRejection::DuplicateUserId);
+                }
+                if self.is_connected(user_id) {
+                    // A live client keepalive-pings every couple of seconds;
+                    // silence past the eviction window means the connection
+                    // died without the transport reaping it yet. Evict the
+                    // ghost and admit the honest rejoin instead of denying
+                    // it into a stale-solo loop.
+                    let silent_for = self
+                        .last_seen
+                        .get(user_id)
+                        .map(|seen| seen.elapsed())
+                        .unwrap_or(DUPLICATE_REJOIN_EVICT_AFTER);
+                    if silent_for >= DUPLICATE_REJOIN_EVICT_AFTER {
+                        self.disconnect(user_id);
+                    } else {
+                        return Err(ClientRejection::DuplicateUserId);
+                    }
                 }
                 let snapshot = match &self.snapshot_source {
                     Some(source) => source(),
@@ -319,6 +345,15 @@ impl SessionHost {
                     client.outgoing.push_back(HostMessage::Roster {
                         users: roster.clone(),
                     });
+                }
+                Ok(())
+            }
+            ClientMessage::Bye => {
+                // Clean leave: free the identity now (roster shrink included)
+                // so the next Hello of this user id is an honest join, not a
+                // duplicate denial racing the seen-prune.
+                if self.is_connected(user_id) {
+                    self.disconnect(user_id);
                 }
                 Ok(())
             }
@@ -486,6 +521,32 @@ mod tests {
             )],
             None,
         )
+    }
+
+    #[test]
+    fn quick_bye_rejoin_and_ghost_eviction_are_never_denied() {
+        // J 2026-09-09: leave then rejoin one second later hit
+        // `join denied: user-id-in-use` because the dead connection had not
+        // been reaped yet. A clean Bye frees the identity immediately, and a
+        // stale-ghost duplicate Hello is evicted rather than denied.
+        let mut host = host();
+        hello(&mut host, "alice");
+
+        host.handle_client_message("alice", ClientMessage::Bye)
+            .expect("bye accepted");
+        assert!(!host.is_connected("alice"));
+        hello(&mut host, "alice"); // honest rejoin, no denial
+
+        // Ghost path: a connected-but-silent identity gets evicted on the
+        // duplicate Hello instead of denying the rejoining client.
+        hello(&mut host, "bob");
+        host.last_seen.insert(
+            "bob".to_string(),
+            Instant::now() - DUPLICATE_REJOIN_EVICT_AFTER,
+        );
+        hello(&mut host, "bob");
+        assert!(host.is_connected("bob"));
+        assert_eq!(host.roster().len(), 2); // alice + bob
     }
 
     #[test]

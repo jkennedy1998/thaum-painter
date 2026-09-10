@@ -362,7 +362,8 @@ fn apply_session_panel_action(
                 &address,
                 thaum_painter_workers::session_user_from_identity(session_identity),
             )
-            .map(|(net, snapshot)| (net, snapshot, address.clone()));
+            .map(|(net, snapshot)| (net, snapshot, address.clone()))
+            .map_err(|error| error.to_string());
             apply_join_result(
                 result,
                 session_net,
@@ -390,7 +391,19 @@ fn apply_session_panel_action(
                 &code,
                 thaum_painter_workers::session_user_from_identity(session_identity),
             )
-            .map(|(net, snapshot)| (net, snapshot, format!("relay {relay} code {code}")));
+            .map(|(net, snapshot)| (net, snapshot, format!("relay {relay} code {code}")))
+            .map_err(|error| {
+                // A code-shaped join only has the relay lane; say which side
+                // of the failure this is instead of a bare denial.
+                let text = error.to_string();
+                if text.contains("timed out") {
+                    "relay unreachable from this network (timed out) - \
+                     same network as the host? use the LAN join selector"
+                        .to_string()
+                } else {
+                    text
+                }
+            });
             apply_join_result(
                 result,
                 session_net,
@@ -454,6 +467,11 @@ fn apply_session_panel_action(
                         ),
                     }
                     shared_document.session_hosting = false;
+                } else {
+                    // Clean-leave signal: the host frees our identity now, so
+                    // a quick leave -> rejoin is never denied user-id-in-use
+                    // (J 2026-09-09 rejoin denial).
+                    net.send_bye();
                 }
             }
             // Client leave: the live runtime holds this machine's freshest
@@ -504,7 +522,7 @@ fn apply_session_panel_action(
 fn apply_join_result(
     result: Result<
         (thaum_painter_workers::SessionNet, thaum_painter_domain::SharedDocumentFile, String),
-        thaum_painter_workers::SessionClientError,
+        String,
     >,
     session_net: &mut Option<thaum_painter_workers::SessionNet>,
     _session_identity: &SessionIdentity,

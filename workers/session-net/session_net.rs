@@ -371,9 +371,17 @@ impl SessionNet {
                     .apply_local_record(record);
                 Ok(())
             }
-            Self::Client { client, .. } => client
-                .send_action(record)
-                .map_err(|error| error.to_string()),
+            Self::Client { client, .. } => {
+                // A record the wire already delivered (Welcome replay into a
+                // rebuilt runtime, or this connection's own echo) must never
+                // be re-sent: the host would double-log it.
+                if client.wire_knows_action(&record.action_id) {
+                    return Ok(());
+                }
+                client
+                    .send_action(record)
+                    .map_err(|error| error.to_string())
+            }
         }
     }
 
@@ -477,6 +485,15 @@ impl SessionNet {
         match self {
             Self::Host { .. } => false,
             Self::Client { rejoin, .. } => std::mem::take(&mut rejoin.rejoined),
+        }
+    }
+
+    /// Client mode: tells the host this identity is leaving cleanly — the
+    /// host frees the user id immediately, so a quick leave -> rejoin is an
+    /// honest join, not a `user-id-in-use` denial. Host mode: a no-op.
+    pub fn send_bye(&self) {
+        if let Self::Client { client, .. } = self {
+            client.send_bye();
         }
     }
 
