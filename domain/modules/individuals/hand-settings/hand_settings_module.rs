@@ -146,7 +146,6 @@ impl HandSettingsModule {
         }
 
         let mut fill_diag_columns = Vec::new();
-        let mut fill_match_columns = Vec::new();
         for (id, label, value) in [("off", "orth", false), ("on", "diag", true)] {
             let mut column = PropertyMatrixColumn::new(id, label);
             column.left_value = left.fill_diagonal == value;
@@ -154,16 +153,6 @@ impl HandSettingsModule {
             column.left_enabled = state.left_tool == PaintTool::Fill;
             column.right_enabled = state.right_tool == PaintTool::Fill;
             fill_diag_columns.push(column);
-        }
-        // Fill's flood-select channel matching is a fill-specific opt-in:
-        // off matches on every channel, on follows the hand's Select row.
-        for (id, label, value) in [("off", "all", false), ("on", "row", true)] {
-            let mut column = PropertyMatrixColumn::new(id, label);
-            column.left_value = left.fill_match_channels == value;
-            column.right_value = right.fill_match_channels == value;
-            column.left_enabled = state.left_tool == PaintTool::Fill;
-            column.right_enabled = state.right_tool == PaintTool::Fill;
-            fill_match_columns.push(column);
         }
 
         let mut picker_opp_columns = Vec::new();
@@ -229,14 +218,6 @@ impl HandSettingsModule {
                 id: "fill_diagonal".into(),
                 label: "fill".into(),
                 columns: fill_diag_columns,
-                token_width: 4,
-            });
-        }
-        if Self::tool_row_used(&state, "fill_match_channels") {
-            rows.push(PropertyRow::Matrix {
-                id: "fill_match".into(),
-                label: "match".into(),
-                columns: fill_match_columns,
                 token_width: 4,
             });
         }
@@ -408,14 +389,6 @@ impl HandSettingsModule {
                 };
                 state.set_pick_opposite_hand_for_hand(hand, pick_opposite_hand);
             }
-            "fill_match" => {
-                let fill_match_channels = match column_id.as_str() {
-                    "off" => false,
-                    "on" => true,
-                    _ => return,
-                };
-                state.set_fill_match_channels_for_hand(hand, fill_match_channels);
-            }
             _ => {}
         }
     }
@@ -474,6 +447,19 @@ impl Module for HandSettingsModule {
             ));
         }
         custom.extend(PropertyRows::hotspots(self.rect, &rows, HAND_BLOCK_ROWS));
+        // J 2026-09-10: the Select and Edit rows speak as whole rows, not
+        // per-token — their copy carries the per-hand channel truth.
+        for hotspot in custom.iter_mut() {
+            match hotspot.title.as_str() {
+                "Select" => {
+                    hotspot.description = "lock a graphic, color, or weight channel per hand for selection oriented tool use. like fill sensing adjacent tiles".into();
+                }
+                "Edit" => {
+                    hotspot.description = "lock or unlock a graphic, color, or weight channel per hand for placement oriented tool use. like fill placing down the actual content".into();
+                }
+                _ => {}
+            }
+        }
         self.gizmos.hotspots_with(self.rect, custom)
     }
 
@@ -836,7 +822,7 @@ mod tests {
         let mixed_ids = row_ids(&module);
         assert!(mixed_ids.contains(&"brush_size".to_string()));
         assert!(mixed_ids.contains(&"fill_diagonal".to_string()));
-        assert!(mixed_ids.contains(&"fill_match".to_string()));
+        assert!(!mixed_ids.contains(&"fill_match".to_string()));
 
         // Standard rows stay put regardless of the equipped tools.
         assert!(mixed_ids.contains(&"weight".to_string()));

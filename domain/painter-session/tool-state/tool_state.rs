@@ -177,9 +177,6 @@ pub struct HandState {
     pub weight_index: i64,
     pub brush_size: i32,
     pub fill_diagonal: bool,
-    /// Fill property: whether flood select matches cells per the hand's
-    /// Select row instead of on every channel. Fill-specific opt-in.
-    pub fill_match_channels: bool,
     /// Picker property: whether this hand's picker click hands its sampled
     /// channels to the opposite hand instead of itself. Per-hand toggle,
     /// independent per J.
@@ -197,7 +194,6 @@ impl Default for HandState {
             weight_index: 2,
             brush_size: 1,
             fill_diagonal: false,
-            fill_match_channels: false,
             pick_opposite_hand: false,
             edit_channels: EditChannels::all(),
             select_channels: SelectChannels::all(),
@@ -296,11 +292,6 @@ impl ToolState {
 
     pub fn toggle_select_channel_for_hand(&mut self, hand: PaintHand, channel: PaintChannel) {
         self.hand_state_mut(hand).select_channels.toggle(channel);
-        self.active_hand = hand;
-    }
-
-    pub fn set_fill_match_channels_for_hand(&mut self, hand: PaintHand, fill_match_channels: bool) {
-        self.hand_state_mut(hand).fill_match_channels = fill_match_channels;
         self.active_hand = hand;
     }
 
@@ -479,12 +470,22 @@ impl ToolState {
             PaintTool::Brush | PaintTool::Erase => {
                 self.brush_points_for_hand(position, hand, orientation)
             }
-            PaintTool::Fill => fill::flood_fill_points_with_connectivity(
-                canvas,
-                position,
-                bounds,
-                self.fill_connectivity_for_hand(hand),
-            ),
+            PaintTool::Fill => {
+                // Region sensing follows the hand's Select row: unlocked
+                // channels are ignored when matching neighbors (J 2026-09-10).
+                let select = self.hand_state(hand).select_channels;
+                fill::flood_fill_points_with_connectivity(
+                    canvas,
+                    position,
+                    bounds,
+                    self.fill_connectivity_for_hand(hand),
+                    fill::FillChannelMask {
+                        graphic: select.graphic,
+                        color: select.color,
+                        weight: select.weight,
+                    },
+                )
+            }
             _ => Vec::new(),
         }
     }
@@ -563,19 +564,11 @@ impl ToolState {
             }
             PaintTool::Erase => self.brush_points_for_hand(position, hand, orientation),
             PaintTool::Fill => {
-                // Channel matching is a fill-specific opt-in: by default
-                // flood select matches on every channel; with
-                // `fill_match_channels` on, the hand's Select row decides
-                // which channels must match.
-                let mask = if hand_state.fill_match_channels {
-                    if !hand_state.select_channels.any_enabled() {
-                        return Vec::new();
-                    }
-                    hand_state.select_channels
-                } else {
-                    ChannelMask::all()
-                };
-                flood_select_points(canvas, position, bounds, mask)
+                // The Select row is the comparison truth for fill, both when
+                // sensing paint regions and when flood selecting (J
+                // 2026-09-10). With every channel unlocked the hand matches
+                // only cells equal on all channels.
+                flood_select_points(canvas, position, bounds, hand_state.select_channels)
             }
             _ => Vec::new(),
         }
@@ -901,10 +894,7 @@ mod tests {
     fn each_tool_declares_its_own_property_rows() {
         assert_eq!(PaintTool::Brush.property_row_ids(), &["brush_size"]);
         assert_eq!(PaintTool::Erase.property_row_ids(), &["brush_size"]);
-        assert_eq!(
-            PaintTool::Fill.property_row_ids(),
-            &["fill_diagonal", "fill_match_channels"]
-        );
+        assert_eq!(PaintTool::Fill.property_row_ids(), &["fill_diagonal"]);
         assert_eq!(
             PaintTool::Text.property_row_ids(),
             &["text_char_step", "text_enter_step"]
@@ -1497,11 +1487,10 @@ mod tests {
     }
 
     #[test]
-    fn selection_target_fill_uses_the_select_channel_mask_when_opted_in() {
+    fn selection_target_fill_senses_regions_through_the_select_channel_mask() {
         let mut tool_state = ToolState::default();
         tool_state.set_target_for_hand(PaintHand::Left, PaintTarget::Selection);
         tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Fill);
-        tool_state.set_fill_match_channels_for_hand(PaintHand::Left, true);
         tool_state.left_hand.select_channels = ChannelMask {
             graphic: true,
             color: false,
@@ -1552,19 +1541,21 @@ mod tests {
     }
 
     #[test]
-    fn selection_target_fill_matches_all_channels_without_the_opt_in() {
+    fn image_target_fill_ignores_graphic_differences_when_the_graphic_channel_is_unlocked() {
         let mut tool_state = ToolState::default();
-        tool_state.set_target_for_hand(PaintHand::Left, PaintTarget::Selection);
+        tool_state.set_target_for_hand(PaintHand::Left, PaintTarget::Image);
         tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Fill);
-        // Select row narrowed to graphic-only, but channel matching is not
-        // opted in — the Select row must not gate flood matching here.
+        // Color and weight locked on, graphic unlocked: two adjacent cells
+        // sharing color and weight but differing in graphic flood together.
         tool_state.left_hand.select_channels = ChannelMask {
-            graphic: true,
-            color: false,
-            weight: false,
+            graphic: false,
+            color: true,
+            weight: true,
         };
         let mut canvas = Canvas::new();
         let mut selection = selection();
+        // J's scenario: cell a and cell b share color and weight but differ
+        // in graphic; cell c differs in color and still bounds the flood.
         brush::apply_brush(
             &mut canvas,
             point(0, 0),
@@ -1578,9 +1569,9 @@ mod tests {
             &mut canvas,
             point(1, 0),
             PaintedCell {
-                graphic: CellGraphic::Glyph('A'),
-                color: color(9, 9, 9),
-                weight_index: 3,
+                graphic: CellGraphic::Glyph('B'),
+                color: color(1, 1, 1),
+                weight_index: 0,
             },
         );
         brush::apply_brush(
@@ -1588,11 +1579,12 @@ mod tests {
             point(2, 0),
             PaintedCell {
                 graphic: CellGraphic::Glyph('B'),
-                color: color(1, 1, 1),
+                color: color(9, 9, 9),
                 weight_index: 0,
             },
         );
 
+        let before = canvas.get(&point(1, 0)).cloned();
         tool_state.apply_at_for_hand(
             &mut canvas,
             &mut selection,
@@ -1602,9 +1594,13 @@ mod tests {
             flat_view(),
         );
 
-        assert!(selection.plane().contains(point(0, 0)));
-        assert!(!selection.plane().contains(point(1, 0)));
-        assert!(!selection.plane().contains(point(2, 0)));
+        // The flood crossed the graphic difference: cell (1,0) changed...
+        assert_ne!(canvas.get(&point(1, 0)), before.as_ref());
+        // ...while the graphic difference at (2,0) still bounds the fill.
+        assert_eq!(
+            canvas.get(&point(2, 0)).map(|cell| cell.graphic.clone()),
+            Some(CellGraphic::Glyph('B'))
+        );
     }
 
     #[test]

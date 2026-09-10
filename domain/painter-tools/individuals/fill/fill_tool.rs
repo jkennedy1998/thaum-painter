@@ -24,7 +24,7 @@ mod tests {
         assert_eq!(descriptor.icon, '█');
         assert_eq!(
             descriptor.property_row_ids,
-            &["fill_diagonal", "fill_match_channels"]
+            &["fill_diagonal"]
         );
         assert_eq!(descriptor.select_action, Some("painter_select_bucket"));
         assert_eq!(descriptor.hotkey, Some("B"));

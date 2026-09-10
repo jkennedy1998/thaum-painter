@@ -51,7 +51,7 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
         label: "Fill",
         icon: '█',
         description: "flood-fill matching cells near the cursor",
-        property_row_ids: &["fill_diagonal", "fill_match_channels"],
+        property_row_ids: &["fill_diagonal"],
         select_action: Some("painter_select_bucket"),
         hotkey: Some("B"),
     },

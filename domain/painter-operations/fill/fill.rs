@@ -4,6 +4,48 @@ use thaum_renderer_domain::CellPoint;
 
 use crate::brush::{effective_cell, Canvas, PaintedCell};
 
+/// Which cell channels a flood compares when deciding whether a neighbor
+/// belongs to the same region. J 2026-09-10: the fill tool's region sensing
+/// follows the hand's Select row — toggled-off channels are ignored in the
+/// comparison, so a graphic difference alone no longer splits a region when
+/// the graphic channel is unlocked for selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FillChannelMask {
+    pub graphic: bool,
+    pub color: bool,
+    pub weight: bool,
+}
+
+impl FillChannelMask {
+    pub fn all() -> Self {
+        Self {
+            graphic: true,
+            color: true,
+            weight: true,
+        }
+    }
+
+    pub fn any_enabled(&self) -> bool {
+        self.graphic || self.color || self.weight
+    }
+}
+
+fn cells_match_on_mask(
+    left: Option<PaintedCell>,
+    right: Option<PaintedCell>,
+    mask: FillChannelMask,
+) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => {
+            (!mask.graphic || left.graphic == right.graphic)
+                && (!mask.color || left.color == right.color)
+                && (!mask.weight || left.weight_index == right.weight_index)
+        }
+        _ => false,
+    }
+}
+
 /// Finite fill bounds for painter flood fill. The live canvas is logically
 /// unbounded, so fill needs the caller to declare the region it is allowed to
 /// traverse.
@@ -134,7 +176,13 @@ pub fn flood_fill_points(
     start: CellPoint,
     bounds: CanvasBounds,
 ) -> Vec<CellPoint> {
-    flood_fill_points_with_connectivity(canvas, start, bounds, FillConnectivity::Cardinal)
+    flood_fill_points_with_connectivity(
+        canvas,
+        start,
+        bounds,
+        FillConnectivity::Cardinal,
+        FillChannelMask::all(),
+    )
 }
 
 pub fn flood_fill_points_with_connectivity(
@@ -142,8 +190,9 @@ pub fn flood_fill_points_with_connectivity(
     start: CellPoint,
     bounds: CanvasBounds,
     connectivity: FillConnectivity,
+    mask: FillChannelMask,
 ) -> Vec<CellPoint> {
-    if !bounds.contains(start) {
+    if !bounds.contains(start) || !mask.any_enabled() {
         return Vec::new();
     }
 
@@ -158,7 +207,8 @@ pub fn flood_fill_points_with_connectivity(
         if !seen.insert(point) || !bounds.contains(point) {
             continue;
         }
-        if effective_cell(canvas.get(&point)).cloned() != target {
+        if !cells_match_on_mask(effective_cell(canvas.get(&point)).cloned(), target.clone(), mask)
+        {
             continue;
         }
 
@@ -197,7 +247,13 @@ pub fn flood_fill_with_connectivity(
         return;
     }
 
-    for point in flood_fill_points_with_connectivity(canvas, start, bounds, connectivity) {
+    for point in flood_fill_points_with_connectivity(
+        canvas,
+        start,
+        bounds,
+        connectivity,
+        FillChannelMask::all(),
+    ) {
         canvas.insert(point, replacement.clone());
     }
 }
@@ -314,12 +370,14 @@ mod tests {
             point(0, 0),
             bounds(),
             FillConnectivity::Cardinal,
+            FillChannelMask::all(),
         );
         let diagonal = flood_fill_points_with_connectivity(
             &canvas,
             point(0, 0),
             bounds(),
             FillConnectivity::CardinalAndDiagonal,
+            FillChannelMask::all(),
         );
 
         assert_eq!(cardinal, vec![point(0, 0)]);

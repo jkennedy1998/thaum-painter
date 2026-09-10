@@ -62,8 +62,6 @@ pub struct PersistedHandState {
     pub brush_size: i32,
     pub fill_diagonal: bool,
     #[serde(default)]
-    pub fill_match_channels: bool,
-    #[serde(default)]
     pub pick_opposite_hand: bool,
     pub edit_channels: PersistedChannelMask,
     pub select_channels: PersistedChannelMask,
@@ -163,7 +161,6 @@ impl PersistedHandState {
             weight_index: hand.weight_index,
             brush_size: hand.brush_size,
             fill_diagonal: hand.fill_diagonal,
-            fill_match_channels: hand.fill_match_channels,
             pick_opposite_hand: hand.pick_opposite_hand,
             edit_channels: PersistedChannelMask::from_mask(hand.edit_channels),
             select_channels: PersistedChannelMask::from_mask(hand.select_channels),
@@ -177,8 +174,7 @@ impl PersistedHandState {
         hand.weight_index = self.weight_index.clamp(0, 3);
         hand.brush_size = self.brush_size.clamp(1, 5);
         hand.fill_diagonal = self.fill_diagonal;
-        hand.fill_match_channels = self.fill_match_channels;
-        hand.pick_opposite_hand = self.pick_opposite_hand;
+            hand.pick_opposite_hand = self.pick_opposite_hand;
         hand.edit_channels = self.edit_channels.to_mask();
         hand.select_channels = self.select_channels.to_mask();
         if let Some(target) = target_from_name(&self.target) {

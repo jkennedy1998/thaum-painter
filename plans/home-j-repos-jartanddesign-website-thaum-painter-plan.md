@@ -22,7 +22,8 @@ The site already renders Development, Illustration, Design, and Sketchbook throu
 ## artifacts
 - `thaum-painter/index.html` — canonical directory-route shell using `data-portfolio-page="thaum-painter"`.
 - `thaum-painter.html` — root-file companion shell, matching every existing top-level portfolio page and using root-relative asset paths.
-- `source/thaum-painter/2026/1/entry.md` — source-of-truth product slice, including the release-notes section published from the verified GitHub Release.
+- `source/thaum-painter/2026/1/entry.md` and `image-1.png` — source-of-truth product slice, including the release-notes section published from the verified GitHub Release and the shared Development hero image.
+- `source/thaum-painter/2026/2/entry.md` and `image-1.png` through `image-3.png` — standard expandable-description `carousel-media` developmental-doodles slice, J-supplied artwork, and an illustration-carousel-style palette for each image.
 - `source/thaum-painter/build-entries.mjs` and generated `source/thaum-painter/entries.js` — existing page-source generation shape.
 - `thaum-painter/release.json` — static public manifest: current semantic version and canonical page URL only.
 - edited `js/components.js` and `css/style.css` — optional generic portfolio release-notes and non-expandable static-description rendering; blank single-media entries no longer produce a broken-image title artifact; no page-specific parallel UI.
@@ -46,7 +47,7 @@ The site already renders Development, Illustration, Design, and Sketchbook throu
 ### phase-2 — page route + shared presentation
 - [+] add the new directory route, root-file companion, source directory, and generator following the existing portfolio-page pattern.
 - [#] extend the generic portfolio source renderer only enough to render an optional `release notes` field; pages without one remain visually/behaviorally unchanged.
-- [#] author one Thaum Painter product slice in the existing visual language with product description, compiled current version, rendered release notes, and the three interactive platform links.
+- [#] author the Thaum Painter product slice in the existing visual language with product description, compiled current version, rendered release notes, the shared Development hero image, and the three interactive platform links; add the standard expandable-description developmental-doodles carousel directly below it with per-image artwork-derived palettes.
 - [+] include concise extraction/run guidance and the existing Mac unsigned/Gatekeeper note without inventing an auto-install flow.
 - [+] use shared components/styles; add page-local styling only if the shared slice system demonstrably cannot express a needed product fact.
 
@@ -67,5 +68,6 @@ The site already renders Development, Illustration, Design, and Sketchbook throu
 - audit-2026-09-10: the page's optional release-notes field now renders through the shared portfolio source renderer and styles, leaving every slice without that field unchanged. Source/generator/static assertions pass; browser responsive/hover inspection and live deployment remain deferred.
 - route-completeness-2026-09-10: added `thaum-painter.html` as the root-level companion to `thaum-painter/index.html`, matching the established `development.html`/`development/index.html` shape so the page is discoverable in either top-level form.
 - content-refinement-2026-09-10: removed the blank-media broken-image artifact, made J’s supplied Painter copy static rather than expandable, set `release notes — v0.1.2 first public release`, and applies dark `#120A1A` consistently to the Painter slice, page remainder, and viewport background. Static copy is bounded to the normal 52-character measure and wraps safely.
+- developmental-doodles-2026-09-10: copied the existing Development Thaum Painter hero exactly into the product slice and added a second `carousel-media` slice using J’s three supplied developmental-doodle images, title, subtitle, and the normal expandable description behavior. Its three `item N colors` sections drive matched per-artwork backgrounds/text colors on carousel changes; every configured text/background contrast ratio is at least 5.18:1.
 - plan-finished: false
 - encapsulation-git-commit: false

@@ -41,7 +41,7 @@ Own painter's compact hand-settings panel: the left/right paint-state editor for
 ## tests
 - inline `#[cfg(test)]` in `hand_settings_module.rs`
   - light
-  - validates weight, select/edit masks, target, selection mode, brush/fill property and match toggles, plus tool-row hiding driven by the equipped tools
+  - validates weight, select/edit masks, target, selection mode, brush/fill property toggles, plus tool-row hiding driven by the equipped tools (the fill match row was removed 2026-09-10 — the Select row is fill's comparison truth)
   - validates wheel behavior: over a number field it nudges that value by one; anywhere else it scrolls the row list so cropped tool rows stay reachable
 
 ## data
@@ -50,6 +50,7 @@ Own painter's compact hand-settings panel: the left/right paint-state editor for
 ## notes
 - The panel crops rows that do not fit; the wheel scrolls the row window (shared `thaum-renderer` `ScrollState`) so tool rows tucked below the fold stay reachable. Wheel over a number field still nudges that value, matching the panel's original field-nudge semantic.
 - The top three content rows are reserved for the hand-preview blocks; property rows start below them (`PropertyRows` `top_offset`), so scrolled matrix tokens never slide under them.
+- Select and Edit rows carry whole-row tooltip copy from J (2026-09-10): Select = "lock a graphic, color, or weight channel per hand for selection oriented tool use. like fill sensing adjacent tiles"; Edit = "lock or unlock a graphic, color, or weight channel per hand for placement oriented tool use. like fill placing down the actual content".
 - source-of-truth from J: left and right should each keep their own color/weight selection, with useful masking for deeper illustration work; channel locks were bloat and have been removed from the panel.
 - source-of-truth from J: the panel hosts the never-changing standard property block on top and tool properties that change below; rows unused by both equipped tools stay hidden so the module feels thin while tools accumulate shared properties.
 - this panel intentionally stays compact and state-bound; it is not a second toolbox.

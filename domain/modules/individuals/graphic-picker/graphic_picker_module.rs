@@ -542,6 +542,12 @@ impl Module for GraphicPickerModule {
                         CellGraphic::Glyph(glyph) => format!("glyph {glyph}"),
                         _ => "glyph".to_string(),
                     };
+                    // J 2026-09-10: the glyph's description is its unicode
+                    // character key — clean and techy.
+                    let key = match &graphic {
+                        CellGraphic::Glyph(glyph) => format!("U+{:04X}", *glyph as u32),
+                        _ => "glyph".to_string(),
+                    };
                     Hotspot::new(
                         ModuleRect {
                             x0: self.rect.x0 + x,
@@ -550,7 +556,9 @@ impl Module for GraphicPickerModule {
                             y1: self.rect.y0 + y,
                         },
                         title,
-                        "click to equip on a hand: left-click left, right-click right",
+                        format!(
+                            "{key} — click to equip on a hand: left-click left, right-click right"
+                        ),
                     )
                 }
                 LayoutHit::Sprite { x0, x1, y, .. } | LayoutHit::Recent { x0, x1, y, .. } => {

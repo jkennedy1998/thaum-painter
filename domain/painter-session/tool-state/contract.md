@@ -10,7 +10,7 @@ Own live tool settings and active authoring-hand state for the painter session.
 - the rule that hand color can be either direct RGB or a material-backed choice
 - edit-channel masks
 - per-hand image-versus-selection target state
-- fill's flood-select channel matching as a fill-specific opt-in (`fill_match_channels`): off matches on every channel, on follows the hand's Select row
+- fill's region sensing follows the hand's Select row directly (J 2026-09-10, per hand): the Select row's graphic/color/weight toggles decide which channels the flood compares, both when sensing paint regions and when flood selecting; the old `fill_match_channels` opt-in row was removed as redundant
 - picker session behavior: click-only cell sampling into a hand's graphic/color/weight, gated by the picking hand's edit-channel toggles, with the per-hand `pick_opposite_hand` property routing the sample to the opposite hand
 - the `PaintTool` enum and per-tool session behavior match arms (edit/select semantics) — the thin enum <-> registry bridge and the property manifest delegation now read from `domain/painter-tools/`
 - lasso session behavior: in-progress bound accumulation (`lasso_stroke`), release-time enclosed-region fill through the channel mask, and release-time selection-surface application
@@ -52,7 +52,7 @@ Own live tool settings and active authoring-hand state for the painter session.
 ## tests
 - inline `#[cfg(test)]` in `tool_state.rs`
   - light
-  - validates per-hand tool selection, shared brush/erase properties, selection-gated image editing, fill masking, lasso enclosed-region fill/selection, fill's opt-in flood channel matching, and the per-tool property-row manifest
+  - validates per-hand tool selection, shared brush/erase properties, selection-gated image editing, fill masking, lasso enclosed-region fill/selection, fill's Select-row channel matching, and the per-tool property-row manifest
 - inline `#[cfg(test)]` in `lasso_stroke.rs`
   - light
   - validates lasso stroke accumulation
