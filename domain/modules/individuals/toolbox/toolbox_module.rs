@@ -109,15 +109,18 @@ impl Module for ToolboxModule {
             vec![title_hotspot(
                 self.rect,
                 self.gizmos.title_start_x(),
-                "TOOLS",
-                "paint tools: click one to equip it on the active hand",
+                "toolbox module",
+                "picks the tool for your given hand. left click for left hand, right click for right hand.",
             )],
         );
         hotspots.extend(self.tool_defs.iter().enumerate().map(|(index, def)| {
             Hotspot::new(
                 self.row_rect(index),
                 format!("{} {}", def.icon, def.label),
-                def.description,
+                format!(
+                    "{} left click for left hand, right click for right hand",
+                    def.description
+                ),
             )
         }));
         hotspots
@@ -492,7 +495,13 @@ mod tests {
                 .find(|hotspot| hotspot.rect == expected_rect)
                 .unwrap_or_else(|| panic!("no hotspot for {}", def.label));
             assert_eq!(hotspot.title, format!("{} {}", def.icon, def.label));
-            assert_eq!(hotspot.description, def.description);
+            assert_eq!(
+                hotspot.description,
+                format!(
+                    "{} left click for left hand, right click for right hand",
+                    def.description
+                )
+            );
         }
     }
 

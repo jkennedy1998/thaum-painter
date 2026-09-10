@@ -399,8 +399,8 @@ impl Module for SessionPanelModule {
         let mut custom = vec![title_hotspot(
             self.rect,
             self.gizmos.title_start_x(),
-            "SESSION",
-            "multiplayer: host a session, join by code or over the network, see the roster and events",
+            "session module",
+            "join a lan connection multiplayer session to work on the same file! this is in progress for cross wifi connections.",
         )];
         if state.in_session {
             if state.is_host {

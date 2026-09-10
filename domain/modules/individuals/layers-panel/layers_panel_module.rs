@@ -1205,8 +1205,8 @@ impl Module for LayersPanelModule {
         let mut custom = vec![title_hotspot(
             self.rect,
             self.gizmos.title_start_x(),
-            "LAYERS",
-            "the document's structure: layers with visibility, lock, timing bars, and property tracks",
+            "layers module",
+            "layers are 3d and temporal. all layers are animated and in 3d space. layers override graphics from other layers -- not render over.",
         )];
         custom.push(self.row_hotspot(
             0,

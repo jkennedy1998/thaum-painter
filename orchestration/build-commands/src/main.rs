@@ -1175,6 +1175,7 @@ fn module_menu_buttons(modules: &ModuleRegistry) -> Vec<CommandBarButton> {
         ("painter_camera_perspective", "PERSPECTIVE"),
         ("painter_controls_panel", "CONTROLS"),
         ("painter_ui_customization", "UI COLORS"),
+        ("painter_session_panel", "SESSION"),
     ]
     .into_iter()
     .map(|(module_id, label)| {

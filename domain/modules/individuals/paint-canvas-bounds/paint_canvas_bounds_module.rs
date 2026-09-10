@@ -142,8 +142,8 @@ impl Module for PaintCanvasBoundsModule {
             title_hotspot(
                 rect,
                 self.title_start_x(),
-                "DRAWING SPACE",
-                "the paint surface: drag its border to resize; the wheel mode toggles what the wheel scrolls",
+                "drawing space module",
+                "the interactable surface for drawing. hosts the toggle for scroll interactions just to the left of here so users can pan, traverse time, or 3d depth.",
             ),
             Hotspot::new(
             ModuleRect { x0: x, y0: y, x1: x, y1: y },

@@ -207,8 +207,8 @@ impl Module for MaterialPickerModule {
         let mut custom = vec![title_hotspot(
             self.rect,
             self.gizmos.title_start_x(),
-            "MATERIALS",
-            "assign renderer materials to a hand: the indicator shows which hands use each",
+            "materials module",
+            "this is largely a stub development place for lighting systems for thaumworld :3",
         )];
         custom.extend(
             hits

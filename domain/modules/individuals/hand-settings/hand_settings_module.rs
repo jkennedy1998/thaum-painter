@@ -462,8 +462,8 @@ impl Module for HandSettingsModule {
         let mut custom = vec![title_hotspot(
             self.rect,
             self.gizmos.title_start_x(),
-            "PROPS",
-            "per-hand properties: tools, graphics, colors, weights, fills and more; scroll for more rows",
+            "properties module",
+            "adjust the properties of a selected tool. properties are adjusted per hand for your left and right clicks. left click for adjusting the left tool, right click for adjusting the right tool.",
         )];
         custom.extend(PropertyRows::hotspots(self.rect, &rows));
         self.gizmos.hotspots_with(self.rect, custom)

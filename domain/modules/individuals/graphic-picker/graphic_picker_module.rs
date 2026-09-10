@@ -530,8 +530,8 @@ impl Module for GraphicPickerModule {
         let mut custom = vec![title_hotspot(
             self.rect,
             self.gizmos.title_start_x(),
-            "GRAPHICS",
-            "glyph and sprite library: click to equip on a hand",
+            "graphics module",
+            "picks the glyph or sprite for your given hand. left click for left hand, right click for right hand.",
         )];
         custom.extend(
             hits
