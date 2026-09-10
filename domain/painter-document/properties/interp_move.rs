@@ -18,6 +18,19 @@
 use crate::interp_mode;
 use crate::storage::{parse_move_offset, SharedDocumentPropertyBlock};
 
+/// Axis stagger (J 2026-09-10): on a low-resolution raster grid, simultaneous
+/// multi-axis steps read as jumpy diagonal leaps — equal deltas give the axes
+/// identical rounding thresholds, so they always round across together. Each
+/// axis's progress is therefore evaluated a hair later in sub-breath time
+/// (x, then y, then z), which de-coincides the thresholds: unit axis-by-axis
+/// steps become the default without barring genuine diagonal moves. 1/8 of a
+/// breath ≈ one display frame at 60Hz against the 125ms breath — large
+/// enough to split coincident steps across frames, far below timing
+/// perception. Pure function of breath: no state, so scrubbing, multiplayer
+/// determinism, and the fractional-playback seam are unaffected. All axes
+/// clamp back together at t = 1, so arrival on the next keyframe stays exact.
+pub(crate) const AXIS_STAGGER_BREATHS: f32 = 1.0 / 8.0;
+
 /// Resolves the move offset authored for `breath` across one property track's
 /// blocks, or `None` when nothing resolves (no blocks, no values anywhere) —
 /// the caller renders the layer unshifted. Breaths past the trailing blank's
@@ -100,8 +113,8 @@ fn resolve_interpolate(
     let next = solid_value_after(blocks, index);
     match (previous, next) {
         (Some(from), Some(to)) => {
-            let progress = empty_progress_fractional(&blocks[index], breath);
-            Some(lerp_offset(from, to, progress))
+            let progresses = staggered_axis_progresses(&blocks[index], breath);
+            Some(lerp_offset(from, to, progresses))
         }
         (only, None) => only,
         (None, only) => only,
@@ -198,17 +211,20 @@ pub(crate) fn empty_progress(blank: &SharedDocumentPropertyBlock, breath: u32) -
     power_eased_progress(t, blank.ease_out_percent, blank.ease_in_percent)
 }
 
-/// Fractional-breath progress for the MOVE channel: `breath` may land between
-/// breaths during playback so the eased curve is sampled per display frame.
-/// At an integer breath this is exactly the whole-breath result.
-pub(crate) fn empty_progress_fractional(
-    blank: &SharedDocumentPropertyBlock,
-    breath: f32,
-) -> f32 {
+/// Per-axis eased progress across one empty's span at `breath`: the shared
+/// time `t` (fractional during playback, whole otherwise) evaluated once per
+/// axis with the axis's stagger added — see `AXIS_STAGGER_BREATHS`. Clamped
+/// to 1.0 so all axes converge on the next keyframe exactly.
+fn staggered_axis_progresses(blank: &SharedDocumentPropertyBlock, breath: f32) -> [f32; 3] {
     let length = blank.length_breaths.max(1) as f32;
     let raw = breath - blank.start_breath as f32;
     let t = ((raw + 1.0) / (length + 1.0)).clamp(0.0, 1.0);
-    bezier_eased_progress(t, blank.ease_out_percent, blank.ease_in_percent)
+    let mut progresses = [0.0f32; 3];
+    for (axis, progress) in progresses.iter_mut().enumerate() {
+        let shifted = (t + axis as f32 * AXIS_STAGGER_BREATHS).min(1.0);
+        *progress = bezier_eased_progress(shifted, blank.ease_out_percent, blank.ease_in_percent);
+    }
+    progresses
 }
 
 /// The RASTER channel's ease model (J 2026-09-07, four authored strength
@@ -287,11 +303,11 @@ fn cubic_bezier_ease(t: f32, x1: f32, x2: f32) -> f32 {
     3.0 * u * b * b + b * b * b
 }
 
-fn lerp_offset(from: [i32; 3], to: [i32; 3], progress: f32) -> [i32; 3] {
+fn lerp_offset(from: [i32; 3], to: [i32; 3], progresses: [f32; 3]) -> [i32; 3] {
     [
-        from[0] + ((to[0] - from[0]) as f32 * progress).round() as i32,
-        from[1] + ((to[1] - from[1]) as f32 * progress).round() as i32,
-        from[2] + ((to[2] - from[2]) as f32 * progress).round() as i32,
+        from[0] + ((to[0] - from[0]) as f32 * progresses[0]).round() as i32,
+        from[1] + ((to[1] - from[1]) as f32 * progresses[1]).round() as i32,
+        from[2] + ((to[2] - from[2]) as f32 * progresses[2]).round() as i32,
     ]
 }
 
@@ -594,6 +610,29 @@ mod tests {
     }
 
     #[test]
+    fn linear_equal_axis_deltas_step_axis_by_axis_not_diagonally() {
+        // The stagger's whole point (J 2026-09-10): equal x/y deltas used to
+        // share identical rounding thresholds, so every visible step was a
+        // 2-cell diagonal leap. With the stagger, a linear (3,3) move over a
+        // 6-breath empty alternates single-axis unit steps — y leads because
+        // x is axis 0 and gets no shift.
+        let blocks = vec![
+            solid("a", 0, 2, [0, 0, 0]),
+            blank("b", 2, 6, None, None, None),
+            solid("c", 8, 2, [3, 3, 0]),
+            blank("tail", 10, 1, None, None, None),
+        ];
+        assert_eq!(resolve_move_offset(&blocks, 2), Some([0, 1, 0]));
+        assert_eq!(resolve_move_offset(&blocks, 3), Some([1, 1, 0]));
+        assert_eq!(resolve_move_offset(&blocks, 4), Some([1, 2, 0]));
+        assert_eq!(resolve_move_offset(&blocks, 5), Some([2, 2, 0]));
+        assert_eq!(resolve_move_offset(&blocks, 6), Some([2, 3, 0]));
+        assert_eq!(resolve_move_offset(&blocks, 7), Some([3, 3, 0]));
+        // Arrival on the keyframe is exact.
+        assert_eq!(resolve_move_offset(&blocks, 8), Some([3, 3, 0]));
+    }
+
+    #[test]
     fn a_track_with_no_values_resolves_nothing() {
         let blocks = vec![blank("tail", 0, 24, None, None, None)];
         assert_eq!(resolve_move_offset(&blocks, 5), None);
@@ -617,8 +656,11 @@ mod tests {
         assert_eq!(resolve_move_offset(&blocks, 0), None);
         assert_eq!(resolve_move_offset(&blocks, 5), None);
         // The interpolating empty lerps identity -> {0,-3,-3}: real motion.
-        // Progress at breath 6 = 1/12 (linear), at breath 16 = 11/12.
-        assert_eq!(resolve_move_offset(&blocks, 6), Some([0, 0, 0]));
+        // Progress at breath 6 = 1/12 (linear), at breath 16 = 11/12. The
+        // axis stagger (J 2026-09-10) shifts y/z a hair later, so breath 6's
+        // y/z cross their first rounding threshold one step earlier than the
+        // un-staggered result — breaths 11/16 still land on the same cells.
+        assert_eq!(resolve_move_offset(&blocks, 6), Some([0, -1, -1]));
         assert_eq!(resolve_move_offset(&blocks, 11), Some([0, -2, -2]));
         assert_eq!(resolve_move_offset(&blocks, 16), Some([0, -3, -3]));
         // The keyframe and its trailing empty hold as before.
