@@ -1087,34 +1087,6 @@ fn save_as_root_from_dialog_path(path: &Path) -> PathBuf {
     path.parent().unwrap_or(path).join(stem)
 }
 
-/// Quick-save target for a document with no file path yet: the slugified
-/// document title under the default painter-files root, bumped with `-NN`
-/// when that folder already holds a document (never silently overwrites).
-/// Regular save must not depend on the native dialog stack at all: portal
-/// backends can fail instantly on some Linux sessions (observed on jobo),
-/// and a first save should never need more than one keystroke.
-fn quick_save_document_root(file_root: &Path, title: &str) -> PathBuf {
-    let mut stem = slugify_file_stem(title);
-    if stem.is_empty() {
-        stem = "untitled-document".to_string();
-    }
-    let mut candidate = file_root.join(&stem);
-    let mut suffix = 2;
-    while candidate.join("document.json").exists() {
-        candidate = file_root.join(format!("{stem}-{suffix}"));
-        suffix += 1;
-        if suffix > 99 {
-            let stamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis();
-            candidate = file_root.join(format!("{stem}-{stamp}"));
-            break;
-        }
-    }
-    candidate
-}
-
 fn prompt_save_document_root(file_root: &Path, title: &str) -> Option<PathBuf> {
     let suggested = slugify_file_stem(title);
     let suggested = if suggested.is_empty() {
@@ -1298,6 +1270,15 @@ fn handle_command_bar_button(
         return Ok(None);
     }
     let file_root = painter_file_root();
+    // First-save delegation (J 2026-09-10): SAVE on a never-saved document
+    // triggers SAVE AS — the user always picks the location, so a file never
+    // lands somewhere they didn't expect. The vault autosave covers the
+    // never-saved window before this moment.
+    let button_id = if button_id == "file:save" && current_document_root.is_none() {
+        "file:save-as"
+    } else {
+        button_id
+    };
     match button_id {
         "file:new" => {
             *shared_document = new_unsaved_document();
@@ -1363,20 +1344,6 @@ fn handle_command_bar_button(
             }
         }
         "file:save" => {
-            if current_document_root.is_none() {
-                // Quick save: default-name folder under painter-files, no
-                // dialog. Native save dialogs stay on SAVE AS (and OPEN), so
-                // the common first save never touches the portal/GTK dialog
-                // stack that fails on some Linux sessions.
-                let next_root =
-                    quick_save_document_root(&file_root, &shared_document.document.title);
-                thaum_painter_domain::debug_log::info(
-                    "file",
-                    &format!("quick save target: {}", next_root.display()),
-                );
-                *shared_document_paths = SharedDocumentPaths::new(next_root.clone());
-                *current_document_root = Some(next_root);
-            }
             // Session-client mode: the host owns saves while a session runs;
             // this machine's disk log diverged at join time, so a guarded save
             // here would always conflict and reload away live session truth.
@@ -1669,41 +1636,6 @@ mod tests {
             PathBuf::from("/tmp/fake-painter-root/artifacts/autosave")
         );
         std::env::remove_var("THAUM_PAINTER_ROOT");
-    }
-
-    #[test]
-    fn quick_save_uses_slugified_title_under_the_file_root() {
-        let file_root = std::env::temp_dir().join(format!(
-            "painter-quick-save-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&file_root).unwrap();
-
-        let root = quick_save_document_root(&file_root, "My Cool Sketch");
-        assert_eq!(root, file_root.join("my-cool-sketch"));
-
-        // No document inside yet: the same title reuses the same folder.
-        assert_eq!(quick_save_document_root(&file_root, "My Cool Sketch"), root);
-
-        // A document already in that folder: the next quick save bumps -02.
-        std::fs::create_dir_all(root.join("document.json").parent().unwrap()).unwrap();
-        std::fs::write(root.join("document.json"), "{}").unwrap();
-        assert_eq!(
-            quick_save_document_root(&file_root, "My Cool Sketch"),
-            file_root.join("my-cool-sketch-2")
-        );
-
-        // Empty/blank titles fall back to the untitled default.
-        assert_eq!(
-            quick_save_document_root(&file_root, "   "),
-            file_root.join("untitled-document")
-        );
-
-        let _ = std::fs::remove_dir_all(&file_root);
     }
 
     #[test]
