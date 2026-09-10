@@ -19,9 +19,11 @@ Cargo.lock
 # build-commands cargo cache + built binaries (never version these)
 orchestration/builds/
 
-# runtime user documents and session state (never version these)
+# runtime output (never version these)
 context/painter/painter-files/
 orchestration/artifacts/
+artifacts/debug-logging/
+artifacts/autosave/
 
 # stray save-test outputs at repo root
 /file1

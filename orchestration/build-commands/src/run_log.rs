@@ -2,7 +2,7 @@
 //!
 //! The renderer's `debug_log` seam owns sinks; this module owns where they
 //! point and what wraps the process. One folder per boot under
-//! `context/debug-logging/<UTC-stamp>[-NN]/` holds the always-on `run.log`
+//! `artifacts/debug-logging/<UTC-stamp>[-NN]/` holds the always-on `run.log`
 //! (renderer + painter lines in one stream) and the per-run `perf.jsonl`.
 //! Boot culls the folder set to the newest `KEEP_RUN_LOG_DIRS` so the last
 //! few runs are always available for post-crash support without growing
@@ -59,11 +59,11 @@ pub fn boot(painter_root: &Path) -> Option<PathBuf> {
     run_dir
 }
 
-/// Creates `context/debug-logging/<stamp>[-NN]` for this boot and culls older
+/// Creates `artifacts/debug-logging/<stamp>[-NN]` for this boot and culls older
 /// folders down to `KEEP_RUN_LOG_DIRS`. The `-NN` suffix dedupes same-second
 /// relaunches (test-restart loops) without clobbering.
 fn prepare_run_log_dir(painter_root: &Path) -> io::Result<PathBuf> {
-    let root = painter_root.join("context/debug-logging");
+    let root = painter_root.join("artifacts/debug-logging");
     fs::create_dir_all(&root)?;
 
     let base = utc_boot_stamp(SystemTime::now());
@@ -221,7 +221,7 @@ mod tests {
 
         // Pre-seed KEEP_RUN_LOG_DIRS + 1 older folders so this boot's folder
         // pushes the oldest one out.
-        let log_root = painter_root.join("context/debug-logging");
+        let log_root = painter_root.join("artifacts/debug-logging");
         for (index, stamp) in [
             "2026-09-01-00-00-00",
             "2026-09-02-00-00-00",

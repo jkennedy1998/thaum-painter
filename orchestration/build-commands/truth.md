@@ -18,3 +18,9 @@
 ### 26-09-08-10-00-00-04
 - j-quote: "use best practices for a front facing repo. this is open source like blender is, and will need to be mainatined well overtime. id like to not run into anything that is exposed that shouldnt for proffessional sake."
 - j-quote: "im not too worried about directories being shared, but those do look messy"
+
+### 26-09-10-07-15-59-05
+- j-quote: "Users with old versions can connect with old versions I don't care about that."
+- j-quote: "I don't want to auto update because I don't really agree with that."
+- j-quote: "we should just have the version actually maybe we should dial back on this session module what if we just show it next to the buttons for file and module."
+- j-quote: "We have 3 interactive buttons you can reimplemnt from the dev page for this. They link to the builds already I think."

@@ -857,12 +857,13 @@ fn painter_file_root() -> PathBuf {
 const DOCUMENT_AUTOSAVE_UNSAVED_INTERVAL: Duration = Duration::from_secs(600);
 const DOCUMENT_AUTOSAVE_SAVED_INTERVAL: Duration = Duration::from_secs(300);
 
-/// The autosave vault root: `context/painter/autosave` under the same
+/// The autosave vault root: `artifacts/autosave` under the same
 /// runtime root as every painter-owned folder, so it resolves safely on
 /// Linux, Windows, and Mac via `painter_root()` (env override > repo >
-/// exe dir) with no compiled-in absolute paths.
+/// exe dir) with no compiled-in absolute paths. Runtime output lives under
+/// `artifacts/`; `context/` stays design-truth notes only.
 fn painter_autosave_root() -> PathBuf {
-    painter_root().join("context/painter/autosave")
+    painter_root().join("artifacts/autosave")
 }
 
 /// Change fingerprint for autosave dirty detection: the document structure
@@ -1665,7 +1666,7 @@ mod tests {
         std::env::set_var("THAUM_PAINTER_ROOT", "/tmp/fake-painter-root");
         assert_eq!(
             painter_autosave_root(),
-            PathBuf::from("/tmp/fake-painter-root/context/painter/autosave")
+            PathBuf::from("/tmp/fake-painter-root/artifacts/autosave")
         );
         std::env::remove_var("THAUM_PAINTER_ROOT");
     }
@@ -2242,7 +2243,7 @@ fn main() -> Result<()> {
         std::env::set_var("GIO_USE_VOLUME_MONITOR", "unix");
     }
     // Per-run log folder: configures the shared debug-log sink into
-    // context/debug-logging/<UTC-stamp>/run.log, culls older folders to the
+    // artifacts/debug-logging/<UTC-stamp>/run.log, culls older folders to the
     // newest five, and installs the panic hook. `THAUM_DEBUG` raises the floor.
     let run_log_dir = run_log::boot(&painter_root());
     let mut config = BootConfig::default();
