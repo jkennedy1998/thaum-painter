@@ -144,6 +144,7 @@ fn paint_flow_end_to_end_on_fresh_document() {
 }
 
 #[test]
+#[ignore = "requires the non-versioned local-document developer artifact"]
 fn paint_flow_on_real_local_document() {
     // The real local-document artifact is still a pre-bars schema-v1 file. The
     // binary-bars schema gate rejects it cleanly at load (typed error, no partial

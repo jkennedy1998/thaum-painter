@@ -65,5 +65,6 @@ The Painter entrypoint owns the live command bar and the release command. It exp
 ## post-implementation-notes
 - audit-2026-09-10: added the missing generated-release-notes publisher path. The guard was exercised for a mismatched package/tag before any authentication, tag, workflow, or website side effect. A real verified three-asset release, live HTTP result, and browser/manual tooltip smoke remain intentionally deferred.
 - release-readiness-audit-2026-09-10: corrected the renderer's `shape_fade_demo` compile failure (the fade needs a mutable binding for `print_fade`), proved its actual run, and added a Linux release-workflow gate that runs both exact checked-out Renderer and Painter workspaces before any archive build/publish. Both workspaces now pass locally; the existing v0.1.2 release exposes all three valid archives, and the canonical website route is deployed.
+- release-ci-fix-2026-09-10: the first v0.1.3 workflow correctly stopped before packaging because `paint_flow_on_real_local_document` assumed J's non-versioned local artifact existed in CI. No v0.1.3 GitHub Release was created. The test is now explicitly ignored outside its manual developer-fixture run; v0.1.4 is the next public-release version because the failed v0.1.3 source tag remains immutable.
 - plan-finished: false
 - encapsulation-git-commit: true
