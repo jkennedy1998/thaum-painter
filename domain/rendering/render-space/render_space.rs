@@ -1,10 +1,16 @@
 use anyhow::{Context, Result};
 use thaum_renderer_domain::{
-    Camera, Cell, CellColor, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint,
-    CellWeight, Composition, DataLanes, WorldPoint,
+    Camera, Cell, CellColor, CellColorSlot, CellGraphic, CellGroup, CellGroupIntakeBehavior,
+    CellMaterialId, CellPoint, CellWeight, Composition, DataLanes, SpriteGraphic, WorldPoint,
+    CELL_SHADER_TEXTURE_SHIMMER, CELL_SHADER_WARBLE_DIAGONAL, CELL_SHADER_WARBLE_DISTORT_1,
+    CELL_SHADER_WARBLE_DISTORT_5, CELL_SHADER_WARBLE_FUDGE_1, CELL_SHADER_WARBLE_FUDGE_5,
+    CELL_SHADER_WEIGHT_SIN,
 };
 
-use crate::file_schema::{parse_grid_point, FileSchema, GridPoint, Group, RasterSegment, Rgb};
+use crate::file_schema::{
+    parse_grid_point, CellAppearance, CellColorSlotValue, CellColorValue, CellGraphicValue,
+    FileSchema, GridPoint, Group, RasterSegment, Rgb,
+};
 
 /// The transient renderer handoff assembled from one file schema at one active breath.
 ///
@@ -41,13 +47,83 @@ fn add_grid_points(a: GridPoint, b: GridPoint) -> GridPoint {
     }
 }
 
-fn rgb_to_cell_color(rgb: Rgb) -> CellColor {
-    CellColor::Flat([
+fn rgb_to_cell_color(rgb: Rgb) -> [f32; 4] {
+    [
         rgb.r as f32 / 255.0,
         rgb.g as f32 / 255.0,
         rgb.b as f32 / 255.0,
         1.0,
-    ])
+    ]
+}
+
+/// Temporary renderer-asset-root bridge for the one built-in proof material.
+/// The source schema remains filename-based; a later renderer material registry
+/// replaces this narrow resolver without changing painter files.
+fn resolve_material_asset(asset_file: &str) -> Result<CellMaterialId> {
+    match asset_file {
+        "materials/gray-scale.json" => Ok(CellMaterialId::GrayScale),
+        _ => anyhow::bail!("unknown renderer material asset '{asset_file}'"),
+    }
+}
+
+fn resolve_color_slot(slot: &CellColorSlotValue) -> Result<CellColorSlot> {
+    match slot {
+        CellColorSlotValue::Flat(rgb) => Ok(CellColorSlot::Flat(rgb_to_cell_color(*rgb))),
+        CellColorSlotValue::Material { asset_file } => {
+            Ok(CellColorSlot::Material(resolve_material_asset(asset_file)?))
+        }
+    }
+}
+
+fn resolve_color(color: &CellColorValue) -> Result<CellColor> {
+    match color {
+        CellColorValue::Flat(rgb) => Ok(CellColor::Flat(rgb_to_cell_color(*rgb))),
+        CellColorValue::Material { asset_file } => {
+            Ok(CellColor::Material(resolve_material_asset(asset_file)?))
+        }
+        CellColorValue::Slots { a, b, c } => Ok(CellColor::slots(
+            resolve_color_slot(a)?,
+            resolve_color_slot(b)?,
+            resolve_color_slot(c)?,
+        )),
+    }
+}
+
+fn resolve_graphic(graphic: &CellGraphicValue) -> CellGraphic {
+    match graphic {
+        CellGraphicValue::Glyph(glyph) => CellGraphic::Glyph(*glyph),
+        CellGraphicValue::Sprite { asset_file } => {
+            CellGraphic::Sprite(SpriteGraphic::new(asset_file))
+        }
+    }
+}
+
+fn resolve_shader_asset(asset_file: &str) -> Result<u32> {
+    match asset_file {
+        "cell-shaders/weight-sin.json" => Ok(CELL_SHADER_WEIGHT_SIN),
+        "cell-shaders/texture-shimmer.json" => Ok(CELL_SHADER_TEXTURE_SHIMMER),
+        "cell-shaders/warble-diagonal.json" => Ok(CELL_SHADER_WARBLE_DIAGONAL),
+        "cell-shaders/warble-fudge-1.json" => Ok(CELL_SHADER_WARBLE_FUDGE_1),
+        "cell-shaders/warble-fudge-5.json" => Ok(CELL_SHADER_WARBLE_FUDGE_5),
+        "cell-shaders/warble-distort-1.json" => Ok(CELL_SHADER_WARBLE_DISTORT_1),
+        "cell-shaders/warble-distort-5.json" => Ok(CELL_SHADER_WARBLE_DISTORT_5),
+        _ => anyhow::bail!("unknown renderer cell shader asset '{asset_file}'"),
+    }
+}
+
+fn renderer_cell_from_appearance(position: CellPoint, appearance: &CellAppearance) -> Result<Cell> {
+    Ok(Cell {
+        position,
+        graphic: resolve_graphic(&appearance.graphic),
+        color: resolve_color(&appearance.color)?,
+        weight: CellWeight::from_index_clamped(appearance.weight_index as i32),
+        shader_stack: appearance
+            .shader_stack
+            .iter()
+            .map(|asset_file| resolve_shader_asset(asset_file))
+            .collect::<Result<Vec<_>>>()?,
+        ..Cell::default()
+    })
 }
 
 fn breath_in_window(breath: u32, start: u32, end: u32) -> bool {
@@ -107,13 +183,10 @@ fn build_group_cell_group(group: &Group, active_breath: u32) -> Result<CellGroup
 
     for voxel in &segment.voxels {
         let position = cell_point_from_grid(add_grid_points(move_offset, voxel.position));
-        cell_group.insert(Cell {
-            position,
-            graphic: CellGraphic::Glyph(voxel.char),
-            color: rgb_to_cell_color(voxel.rgb),
-            weight: CellWeight::from_index_clamped(voxel.weight_index as i32),
-            ..Cell::default()
-        });
+        cell_group.insert(
+            renderer_cell_from_appearance(position, &voxel.appearance)
+                .with_context(|| format!("invalid appearance at voxel {:?}", voxel.position))?,
+        );
     }
     Ok(cell_group)
 }
@@ -169,104 +242,77 @@ mod tests {
     use crate::storage::{SharedCellPatch, SharedDocumentFile};
 
     const EXAMPLE_FILE_SCHEMA_JSON: &str =
-        include_str!("../../file/file-schema/example-thaum-painter-file-v2.json");
+        include_str!("../../file/file-schema/example-thaum-painter-file-v3.json");
 
     fn example_file_schema() -> FileSchema {
         parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap()
     }
 
     #[test]
-    fn one_cell_group_is_emitted_per_group_in_group_order() {
+    fn one_cell_group_is_emitted_at_the_authored_placement() {
         let schema = example_file_schema();
         let composition = build_composition(&schema, 4).unwrap();
 
-        assert_eq!(composition.groups.len(), 4);
+        assert_eq!(composition.groups.len(), 1);
         assert_eq!(
             composition.groups[0].origin,
-            WorldPoint { x: 0, y: 0, z: 0 }
-        );
-        assert_eq!(
-            composition.groups[1].origin,
             WorldPoint { x: 3, y: 2, z: 1 }
-        );
-        assert_eq!(
-            composition.groups[2].origin,
-            WorldPoint { x: 2, y: 1, z: 2 }
-        );
-        assert_eq!(
-            composition.groups[3].origin,
-            WorldPoint { x: 18, y: 0, z: 0 }
         );
     }
 
     #[test]
-    fn each_group_becomes_its_own_cell_group_with_locally_offset_voxels() {
+    fn source_appearance_maps_glyph_sprite_material_slots_and_ordered_shaders() {
         let schema = example_file_schema();
         let composition = build_composition(&schema, 4).unwrap();
-        let letters = &composition.groups[1];
+        let asset = &composition.groups[0];
 
         assert_eq!(
-            letters.get(CellPoint { x: 0, y: 0, z: 0 }).unwrap().graphic,
+            asset.get(CellPoint { x: 1, y: 0, z: 0 }).unwrap().graphic,
             CellGraphic::Glyph('R')
         );
         assert_eq!(
-            letters.get(CellPoint { x: 1, y: 0, z: 0 }).unwrap().graphic,
-            CellGraphic::Glyph('U')
+            asset.get(CellPoint { x: 2, y: 0, z: 0 }).unwrap().color,
+            CellColor::Material(CellMaterialId::GrayScale)
         );
         assert_eq!(
-            letters.get(CellPoint { x: 2, y: 0, z: 0 }).unwrap().graphic,
-            CellGraphic::Glyph('N')
+            asset.get(CellPoint { x: 3, y: 0, z: 0 }).unwrap().graphic,
+            CellGraphic::Sprite(SpriteGraphic::new("cell-sprites/torch.png"))
         );
-    }
-
-    #[test]
-    fn breath_resolution_picks_the_segment_and_move_offset_active_at_the_chosen_breath() {
-        let schema = example_file_schema();
-
-        // at breath 2: dim glow segment, zero move offset
-        let dim = build_composition(&schema, 2).unwrap();
-        let dim_cell = dim.groups[2].get(CellPoint { x: 0, y: 0, z: 0 }).unwrap();
-        assert_eq!(dim_cell.graphic, CellGraphic::Glyph('░'));
-
-        // at breath 4: bright glow segment, shifted by the active move block's +1 x offset
-        let bright = build_composition(&schema, 4).unwrap();
-        assert!(bright.groups[2]
-            .get(CellPoint { x: 0, y: 0, z: 0 })
-            .is_none());
-        let bright_cell = bright.groups[2]
-            .get(CellPoint { x: 1, y: 0, z: 0 })
-            .unwrap();
-        assert_eq!(bright_cell.graphic, CellGraphic::Glyph('█'));
-        assert_eq!(bright_cell.weight, CellWeight::Three);
-    }
-
-    #[test]
-    fn cell_color_maps_rgb_zero_to_two_fifty_five_into_a_flat_zero_to_one_color() {
-        let schema = example_file_schema();
-        let composition = build_composition(&schema, 4).unwrap();
-        let torch = &composition.groups[3];
-
+        assert!(matches!(
+            asset.get(CellPoint { x: 4, y: 0, z: 0 }).unwrap().color,
+            CellColor::Slots { .. }
+        ));
         assert_eq!(
-            torch.get(CellPoint::origin()).unwrap().color,
-            CellColor::Flat([255.0 / 255.0, 140.0 / 255.0, 40.0 / 255.0, 1.0])
+            asset
+                .get(CellPoint { x: 1, y: 0, z: 0 })
+                .unwrap()
+                .shader_stack,
+            vec![CELL_SHADER_WEIGHT_SIN, CELL_SHADER_TEXTURE_SHIMMER]
         );
     }
 
     #[test]
-    fn invisible_groups_contribute_no_cells_without_affecting_their_siblings() {
-        let mut schema = example_file_schema();
-        schema.document.groups[3].visible = false;
-        schema.document.groups[1].visible = false;
-
+    fn move_properties_offset_the_resolved_source_cells() {
+        let schema = example_file_schema();
         let composition = build_composition(&schema, 4).unwrap();
-
-        assert!(composition.groups[3].bounds().is_none());
-        assert!(composition.groups[1]
-            .get(CellPoint { x: 0, y: 0, z: 0 })
-            .is_none());
         assert!(composition.groups[0]
             .get(CellPoint { x: 0, y: 0, z: 0 })
-            .is_some());
+            .is_none());
+        assert_eq!(
+            composition.groups[0]
+                .get(CellPoint { x: 1, y: 0, z: 0 })
+                .unwrap()
+                .graphic,
+            CellGraphic::Glyph('R')
+        );
+    }
+
+    #[test]
+    fn invisible_groups_contribute_no_cells() {
+        let mut schema = example_file_schema();
+        schema.document.groups[0].visible = false;
+        let composition = build_composition(&schema, 4).unwrap();
+        assert!(composition.groups[0].bounds().is_none());
     }
 
     #[test]
@@ -281,8 +327,24 @@ mod tests {
         let render_space = build_render_space(&schema, 4, camera).unwrap();
 
         assert_eq!(render_space.camera, camera);
-        assert_eq!(render_space.composition.groups.len(), 4);
+        assert_eq!(render_space.composition.groups.len(), 1);
         assert_eq!(render_space.data_lanes.breath(), Some(4));
+    }
+
+    #[test]
+    fn an_invisible_layer_renders_no_cell_group() {
+        // J 2026-09-12: the eye toggle must gate the live render path, not
+        // just the compositor.
+        let document = SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
+        let mut runtime = SharedDocumentRuntime::new(document);
+        assert!(runtime.set_layer_visible("layer-1", false));
+
+        let groups = build_document_layer_cell_groups(&runtime, 0, 0.0, None, None);
+        assert!(groups.is_empty());
+
+        assert!(runtime.set_layer_visible("layer-1", true));
+        let groups = build_document_layer_cell_groups(&runtime, 0, 0.0, None, None);
+        assert_eq!(groups.len(), 1);
     }
 
     #[test]
@@ -296,6 +358,7 @@ mod tests {
             graphic: CellGraphic::Glyph('#'),
             color: PaintColor::FlatRgb(255, 255, 255),
             weight_index: 1,
+            shader_stack: vec!["cell-shaders/weight-sin.json".to_string()],
         };
         runtime.stage_canvas_patches(
             "layer-1",
@@ -307,12 +370,16 @@ mod tests {
             )],
         );
         runtime.add_move_offset("layer-1", 0, WorldPoint { x: 2, y: 0, z: 3 });
+        assert!(runtime.set_layer_origin("layer-1", WorldPoint { x: 4, y: 5, z: 6 }));
 
         let groups = build_document_layer_cell_groups(&runtime, 0, 0.0, None, None);
         assert_eq!(groups.len(), 1);
-        assert!(groups[0]
+        assert_eq!(groups[0].origin, WorldPoint { x: 4, y: 5, z: 6 });
+        let moved_cell = groups[0]
             .iter_cells()
-            .any(|cell| cell.position == CellPoint { x: 7, y: 5, z: 3 }));
+            .find(|cell| cell.position == CellPoint { x: 7, y: 5, z: 3 })
+            .expect("moved painted cell");
+        assert_eq!(moved_cell.shader_stack, vec![CELL_SHADER_WEIGHT_SIN]);
 
         // An in-flight drag's pending delta stacks on the committed offset.
         let groups = build_document_layer_cell_groups(
@@ -337,7 +404,8 @@ use crate::Canvas;
 /// real rotating 3D intake path, not as module chrome, so the painter canvas
 /// lives in scene space while the UI panels stay in the flat 2D layer. Every
 /// cell shifts by the layer's active move offset — the offset changes where
-/// the layer renders, never the raster data itself.
+/// the layer renders, never the raster data itself. The returned group origin
+/// is supplied by the document-layer seam, where it remains a fixed pivot.
 pub fn build_paint_canvas_cell_group(canvas: &Canvas, move_offset: WorldPoint) -> CellGroup {
     let mut group = CellGroup::new(WorldPoint { x: 0, y: 0, z: 0 });
     for (position, painted) in canvas {
@@ -350,6 +418,14 @@ pub fn build_paint_canvas_cell_group(canvas: &Canvas, move_offset: WorldPoint) -
             graphic: painted.graphic.clone(),
             color: painted.color.to_cell_color(),
             weight: CellWeight::from_index_clamped(painted.weight_index as i32),
+            // Until the renderer registry lands, live preview can resolve its
+            // currently built-in filenames; persistence still retains unknown
+            // filenames verbatim for a future asset root.
+            shader_stack: painted
+                .shader_stack
+                .iter()
+                .filter_map(|asset_file| resolve_shader_asset(asset_file).ok())
+                .collect(),
             ..Cell::default()
         });
     }
@@ -374,6 +450,12 @@ pub fn build_document_layer_cell_groups(
     runtime
         .layers()
         .iter()
+        // The layer's visibility toggle gates the live render path too —
+        // hidden layers skip compositing here exactly as they do in
+        // `composited_canvas_in_layer_order` (J 2026-09-12: the eye toggle
+        // previously only affected the compositor, so the viewport ignored
+        // it).
+        .filter(|layer| layer.visible)
         .filter_map(|layer| {
             // The render path resolves raster interpolation: an interpolating
             // empty blends its surrounding keyframes' canvases instead of
@@ -397,7 +479,11 @@ pub fn build_document_layer_cell_groups(
                     };
                 }
             }
-            Some(build_paint_canvas_cell_group(&canvas, offset))
+            let mut group = build_paint_canvas_cell_group(&canvas, offset);
+            group.origin = runtime
+                .layer_origin(&layer.layer_id)
+                .unwrap_or_else(WorldPoint::origin);
+            Some(group)
         })
         .collect()
 }

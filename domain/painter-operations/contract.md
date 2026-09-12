@@ -4,7 +4,7 @@
 Own pure painter editing operations that can run headlessly over painter data.
 
 ## owns
-- draw/erase/line/rect/fill/text stamp semantics
+- draw, clear-character, line, rect, fill, and text-stamp semantics
 - import-time raster transforms that are not renderer-owned
 - operation-level cell comparison helpers for painter edits
 

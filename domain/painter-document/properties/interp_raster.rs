@@ -19,8 +19,9 @@
 //!   - a material color is discrete like a graphic and rides the same cutoff.
 //!   - a cell present in only one keyframe shows during the half its side is
 //!     active, with its weight fading toward Zero across that half. Its glyph
-//!     also walks the shape-fade system toward/from `▪`, the deliberately
-//!     low-coverage clear-transition glyph, before the cell vanishes or
+//!     also walks the shape-fade system toward/from the dot clear-transition
+//!     glyph (`.` — the old system's fade-into-clear character), before the
+//!     cell vanishes or
 //!     appears at the halfway crossing.
 //! - **smear** — interior-only raster mode: conservatively matches compatible
 //!   cells across the two keyframes, transports them along discrete 3D paths, and
@@ -257,6 +258,47 @@ fn blend_cells(
     blend_cells_with_weight_scale(from, to, progress, from_active, 1.0, graphic_fade)
 }
 
+/// Folds a non-empty run of cells into one blended representative at the
+/// halfway crossing — the picker's size-N footprint pick (J 2026-09-12):
+/// colors lerp channel-by-channel, weights lerp numerically, and glyph-backed
+/// graphics walk the shape-fade gradient between consecutive cells. Without
+/// an injected shape-fade resolver each pair falls back to the discrete
+/// halfway cutoff. The caller owns the run's order (canvas iteration order
+/// keeps it deterministic).
+pub fn blend_cell_run(cells: &[PaintedCell], graphic_fade: Option<&ShapeFade>) -> PaintedCell {
+    let mut iter = cells.iter();
+    let mut acc = iter
+        .next()
+        .expect("blend_cell_run requires a non-empty run")
+        .clone();
+    for next in iter {
+        acc = blend_cells(&acc, next, 0.5, false, graphic_fade);
+    }
+    acc
+}
+
+/// Fades one folded representative toward the dot clear-transition glyph by
+/// `clear_fraction` — the picker's size-N footprint straddling clear (J
+/// 2026-09-12): the new raster pick interpolates between the footprint's
+/// content and its clear cells exactly the way raster interpolation fades
+/// one-sided cells into clear. The clear fraction drives the identical
+/// shape-fade walk toward `.` and the identical weight fade toward Zero —
+/// sampled on the fade's own curve, so the glyph progress IS the clear
+/// fraction and the weight scales by the content fraction. A fraction of
+/// zero is the identity; the all-clear footprint never reaches here (the
+/// picker resolves it as the blank, like any empty pick).
+pub fn fade_cell_toward_clear(
+    cell: &PaintedCell,
+    clear_fraction: f32,
+    graphic_fade: Option<&ShapeFade>,
+) -> PaintedCell {
+    let progress = (clear_fraction * 0.5).clamp(0.0, 1.0);
+    if progress <= 0.0 {
+        return cell.clone();
+    }
+    fade_one_sided_cell(cell, progress, true, graphic_fade)
+}
+
 /// Shared raster-cell appearance resolution. Smear supplies a decreasing
 /// `weight_scale` for its trail samples before glyph selection, so ShapeFade
 /// selects a glyph that is actually available at the rendered trail weight.
@@ -286,8 +328,16 @@ pub(crate) fn blend_cells_with_weight_scale(
             renderer_weight(weight_index),
             graphic_fade,
         ),
-        color: blend_colors(from.color, to.color, progress, from_active),
+        color: blend_colors(&from.color, &to.color, progress, from_active),
         weight_index,
+        // Shader stacks are ordered discrete appearance: choose the same
+        // endpoint as the hard-cutoff graphic/material channels, never merge
+        // two stacks and accidentally change shader order.
+        shader_stack: if from_active {
+            from.shader_stack.clone()
+        } else {
+            to.shader_stack.clone()
+        },
     }
 }
 
@@ -295,10 +345,12 @@ fn scale_weight(weight_index: i64, scale: f32) -> i64 {
     (weight_index as f32 * scale.clamp(0.0, 1.0)).round() as i64
 }
 
-/// The shape-fade endpoint used in place of a truly absent cell. `▪` is a
-/// deliberately low-coverage loaded glyph, so it carries the transition toward
-/// less-covered raster content while still using the shared gradient tour.
-const CLEAR_TRANSITION_GLYPH: char = '▪';
+/// The shape-fade endpoint used in place of a truly absent cell. The dot is
+/// the old system's clear-transition character (J 2026-09-12): it is the
+/// lowest-coverage glyph the loaded typeface actually graphs, so the fade
+/// can walk real gradient steps all the way into clear instead of stalling
+/// on a block glyph the font set may not carry.
+const CLEAR_TRANSITION_GLYPH: char = '.';
 
 /// Resolves a present cell toward/from the clear-transition glyph over its
 /// active half, while preserving the existing numeric weight fade. Without a
@@ -399,21 +451,26 @@ fn resolve_graphic(
 /// interpolated raster content never creates a color outside that system.
 /// Anything else (material colors) is discrete and rides the graphic's halfway
 /// cutoff.
-fn blend_colors(from: PaintColor, to: PaintColor, progress: f32, from_active: bool) -> PaintColor {
+fn blend_colors(
+    from: &PaintColor,
+    to: &PaintColor,
+    progress: f32,
+    from_active: bool,
+) -> PaintColor {
     match (from, to) {
         (PaintColor::FlatRgb(r1, g1, b1), PaintColor::FlatRgb(r2, g2, b2)) => {
             let [red, green, blue] = nearest_indexed_rgb([
-                lerp_channel(r1, r2, progress),
-                lerp_channel(g1, g2, progress),
-                lerp_channel(b1, b2, progress),
+                lerp_channel(*r1, *r2, progress),
+                lerp_channel(*g1, *g2, progress),
+                lerp_channel(*b1, *b2, progress),
             ]);
             PaintColor::FlatRgb(red, green, blue)
         }
         (from, to) => {
             if from_active {
-                from
+                from.clone()
             } else {
-                to
+                to.clone()
             }
         }
     }
@@ -455,6 +512,7 @@ mod tests {
             graphic: CellGraphic::Glyph(glyph),
             color,
             weight_index: weight,
+            shader_stack: Vec::new(),
         }
     }
 
@@ -597,6 +655,37 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn a_folded_pick_fades_toward_the_dot_by_the_clear_fraction() {
+        // J 2026-09-12: the picker's clear interpolation reuses the one-sided
+        // fade exactly — the clear fraction is the fade's own progress, so
+        // the weight scales by the content fraction and the full fraction
+        // lands on the dot at Zero weight.
+        let fade = ShapeFade::build(&ClearTransitionTiles);
+        let authored = cell('x', PaintColor::flat_rgb(1, 2, 3), 4);
+        let untouched = fade_cell_toward_clear(&authored, 0.0, Some(&fade));
+        assert_eq!(untouched.weight_index, 4);
+        assert_eq!(untouched.graphic, CellGraphic::Glyph('x'));
+        let half_clear = fade_cell_toward_clear(&authored, 0.5, Some(&fade));
+        assert_eq!(half_clear.weight_index, 2);
+        let fully_clear = fade_cell_toward_clear(&authored, 1.0, Some(&fade));
+        assert_eq!(
+            fully_clear.graphic,
+            CellGraphic::Glyph(CLEAR_TRANSITION_GLYPH)
+        );
+        assert_eq!(fully_clear.weight_index, 0);
+    }
+
+    #[test]
+    fn without_a_resolver_the_clear_fraction_still_fades_the_weight() {
+        let authored = cell('x', PaintColor::flat_rgb(1, 2, 3), 4);
+        let faded = fade_cell_toward_clear(&authored, 0.5, None);
+        assert_eq!(faded.graphic, CellGraphic::Glyph('x'));
+        assert_eq!(faded.weight_index, 2);
+        assert_eq!(fade_cell_toward_clear(&authored, 0.0, None), authored);
+    }
+
+    #[test]
     fn one_sided_cells_walk_through_the_low_coverage_clear_transition_glyph() {
         let fade = ShapeFade::build(&ClearTransitionTiles);
         let authored = cell('x', PaintColor::flat_rgb(1, 2, 3), 4);
@@ -621,21 +710,30 @@ mod tests {
     }
 
     #[test]
-    fn material_colors_ride_the_graphic_cutoff() {
-        let from = canvas_with(&[(
-            point(0, 0),
-            cell('a', PaintColor::material(CellMaterialId::GrayScale), 1),
-        )]);
-        let to = canvas_with(&[(point(0, 0), cell('b', PaintColor::flat_rgb(10, 20, 30), 1))]);
+    fn material_colors_and_shader_stacks_ride_the_graphic_cutoff() {
+        let mut from_cell = cell('a', PaintColor::material(CellMaterialId::GrayScale), 1);
+        from_cell.shader_stack = vec!["cell-shaders/fire-low.json".to_string()];
+        let mut to_cell = cell('b', PaintColor::flat_rgb(10, 20, 30), 1);
+        to_cell.shader_stack = vec!["cell-shaders/weight-sin.json".to_string()];
+        let from = canvas_with(&[(point(0, 0), from_cell)]);
+        let to = canvas_with(&[(point(0, 0), to_cell)]);
         let first_half = blend_canvases(&from, &to, 0.25, None);
         assert_eq!(
             first_half.get(&point(0, 0)).unwrap().color,
             PaintColor::material(CellMaterialId::GrayScale)
         );
+        assert_eq!(
+            first_half.get(&point(0, 0)).unwrap().shader_stack,
+            vec!["cell-shaders/fire-low.json"]
+        );
         let second_half = blend_canvases(&from, &to, 0.75, None);
         assert_eq!(
             second_half.get(&point(0, 0)).unwrap().color,
             PaintColor::flat_rgb(10, 20, 30)
+        );
+        assert_eq!(
+            second_half.get(&point(0, 0)).unwrap().shader_stack,
+            vec!["cell-shaders/weight-sin.json"]
         );
     }
 

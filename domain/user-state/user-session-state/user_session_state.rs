@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
 use thaum_renderer_domain::{
-    CellGraphic, CellMaterialId, CommandBar, ControlsProfile, PersistedCommandBarState,
+    CellGraphic, CommandBar, ControlsProfile, PersistedCommandBarState,
     PersistedRendererUiSessionState, SpriteGraphic,
 };
 
 use crate::{
-    tool_state::ChannelMask, DrawingSpaceWheelMode, HandState, PaintColor, PaintHand, PaintTarget,
-    PaintTool, SelectionMode, ToolState,
+    tool_state::ChannelMask, DrawingSpaceWheelMode, HandState, PaintColor, PaintColorSlot,
+    PaintHand, PaintTarget, PaintTool, SelectionMode, ToolState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -42,6 +42,10 @@ pub struct PersistedPainterUiState {
     /// raster gap where the layer renders nothing and strokes are rejected.
     #[serde(default)]
     pub current_breath: u32,
+    /// Offscreen presentation resolution as a percentage of the window. This
+    /// is machine-local user preference, never portable document truth.
+    #[serde(default = "default_render_scale_percent")]
+    pub render_scale_percent: u8,
     pub tool_state: PersistedToolState,
 }
 
@@ -78,8 +82,27 @@ pub struct PersistedChannelMask {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum PersistedPaintColor {
+    FlatRgb {
+        red: u8,
+        green: u8,
+        blue: u8,
+    },
+    Material {
+        #[serde(alias = "material")]
+        asset_file: String,
+    },
+    Slots {
+        a: PersistedPaintColorSlot,
+        b: PersistedPaintColorSlot,
+        c: PersistedPaintColorSlot,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum PersistedPaintColorSlot {
     FlatRgb { red: u8, green: u8, blue: u8 },
-    Material { material: String },
+    Material { asset_file: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,6 +113,10 @@ pub enum PersistedGraphic {
     Sprite { atlas_relative_path: String },
 }
 
+fn default_render_scale_percent() -> u8 {
+    100
+}
+
 impl PersistedPainterUiState {
     pub fn from_runtime(
         drawing_space_wheel_mode: DrawingSpaceWheelMode,
@@ -97,6 +124,7 @@ impl PersistedPainterUiState {
         command_bar: &CommandBar,
         active_layer_id: Option<&str>,
         current_breath: u32,
+        render_scale_percent: u8,
         tool_state: &ToolState,
     ) -> Self {
         Self {
@@ -105,6 +133,7 @@ impl PersistedPainterUiState {
             command_bar: command_bar.persisted_state(),
             active_layer_id: active_layer_id.map(str::to_string),
             current_breath,
+            render_scale_percent: render_scale_percent.clamp(25, 100),
             tool_state: PersistedToolState::from_runtime(tool_state),
         }
     }
@@ -157,7 +186,7 @@ impl PersistedHandState {
     pub fn from_runtime(hand: &HandState) -> Self {
         Self {
             graphic: PersistedGraphic::from_runtime(&hand.graphic),
-            color: PersistedPaintColor::from_runtime(hand.color),
+            color: PersistedPaintColor::from_runtime(&hand.color),
             weight_index: hand.weight_index,
             brush_size: hand.brush_size,
             fill_diagonal: hand.fill_diagonal,
@@ -174,7 +203,7 @@ impl PersistedHandState {
         hand.weight_index = self.weight_index.clamp(0, 3);
         hand.brush_size = self.brush_size.clamp(1, 5);
         hand.fill_diagonal = self.fill_diagonal;
-            hand.pick_opposite_hand = self.pick_opposite_hand;
+        hand.pick_opposite_hand = self.pick_opposite_hand;
         hand.edit_channels = self.edit_channels.to_mask();
         hand.select_channels = self.select_channels.to_mask();
         if let Some(target) = target_from_name(&self.target) {
@@ -202,11 +231,20 @@ impl PersistedChannelMask {
 }
 
 impl PersistedPaintColor {
-    fn from_runtime(color: PaintColor) -> Self {
+    fn from_runtime(color: &PaintColor) -> Self {
         match color {
-            PaintColor::FlatRgb(red, green, blue) => Self::FlatRgb { red, green, blue },
-            PaintColor::Material(material) => Self::Material {
-                material: material_name(material).to_string(),
+            PaintColor::FlatRgb(red, green, blue) => Self::FlatRgb {
+                red: *red,
+                green: *green,
+                blue: *blue,
+            },
+            PaintColor::Material { asset_file } => Self::Material {
+                asset_file: asset_file.clone(),
+            },
+            PaintColor::Slots { a, b, c } => Self::Slots {
+                a: PersistedPaintColorSlot::from_runtime(a),
+                b: PersistedPaintColorSlot::from_runtime(b),
+                c: PersistedPaintColorSlot::from_runtime(c),
             },
         }
     }
@@ -214,9 +252,32 @@ impl PersistedPaintColor {
     fn to_runtime(&self) -> PaintColor {
         match self {
             Self::FlatRgb { red, green, blue } => PaintColor::flat_rgb(*red, *green, *blue),
-            Self::Material { material } => material_from_name(material)
-                .map(PaintColor::material)
-                .unwrap_or_default(),
+            Self::Material { asset_file } => PaintColor::material_asset(asset_file),
+            Self::Slots { a, b, c } => {
+                PaintColor::slots(a.to_runtime(), b.to_runtime(), c.to_runtime())
+            }
+        }
+    }
+}
+
+impl PersistedPaintColorSlot {
+    fn from_runtime(slot: &PaintColorSlot) -> Self {
+        match slot {
+            PaintColorSlot::FlatRgb(red, green, blue) => Self::FlatRgb {
+                red: *red,
+                green: *green,
+                blue: *blue,
+            },
+            PaintColorSlot::Material { asset_file } => Self::Material {
+                asset_file: asset_file.clone(),
+            },
+        }
+    }
+
+    fn to_runtime(&self) -> PaintColorSlot {
+        match self {
+            Self::FlatRgb { red, green, blue } => PaintColor::flat_slot(*red, *green, *blue),
+            Self::Material { asset_file } => PaintColor::material_slot(asset_file),
         }
     }
 }
@@ -318,19 +379,6 @@ fn target_from_name(name: &str) -> Option<PaintTarget> {
     }
 }
 
-fn material_name(material: CellMaterialId) -> &'static str {
-    match material {
-        CellMaterialId::GrayScale => "gray-scale",
-    }
-}
-
-fn material_from_name(name: &str) -> Option<CellMaterialId> {
-    match name {
-        "gray-scale" => Some(CellMaterialId::GrayScale),
-        _ => None,
-    }
-}
-
 // --- session-state file IO and projection -----------------------------------
 
 use std::fs;
@@ -338,8 +386,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use thaum_renderer_domain::{
-    Camera, CameraRoll, CameraSwing, CellPoint, ModuleRegistry, ParallaxProfile,
-    PerspectiveProfile, UiPalette, WorldPoint,
+    Camera, CameraRoll, CameraSwing, CellPoint, ParallaxProfile,
+    PerspectiveProfile, WorldPoint,
 };
 
 pub fn painter_session_state_path(artifacts_root: &Path, user_id: &str) -> PathBuf {
@@ -386,42 +434,6 @@ pub fn save_painter_user_session_state(path: &Path, state: &PainterUserSessionSt
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn build_user_session_state(
-    user_id: &str,
-    camera: Camera,
-    modules: &ModuleRegistry,
-    ui_palette: &UiPalette,
-    command_bar: &CommandBar,
-    active_layer_id: Option<&str>,
-    current_breath: u32,
-    drawing_space_wheel_mode: crate::DrawingSpaceWheelMode,
-    selection_mode: SelectionMode,
-    tool_state: &ToolState,
-) -> PainterUserSessionState {
-    PainterUserSessionState {
-        schema_version: 1,
-        app_id: "thaum-painter".to_string(),
-        user_id: user_id.to_string(),
-        workspace_id: "default-workspace".to_string(),
-        renderer: PersistedRendererUiSessionState::new(
-            camera,
-            modules.persisted_ui_state(),
-            ui_palette,
-        ),
-        painter: PersistedPainterUiState::from_runtime(
-            drawing_space_wheel_mode,
-            selection_mode,
-            command_bar,
-            active_layer_id,
-            current_breath,
-            tool_state,
-        ),
-        controls_profile: ControlsProfile::new(),
-        session_display_name: None,
-    }
-}
-
 /// The painter's default camera: the tuned Linux-boot view captured as the
 /// shared default. Module default rects are HUD-space and tuned against this
 /// camera, so a fresh boot (no user session state) reproduces the intended
@@ -445,4 +457,54 @@ pub fn painter_default_camera() -> Camera {
         offset: [0.0, 0.0],
     };
     camera
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{DrawingSpaceWheelMode, SelectionMode, ToolState};
+    use thaum_renderer_domain::{CommandBar, UiPalette};
+
+    fn sample_painter_state(render_scale_percent: u8) -> PersistedPainterUiState {
+        let command_bar = CommandBar::new("bar", UiPalette::default());
+        PersistedPainterUiState::from_runtime(
+            DrawingSpaceWheelMode::Pan,
+            SelectionMode::Replace,
+            &command_bar,
+            Some("layer-1"),
+            12,
+            render_scale_percent,
+            &ToolState::default(),
+        )
+    }
+
+    #[test]
+    fn render_scale_percent_clamps_to_the_user_range() {
+        assert_eq!(sample_painter_state(100).render_scale_percent, 100);
+        assert_eq!(sample_painter_state(55).render_scale_percent, 55);
+        assert_eq!(sample_painter_state(0).render_scale_percent, 25);
+        assert_eq!(sample_painter_state(255).render_scale_percent, 100);
+    }
+
+    #[test]
+    fn render_scale_percent_survives_a_serde_round_trip() {
+        let state = sample_painter_state(50);
+        let text = serde_json::to_string(&state).expect("serialize");
+        let restored: PersistedPainterUiState =
+            serde_json::from_str(&text).expect("deserialize");
+        assert_eq!(restored.render_scale_percent, 50);
+    }
+
+    #[test]
+    fn snapshots_from_before_the_quality_scale_default_to_100_percent() {
+        let state = sample_painter_state(50);
+        let mut value = serde_json::to_value(&state).expect("serialize");
+        value
+            .as_object_mut()
+            .expect("painter state is an object")
+            .remove("render_scale_percent");
+        let restored: PersistedPainterUiState =
+            serde_json::from_value(value).expect("deserialize legacy snapshot");
+        assert_eq!(restored.render_scale_percent, 100);
+    }
 }

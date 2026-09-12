@@ -1,10 +1,10 @@
 use std::{cell::RefCell, rc::Rc};
 
 use thaum_renderer_domain::{
-    Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, CellWeight, GizmoBar,
-    GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module, ModulePointerButton,
+    title_hotspot, Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, CellWeight,
+    GizmoBar, GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module, ModulePointerButton,
     ModulePointerEvent, ModuleRect, PanelChrome, PersistedModuleUiState, ScrollState,
-    SpriteGraphic, UiColorRole, UiPalette, WorldPoint, title_hotspot,
+    SpriteGraphic, UiColorRole, UiPalette, WorldPoint,
 };
 
 use crate::tool_state::{HandState, PaintHand, ToolState};
@@ -31,15 +31,21 @@ struct SpriteOption {
 /// larger than the panel crops and scrolls instead of forcing panel size.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ContentRow {
-    Text(&'static str, UiColorRole),
-    Blank,
     SectionTitle(String),
+    /// The painter's clear character. It displays as a dot but equips a real
+    /// space glyph, which every paint tool resolves through `write_cell`.
+    Clear,
     Glyphs(Vec<char>),
     Sprite(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LayoutHit {
+    Clear {
+        x0: i32,
+        x1: i32,
+        y: i32,
+    },
     Glyph {
         x: i32,
         y: i32,
@@ -237,7 +243,10 @@ impl GraphicPickerModule {
     fn build_scroll_rows(&self) -> Vec<ContentRow> {
         let (content_width, _) = PanelChrome::content_size(self.rect);
         let columns = content_width.max(1) as usize;
-        let mut rows = Vec::new();
+        let mut rows = vec![
+            ContentRow::SectionTitle("character".to_string()),
+            ContentRow::Clear,
+        ];
         for section in &self.glyph_sections {
             rows.push(ContentRow::SectionTitle(section.title.clone()));
             for glyph_row in section.glyphs.chunks(columns) {
@@ -409,8 +418,6 @@ impl GraphicPickerModule {
         for (row_index, row) in rows.iter().skip(scroll).take(available).enumerate() {
             let y = first_y - row_index as i32;
             match row {
-                ContentRow::Text(text, role) => draw_text(text, content_x, y, *role, &mut cells),
-                ContentRow::Blank => {}
                 ContentRow::SectionTitle(title) => draw_text(
                     &format_section_title(title),
                     content_x,
@@ -418,6 +425,27 @@ impl GraphicPickerModule {
                     UiColorRole::Vivid,
                     &mut cells,
                 ),
+                ContentRow::Clear => {
+                    let graphic = CellGraphic::Glyph(' ');
+                    let role = assignment_role(&state, &graphic);
+                    cells.push(Cell {
+                        position: CellPoint {
+                            x: content_x,
+                            y,
+                            z: 0,
+                        },
+                        graphic: CellGraphic::Glyph('·'),
+                        color: preview_color(&state, &graphic, &self.palette),
+                        weight: preview_weight(&state, &graphic),
+                        ..Cell::default()
+                    });
+                    draw_text("CLEAR", content_x + 2, y, role, &mut cells);
+                    hits.push(LayoutHit::Clear {
+                        x0: content_x,
+                        x1: max_x,
+                        y,
+                    });
+                }
                 ContentRow::Glyphs(glyph_row) => {
                     for (column, glyph) in glyph_row.iter().enumerate() {
                         let x = content_x + column as i32;
@@ -491,6 +519,10 @@ impl GraphicPickerModule {
     fn hit_graphic_at(&self, x: i32, y: i32) -> Option<CellGraphic> {
         let (_, hits) = self.build_layout();
         hits.into_iter().find_map(|hit| match hit {
+            LayoutHit::Clear { x0, x1, y: hit_y } => {
+                (y - self.rect.y0 == hit_y && x - self.rect.x0 >= x0 && x - self.rect.x0 <= x1)
+                    .then_some(CellGraphic::Glyph(' '))
+            }
             LayoutHit::Glyph {
                 x: hit_x,
                 y: hit_y,
@@ -533,48 +565,52 @@ impl Module for GraphicPickerModule {
             "graphics module",
             "picks the glyph or sprite for your given hand. left click for left hand, right click for right hand.",
         )];
-        custom.extend(
-            hits
-            .into_iter()
-            .map(|hit| match hit {
-                LayoutHit::Glyph { x, y, graphic } => {
-                    let title = match graphic {
-                        CellGraphic::Glyph(glyph) => format!("glyph {glyph}"),
-                        _ => "glyph".to_string(),
-                    };
-                    // J 2026-09-10: the glyph's description is its unicode
-                    // character key — clean and techy.
-                    let key = match &graphic {
-                        CellGraphic::Glyph(glyph) => format!("U+{:04X}", *glyph as u32),
-                        _ => "glyph".to_string(),
-                    };
-                    Hotspot::new(
-                        ModuleRect {
-                            x0: self.rect.x0 + x,
-                            y0: self.rect.y0 + y,
-                            x1: self.rect.x0 + x,
-                            y1: self.rect.y0 + y,
-                        },
-                        title,
-                        format!(
-                            "{key} — click to equip on a hand: left-click left, right-click right"
-                        ),
-                    )
-                }
-                LayoutHit::Sprite { x0, x1, y, .. } | LayoutHit::Recent { x0, x1, y, .. } => {
-                    Hotspot::new(
-                        ModuleRect {
-                            x0: self.rect.x0 + x0,
-                            y0: self.rect.y0 + y,
-                            x1: self.rect.x0 + x1,
-                            y1: self.rect.y0 + y,
-                        },
-                        "sprite",
-                        "click to equip on a hand: left-click left, right-click right",
-                    )
-                }
-            }),
-        );
+        custom.extend(hits.into_iter().map(|hit| match hit {
+            LayoutHit::Clear { x0, x1, y } => Hotspot::new(
+                ModuleRect {
+                    x0: self.rect.x0 + x0,
+                    y0: self.rect.y0 + y,
+                    x1: self.rect.x0 + x1,
+                    y1: self.rect.y0 + y,
+                },
+                "clear character",
+                "equip the clear character on a hand; brush, fill, lasso, and future paint tools then clear cells",
+            ),
+            LayoutHit::Glyph { x, y, graphic } => {
+                let title = match graphic {
+                    CellGraphic::Glyph(glyph) => format!("glyph {glyph}"),
+                    _ => "glyph".to_string(),
+                };
+                // J 2026-09-10: the glyph's description is its unicode
+                // character key — clean and techy.
+                let key = match &graphic {
+                    CellGraphic::Glyph(glyph) => format!("U+{:04X}", *glyph as u32),
+                    _ => "glyph".to_string(),
+                };
+                Hotspot::new(
+                    ModuleRect {
+                        x0: self.rect.x0 + x,
+                        y0: self.rect.y0 + y,
+                        x1: self.rect.x0 + x,
+                        y1: self.rect.y0 + y,
+                    },
+                    title,
+                    format!("{key} — click to equip on a hand: left-click left, right-click right"),
+                )
+            }
+            LayoutHit::Sprite { x0, x1, y, .. } | LayoutHit::Recent { x0, x1, y, .. } => {
+                Hotspot::new(
+                    ModuleRect {
+                        x0: self.rect.x0 + x0,
+                        y0: self.rect.y0 + y,
+                        x1: self.rect.x0 + x1,
+                        y1: self.rect.y0 + y,
+                    },
+                    "sprite",
+                    "click to equip on a hand: left-click left, right-click right",
+                )
+            }
+        }));
         self.gizmos.hotspots_with(self.rect, custom)
     }
 
@@ -678,6 +714,16 @@ mod tests {
         module
             .glyph_hit_option(needle)
             .unwrap_or_else(|| panic!("glyph hit should exist: {needle}"))
+    }
+
+    fn clear_hit(module: &GraphicPickerModule) -> (i32, i32) {
+        let (_, hits) = module.build_layout();
+        hits.into_iter()
+            .find_map(|hit| match hit {
+                LayoutHit::Clear { x0, y, .. } => Some((module.rect.x0 + x0, module.rect.y0 + y)),
+                _ => None,
+            })
+            .expect("clear character hit should exist")
     }
 
     fn scroll_to_top(module: &mut GraphicPickerModule) {
@@ -789,6 +835,22 @@ mod tests {
 
         assert_eq!(state.borrow().left_hand.graphic, CellGraphic::Glyph('A'));
         assert_eq!(state.borrow().active_hand, PaintHand::Left);
+    }
+
+    #[test]
+    fn clear_character_is_visible_and_assigns_a_real_blank_glyph() {
+        let state = tool_state();
+        let mut module = GraphicPickerModule::new("graphics", rect(), state.clone());
+        let (x, y) = clear_hit(&module);
+
+        module.on_pointer_event(ModulePointerEvent::Click {
+            x,
+            y,
+            button: ModulePointerButton::Right,
+        });
+
+        assert_eq!(state.borrow().right_hand.graphic, CellGraphic::Glyph(' '));
+        assert_eq!(state.borrow().active_hand, PaintHand::Right);
     }
 
     #[test]

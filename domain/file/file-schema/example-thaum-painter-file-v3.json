@@ -1,0 +1,140 @@
+{
+  "kind": "thaum-painter-file",
+  "version": 3,
+  "metadata": {
+    "document_id": "doc_cell_language_001",
+    "title": "Cell Language Proof",
+    "description": "Glyph, sprite, flat, material, slots, and ordered shader source values.",
+    "tags": ["cell-language", "animated"],
+    "created_at": "2026-09-12T12:00:00.000Z",
+    "modified_at": "2026-09-12T12:00:00.000Z",
+    "authoring_origin": "thaum-painter"
+  },
+  "document": {
+    "bounds": {
+      "min_x": 0,
+      "min_y": 0,
+      "min_z": 0,
+      "width": 4,
+      "height": 1,
+      "depth": 1
+    },
+    "group_order": ["group_asset"],
+    "groups": [
+      {
+        "id": "group_asset",
+        "name": "Asset",
+        "visible": true,
+        "locked": false,
+        "opacity": 1,
+        "origin": { "x": 1, "y": 0, "z": 0 },
+        "placement": { "x": 3, "y": 2, "z": 1 },
+        "timing": {
+          "start_breath": 0,
+          "window_start_breath": 0,
+          "window_end_breath": 7
+        },
+        "raster_segments": [
+          {
+            "id": "segment_asset",
+            "start_breath": 0,
+            "end_breath": 7,
+            "voxels": [
+              {
+                "x": 0,
+                "y": 0,
+                "z": 0,
+                "appearance": {
+                  "graphic": { "kind": "glyph", "glyph": "R" },
+                  "color": { "kind": "flat", "rgb": { "r": 255, "g": 210, "b": 120 } },
+                  "weight_index": 2,
+                  "shader_stack": ["cell-shaders/weight-sin.json", "cell-shaders/texture-shimmer.json"]
+                }
+              },
+              {
+                "x": 1,
+                "y": 0,
+                "z": 0,
+                "appearance": {
+                  "graphic": { "kind": "glyph", "glyph": "M" },
+                  "color": { "kind": "material", "asset_file": "materials/gray-scale.json" },
+                  "weight_index": 2,
+                  "shader_stack": []
+                }
+              },
+              {
+                "x": 2,
+                "y": 0,
+                "z": 0,
+                "appearance": {
+                  "graphic": { "kind": "sprite", "asset_file": "cell-sprites/torch.png" },
+                  "color": { "kind": "flat", "rgb": { "r": 255, "g": 140, "b": 40 } },
+                  "weight_index": 2,
+                  "shader_stack": []
+                }
+              },
+              {
+                "x": 3,
+                "y": 0,
+                "z": 0,
+                "appearance": {
+                  "graphic": { "kind": "sprite", "asset_file": "cell-sprites/crystal.png" },
+                  "color": {
+                    "kind": "slots",
+                    "a": { "kind": "material", "asset_file": "materials/gray-scale.json" },
+                    "b": { "kind": "flat", "rgb": { "r": 70, "g": 160, "b": 255 } },
+                    "c": { "kind": "flat", "rgb": { "r": 255, "g": 255, "b": 255 } }
+                  },
+                  "weight_index": 3,
+                  "shader_stack": []
+                }
+              }
+            ]
+          }
+        ],
+        "properties": [
+          {
+            "id": "prop_asset_move",
+            "kind": "move",
+            "blocks": [
+              {
+                "id": "block_asset_move",
+                "start_breath": 0,
+                "end_breath": 7,
+                "value": { "x": 1, "y": 0, "z": 0 }
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "playback": {
+      "frames_per_breath": 6,
+      "loop_enabled": true,
+      "document_window_start_breath": 0,
+      "document_window_end_breath": 7
+    },
+    "exports": {
+      "flat": {
+        "file_name": "exports/cell-language-proof.taf",
+        "name": "Cell Language Proof",
+        "facing": "pos-z",
+        "interpolation": "preserve"
+      }
+    }
+  },
+  "time_assets": { "particle_effects": [] },
+  "saved_camera_defaults": {
+    "orientation": "xy",
+    "focus_plane": 0,
+    "viewport_scale": 1,
+    "show_all_layers": false,
+    "center_target_in_view": true,
+    "pan_x": 0,
+    "pan_y": 0
+  },
+  "import_export_bookkeeping": {
+    "source_import": null,
+    "last_export": null
+  }
+}

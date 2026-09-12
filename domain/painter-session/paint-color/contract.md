@@ -1,7 +1,7 @@
 # thaum-painter/domain/painter-session/paint-color
 
 ## purpose
-Own painter's live color choice shape so hand state and painted cells can carry either a direct RGB color or a material selection without leaking renderer cell-color details everywhere.
+Own painter's portable live color choice shape so hand state and painted cells carry direct RGB, filename-backed material, or A/B/C slot values without leaking renderer cell-color details everywhere.
 
 ## owns
 - the `PaintColor` type
@@ -31,7 +31,8 @@ Own painter's live color choice shape so hand state and painted cells can carry 
 - `PaintColor::flat_rgb(red, green, blue)`
 - `legacy_indexed_palette()`
 - `nearest_indexed_rgb(rgb)`
-- `PaintColor::material(material)`
+- `PaintColor::material(material)` / `PaintColor::material_asset(asset_file)`
+- `PaintColor::slots(a, b, c)` and `PaintColorSlot`
 - `PaintColor::to_cell_color()`
 - `PaintColor::preview_rgb()`
 - `PaintColor::label()`
@@ -55,3 +56,4 @@ Own painter's live color choice shape so hand state and painted cells can carry 
 
 ## notes
 - source-of-truth from J: painter color choice should grow cleanly to cover both indexed colors and material palettes.
+- Asset-backed values retain relative filenames in painter state. `to_cell_color()` is a temporary built-in preview bridge until the renderer owns general filename resolution.

@@ -207,8 +207,11 @@ pub fn flood_fill_points_with_connectivity(
         if !seen.insert(point) || !bounds.contains(point) {
             continue;
         }
-        if !cells_match_on_mask(effective_cell(canvas.get(&point)).cloned(), target.clone(), mask)
-        {
+        if !cells_match_on_mask(
+            effective_cell(canvas.get(&point)).cloned(),
+            target.clone(),
+            mask,
+        ) {
             continue;
         }
 
@@ -284,6 +287,7 @@ mod tests {
             graphic: thaum_renderer_domain::CellGraphic::Glyph(glyph),
             color: PaintColor::flat_rgb(255, 255, 255),
             weight_index: 1,
+            shader_stack: Vec::new(),
         }
     }
 
@@ -325,6 +329,7 @@ mod tests {
                 graphic: CellGraphic::Glyph(' '),
                 color: crate::paint_color::PaintColor::flat_rgb(1, 2, 3),
                 weight_index: 2,
+                shader_stack: Vec::new(),
             },
         );
 

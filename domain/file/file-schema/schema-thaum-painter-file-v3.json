@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "thaum-painter file v3",
+  "type": "object",
+  "required": ["kind", "version", "metadata", "document", "time_assets", "saved_camera_defaults", "import_export_bookkeeping"],
+  "properties": {
+    "kind": { "const": "thaum-painter-file" },
+    "version": { "const": 3 },
+    "document": {
+      "type": "object",
+      "required": ["bounds", "group_order", "groups", "playback", "exports"],
+      "properties": {
+        "groups": { "type": "array", "items": { "$ref": "#/$defs/group" } },
+        "exports": {
+          "type": "object",
+          "required": ["flat"],
+          "properties": {
+            "flat": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/flatExport" }] }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "assetFile": { "type": "string", "minLength": 1, "not": { "pattern": "^(?:/|\\\\)|(?:.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$))" } },
+    "rgb": {
+      "type": "object",
+      "required": ["r", "g", "b"],
+      "properties": {
+        "r": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "g": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "b": { "type": "integer", "minimum": 0, "maximum": 255 }
+      }
+    },
+    "colorSlot": {
+      "oneOf": [
+        { "type": "object", "required": ["kind", "rgb"], "properties": { "kind": { "const": "flat" }, "rgb": { "$ref": "#/$defs/rgb" } } },
+        { "type": "object", "required": ["kind", "asset_file"], "properties": { "kind": { "const": "material" }, "asset_file": { "$ref": "#/$defs/assetFile" } } }
+      ]
+    },
+    "color": {
+      "oneOf": [
+        { "$ref": "#/$defs/colorSlot" },
+        { "type": "object", "required": ["kind", "a", "b", "c"], "properties": { "kind": { "const": "slots" }, "a": { "$ref": "#/$defs/colorSlot" }, "b": { "$ref": "#/$defs/colorSlot" }, "c": { "$ref": "#/$defs/colorSlot" } } }
+      ]
+    },
+    "appearance": {
+      "type": "object",
+      "required": ["graphic", "color", "weight_index", "shader_stack"],
+      "properties": {
+        "graphic": {
+          "oneOf": [
+            { "type": "object", "required": ["kind", "glyph"], "properties": { "kind": { "const": "glyph" }, "glyph": { "type": "string", "minLength": 1, "maxLength": 1 } } },
+            { "type": "object", "required": ["kind", "asset_file"], "properties": { "kind": { "const": "sprite" }, "asset_file": { "$ref": "#/$defs/assetFile" } } }
+          ]
+        },
+        "color": { "$ref": "#/$defs/color" },
+        "weight_index": { "type": "integer" },
+        "shader_stack": { "type": "array", "items": { "$ref": "#/$defs/assetFile" } }
+      }
+    },
+    "voxel": {
+      "type": "object",
+      "required": ["x", "y", "z", "appearance"],
+      "properties": { "x": { "type": "integer" }, "y": { "type": "integer" }, "z": { "type": "integer" }, "appearance": { "$ref": "#/$defs/appearance" } }
+    },
+    "group": {
+      "type": "object",
+      "required": ["id", "name", "visible", "locked", "opacity", "origin", "placement", "timing", "raster_segments", "properties"],
+      "properties": {
+        "origin": { "$ref": "#/$defs/point" },
+        "placement": { "$ref": "#/$defs/point" },
+        "raster_segments": { "type": "array", "items": { "type": "object", "required": ["id", "start_breath", "end_breath", "voxels"], "properties": { "voxels": { "type": "array", "items": { "$ref": "#/$defs/voxel" } } } } }
+      }
+    },
+    "point": { "type": "object", "required": ["x", "y", "z"], "properties": { "x": { "type": "integer" }, "y": { "type": "integer" }, "z": { "type": "integer" } } },
+    "flatExport": {
+      "type": "object",
+      "required": ["file_name", "name", "facing", "interpolation"],
+      "properties": {
+        "file_name": { "$ref": "#/$defs/assetFile" },
+        "name": { "type": "string", "minLength": 1 },
+        "facing": { "type": "string", "enum": ["pos-x", "neg-x", "pos-y", "neg-y", "pos-z", "neg-z"] },
+        "interpolation": { "const": "preserve" }
+      }
+    }
+  }
+}

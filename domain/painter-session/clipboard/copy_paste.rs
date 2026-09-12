@@ -26,8 +26,8 @@ use thaum_renderer_domain::{CellGraphic, CellPoint};
 
 use crate::brush::{is_blank_cell, Canvas, PaintedCell};
 use crate::paint_color::PaintColor;
+use crate::paint_color::PaintColorSlot;
 use crate::selection_state::PainterSelection;
-use crate::storage::{material_from_name, material_name};
 
 /// The OS-clipboard text prefix. Copy/paste payloads that start with this are
 /// thaum 3D world copies; anything else is foreign text and not understood
@@ -234,6 +234,8 @@ struct ClipboardCellPayload {
     graphic: ClipboardGraphicPayload,
     color: ClipboardColorPayload,
     weight_index: i64,
+    #[serde(default)]
+    shader_stack: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -245,8 +247,79 @@ enum ClipboardGraphicPayload {
 
 #[derive(Debug, Serialize, Deserialize)]
 enum ClipboardColorPayload {
+    FlatRgb {
+        red: u8,
+        green: u8,
+        blue: u8,
+    },
+    Material {
+        asset_file: String,
+    },
+    Slots {
+        a: ClipboardColorSlotPayload,
+        b: ClipboardColorSlotPayload,
+        c: ClipboardColorSlotPayload,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+enum ClipboardColorSlotPayload {
     FlatRgb { red: u8, green: u8, blue: u8 },
-    Material(String),
+    Material { asset_file: String },
+}
+
+fn clipboard_color_from_runtime(color: &PaintColor) -> ClipboardColorPayload {
+    match color {
+        PaintColor::FlatRgb(red, green, blue) => ClipboardColorPayload::FlatRgb {
+            red: *red,
+            green: *green,
+            blue: *blue,
+        },
+        PaintColor::Material { asset_file } => ClipboardColorPayload::Material {
+            asset_file: asset_file.clone(),
+        },
+        PaintColor::Slots { a, b, c } => ClipboardColorPayload::Slots {
+            a: clipboard_slot_from_runtime(a),
+            b: clipboard_slot_from_runtime(b),
+            c: clipboard_slot_from_runtime(c),
+        },
+    }
+}
+
+fn clipboard_color_to_runtime(color: ClipboardColorPayload) -> PaintColor {
+    match color {
+        ClipboardColorPayload::FlatRgb { red, green, blue } => {
+            PaintColor::flat_rgb(red, green, blue)
+        }
+        ClipboardColorPayload::Material { asset_file } => PaintColor::material_asset(asset_file),
+        ClipboardColorPayload::Slots { a, b, c } => PaintColor::slots(
+            clipboard_slot_to_runtime(a),
+            clipboard_slot_to_runtime(b),
+            clipboard_slot_to_runtime(c),
+        ),
+    }
+}
+
+fn clipboard_slot_from_runtime(slot: &PaintColorSlot) -> ClipboardColorSlotPayload {
+    match slot {
+        PaintColorSlot::FlatRgb(red, green, blue) => ClipboardColorSlotPayload::FlatRgb {
+            red: *red,
+            green: *green,
+            blue: *blue,
+        },
+        PaintColorSlot::Material { asset_file } => ClipboardColorSlotPayload::Material {
+            asset_file: asset_file.clone(),
+        },
+    }
+}
+
+fn clipboard_slot_to_runtime(slot: ClipboardColorSlotPayload) -> PaintColorSlot {
+    match slot {
+        ClipboardColorSlotPayload::FlatRgb { red, green, blue } => {
+            PaintColor::flat_slot(red, green, blue)
+        }
+        ClipboardColorSlotPayload::Material { asset_file } => PaintColor::material_slot(asset_file),
+    }
 }
 
 impl ClipboardPayload {
@@ -266,15 +339,9 @@ impl ClipboardPayload {
                             sprite.atlas_relative_path().to_string_lossy().into_owned(),
                         ),
                     },
-                    color: match cell.color {
-                        PaintColor::FlatRgb(red, green, blue) => {
-                            ClipboardColorPayload::FlatRgb { red, green, blue }
-                        }
-                        PaintColor::Material(material) => {
-                            ClipboardColorPayload::Material(material_name(material).to_string())
-                        }
-                    },
+                    color: clipboard_color_from_runtime(&cell.color),
                     weight_index: cell.weight_index,
+                    shader_stack: cell.shader_stack.clone(),
                 })
                 .collect(),
         }
@@ -295,20 +362,13 @@ impl ClipboardPayload {
                             CellGraphic::Sprite(thaum_renderer_domain::SpriteGraphic::new(path))
                         }
                     };
-                    let color = match cell.color {
-                        ClipboardColorPayload::FlatRgb { red, green, blue } => {
-                            PaintColor::flat_rgb(red, green, blue)
-                        }
-                        ClipboardColorPayload::Material(name) => {
-                            PaintColor::Material(material_from_name(&name)?)
-                        }
-                    };
                     Some((
                         point_from(cell.offset),
                         PaintedCell {
                             graphic,
-                            color,
+                            color: clipboard_color_to_runtime(cell.color),
                             weight_index: cell.weight_index,
+                            shader_stack: cell.shader_stack,
                         },
                     ))
                 })
@@ -349,6 +409,7 @@ mod tests {
             graphic: CellGraphic::Glyph(glyph),
             color: PaintColor::flat_rgb(255, 255, 255),
             weight_index: 1,
+            shader_stack: Vec::new(),
         }
     }
 
@@ -500,6 +561,7 @@ mod tests {
                 graphic: CellGraphic::Glyph(' '),
                 color: PaintColor::flat_rgb(1, 2, 3),
                 weight_index: 2,
+                shader_stack: Vec::new(),
             },
         );
         let selection = selection_with(&[point(0, 0, 0), point(1, 0, 0)]);
@@ -521,6 +583,7 @@ mod tests {
                 graphic: CellGraphic::Glyph(' '),
                 color: PaintColor::flat_rgb(1, 2, 3),
                 weight_index: 2,
+                shader_stack: Vec::new(),
             },
         );
         legacy.cells.insert(point(1, 0, 0), cell('B'));
@@ -537,9 +600,19 @@ mod tests {
         data.cells.insert(
             point(0, 0, 0),
             PaintedCell {
-                graphic: CellGraphic::Glyph('$'),
-                color: PaintColor::Material(thaum_renderer_domain::CellMaterialId::GrayScale),
+                graphic: CellGraphic::Sprite(thaum_renderer_domain::SpriteGraphic::new(
+                    "cell-sprites/torch.png",
+                )),
+                color: PaintColor::slots(
+                    PaintColor::material_slot("materials/fire.json"),
+                    PaintColor::flat_slot(79, 157, 53),
+                    PaintColor::material_slot("materials/smoke.json"),
+                ),
                 weight_index: 3,
+                shader_stack: vec![
+                    "cell-shaders/fire-low.json".to_string(),
+                    "cell-shaders/weight-sin.json".to_string(),
+                ],
             },
         );
         data.cells.insert(
@@ -548,6 +621,7 @@ mod tests {
                 graphic: CellGraphic::Glyph('x'),
                 color: PaintColor::flat_rgb(79, 157, 53),
                 weight_index: 0,
+                shader_stack: Vec::new(),
             },
         );
 

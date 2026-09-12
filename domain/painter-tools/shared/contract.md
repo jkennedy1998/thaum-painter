@@ -45,12 +45,12 @@ via: `selection_behavior`, `ToolSelectionBehavior::resolve(current, forced)`
 ## tests
 - inline `#[cfg(test)]` in `selection_rules.rs`
   - light
-  - validates erase forces subtract, other tools use the current mode, resolve picks the matching arm, every registered tool resolves a behavior, drag behavior covers every registered tool, and unknown registrations default to PerPosition
+  - validates clear and registered tools use the current selection mode, resolve picks the matching arm, every registered tool resolves a behavior, drag behavior covers every registered tool, and unknown registrations default to PerPosition
 
 ## data
 - none
 
 ## notes
-- source-of-truth from J: the erase-subtract rule was written three times; shared seams like this one — plus future geometry/line/shape computation seams — should exist so logic is written in one place and reused through standard seams.
+- clearing is a selected character rather than a separate tool, so it follows the equipped tool's standard selection behavior. A future subtract-only tool can use the existing `ForceSubtract` case without reintroducing per-tool duplicate logic.
 - the resolve seam takes the caller's mode type as parameters, keeping painter-tools dependency-free; the rule (which tool forces what) is the single source here.
 - when a tool's behavior migrates into its `individuals/` folder, tool-specific rules move there and only genuinely cross-tool logic stays in `shared/`.

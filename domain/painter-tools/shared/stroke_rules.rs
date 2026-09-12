@@ -7,7 +7,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DragBehavior {
     /// Applies at every drag position through tool-state's per-position
-    /// seams (brush, erase, fill).
+    /// seams (brush, fill, and future paint tools).
     PerPosition,
     /// Records a bound across the drag and commits once on release — the
     /// pointer lifecycle holds an in-progress stroke for this tool (lasso).
@@ -46,7 +46,6 @@ mod tests {
     #[test]
     fn drag_behavior_covers_every_registered_tool() {
         assert_eq!(drag_behavior("brush"), DragBehavior::PerPosition);
-        assert_eq!(drag_behavior("erase"), DragBehavior::PerPosition);
         assert_eq!(drag_behavior("fill"), DragBehavior::PerPosition);
         assert_eq!(drag_behavior("lasso"), DragBehavior::ReleaseBound);
         assert_eq!(drag_behavior("text"), DragBehavior::TypingSession);

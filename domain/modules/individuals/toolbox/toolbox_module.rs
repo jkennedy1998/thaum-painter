@@ -1,10 +1,10 @@
 use std::{cell::RefCell, rc::Rc};
 
 use thaum_renderer_domain::{
-    Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, CellWeight, GizmoBar,
-    GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module, ModulePointerButton,
+    title_hotspot, Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, CellWeight,
+    GizmoBar, GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module, ModulePointerButton,
     ModulePointerEvent, ModuleRect, PanelChrome, PersistedModuleUiState, UiColorRole, UiPalette,
-    WorldPoint, title_hotspot,
+    WorldPoint,
 };
 
 use crate::tool_state::{PaintHand, PaintTool, ToolState};
@@ -314,16 +314,16 @@ mod tests {
                 description: "paints cells",
             },
             ToolDef {
-                tool: PaintTool::Erase,
-                icon: 'E',
-                label: "Erase",
-                description: "clears cells",
-            },
-            ToolDef {
                 tool: PaintTool::Fill,
                 icon: 'F',
                 label: "Fill",
                 description: "flood-fills cells",
+            },
+            ToolDef {
+                tool: PaintTool::Lasso,
+                icon: 'L',
+                label: "Lasso",
+                description: "fills enclosed cells",
             },
         ]
     }
@@ -340,8 +340,8 @@ mod tests {
         });
 
         let state = state.borrow();
-        assert_eq!(state.left_tool, PaintTool::Erase);
-        assert_eq!(state.right_tool, PaintTool::Erase);
+        assert_eq!(state.left_tool, PaintTool::Fill);
+        assert_eq!(state.right_tool, PaintTool::Brush);
     }
 
     #[test]
@@ -357,7 +357,7 @@ mod tests {
 
         let state = state.borrow();
         assert_eq!(state.left_tool, PaintTool::Brush);
-        assert_eq!(state.right_tool, PaintTool::Fill);
+        assert_eq!(state.right_tool, PaintTool::Lasso);
     }
 
     #[test]
@@ -377,7 +377,7 @@ mod tests {
             CellGraphic::Glyph('L')
         );
         assert_eq!(
-            group.cells[&CellPoint { x: 1, y: 1, z: 0 }].graphic,
+            group.cells[&CellPoint { x: 1, y: 2, z: 0 }].graphic,
             CellGraphic::Glyph('R')
         );
     }
@@ -395,7 +395,7 @@ mod tests {
 
         let state = state.borrow();
         assert_eq!(state.left_tool, PaintTool::Brush);
-        assert_eq!(state.right_tool, PaintTool::Erase);
+        assert_eq!(state.right_tool, PaintTool::Brush);
     }
 
     #[test]
@@ -411,7 +411,7 @@ mod tests {
         let group = toolbox.draw();
 
         assert_eq!(
-            group.cells[&CellPoint { x: 1, y: 1, z: 0 }].graphic,
+            group.cells[&CellPoint { x: 1, y: 2, z: 0 }].graphic,
             CellGraphic::Glyph('◆')
         );
     }
@@ -429,24 +429,27 @@ mod tests {
         let group = toolbox.draw();
 
         // Brush (selected by left) and Fill (selected by right) are weight
-        // three; Erase is unselected and stays at the normal weight two.
+        // three; Lasso is unselected and stays at the normal weight two.
         assert_eq!(
             group.cells[&CellPoint { x: 5, y: 3, z: 0 }].weight,
             CellWeight::Three
         );
         assert_eq!(
             group.cells[&CellPoint { x: 5, y: 2, z: 0 }].weight,
-            CellWeight::Two
+            CellWeight::Three
         );
         assert_eq!(
             group.cells[&CellPoint { x: 5, y: 1, z: 0 }].weight,
-            CellWeight::Three
+            CellWeight::Two
         );
     }
 
     #[test]
     fn hovering_an_unselected_row_brightens_it_through_the_shared_palette() {
         let state = tool_state();
+        state
+            .borrow_mut()
+            .set_tool_for_hand(PaintHand::Right, PaintTool::Fill);
         let mut toolbox = ToolboxModule::new("toolbox", rect(), state, tool_defs());
 
         let bright = toolbox.palette.get(UiColorRole::Bright);
@@ -455,7 +458,7 @@ mod tests {
 
         let group = toolbox.draw();
 
-        // Fill (y=1, unselected) brightens on hover; Brush (y=3,
+        // Lasso (y=1, unselected) brightens on hover; Brush (y=3,
         // left-selected) keeps its hand color.
         assert_eq!(group.cells[&CellPoint { x: 5, y: 1, z: 0 }].color, bright);
         assert_eq!(

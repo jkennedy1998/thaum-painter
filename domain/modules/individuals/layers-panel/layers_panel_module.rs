@@ -1,14 +1,16 @@
 use std::{
     cell::RefCell,
     rc::Rc,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use crate::pieces::{cell_type_of, classify_bar_piece, BarPiece, CellType};
 use thaum_renderer_domain::{
-    Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, GizmoBar, GizmoClickOutcome,
+    char_button_cell, push_text_cells, title_hotspot, Cell, CellGraphic, CellGroup,
+    CellGroupIntakeBehavior, CellPoint, CellWeight, DoubleClick, GizmoBar, GizmoClickOutcome,
     GizmoKind, GizmoState, Hotspot, Module, ModulePointerButton, ModulePointerEvent, ModuleRect,
-    PanelChrome, PersistedModuleUiState, UiColorRole, UiPalette, WorldPoint, title_hotspot,
+    PanelChrome, PersistedModuleUiState,
+    UiColorRole, UiPalette, WorldPoint, text_entry::TextEntryField,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +65,9 @@ pub enum LayersPanelAction {
     ToggleVisible(String),
     ToggleLocked(String),
     Delete(String),
+    /// Inline rename commit from the layer row's name field (double-click
+    /// the name to start, J 2026-09-12).
+    Rename(String, String),
     ToggleAutoKey,
     SetCurrentBreath(u32),
     SetLayerTiming(String, u32, u32),
@@ -204,10 +209,14 @@ const ROW_ADD_LAYER: usize = 3;
 
 const COL_VISIBLE: i32 = 1;
 const COL_LOCK: i32 = 3;
-const COL_MARKER: i32 = 5;
-const COL_NAME: i32 = 7;
-const NAME_WIDTH: i32 = 10;
+/// The delete button lives with the other per-layer controls in the left
+/// column instead of alone at the row's right edge (J 2026-09-12).
+const COL_DELETE: i32 = 5;
+const COL_MARKER: i32 = 7;
+const COL_NAME: i32 = 9;
+const NAME_WIDTH: i32 = 8;
 const TIMELINE_START: i32 = COL_NAME + NAME_WIDTH + 1;
+const RENAME_MAX_CHARS: usize = 20;
 
 /// PLAY/LOOP transport toggles on the loop-bar row, left of the timeline
 /// (loop window start/end labels sit above the bar on the auto-key row; the
@@ -435,11 +444,17 @@ struct LoopWindowDrag {
     preview_end: u32,
 }
 
-#[derive(Debug, Clone)]
-struct RecentRasterClick {
-    hit: PropertyBlockHit,
-    button: ModulePointerButton,
-    at: Instant,
+/// The double-click subject for a property-block click: the button plus every
+/// hit identity the 48-branch matrix distinguishes (breath is excluded — two
+/// clicks in one block still read as a double-click when they land on the
+/// same piece × cell type).
+type PropertyBlockClickSubject = (ModulePointerButton, String, String, String, BarPiece, CellType);
+
+/// One in-progress layer rename: which layer's name is being edited and the
+/// shared single-line draft field riding the registry's key-capture seam.
+struct RenameSession {
+    layer_id: String,
+    field: TextEntryField,
 }
 
 pub struct LayersPanelModule {
@@ -457,7 +472,16 @@ pub struct LayersPanelModule {
     loop_window_drag: Option<LoopWindowDrag>,
     hovered_loop_window: bool,
     hovered_playhead: bool,
-    recent_raster_click: Option<RecentRasterClick>,
+    /// Shared click-timing seam detectors (J 2026-09-12): one for property
+    /// blocks keyed on the full hit subject, one for layer names keyed on
+    /// the layer id.
+    raster_double_click: DoubleClick<PropertyBlockClickSubject>,
+    name_double_click: DoubleClick<String>,
+    /// Some while a layer name is being edited through the key-capture seam.
+    rename: Option<RenameSession>,
+    /// Last observed pointer position in panel-local coordinates, driving
+    /// per-button hover highlight.
+    hover_local: Option<(i32, i32)>,
 }
 
 impl LayersPanelModule {
@@ -481,7 +505,10 @@ impl LayersPanelModule {
             loop_window_drag: None,
             hovered_loop_window: false,
             hovered_playhead: false,
-            recent_raster_click: None,
+            raster_double_click: DoubleClick::new(),
+            name_double_click: DoubleClick::new(),
+            rename: None,
+            hover_local: None,
         }
     }
 
@@ -650,10 +677,6 @@ impl LayersPanelModule {
             return Some(LoopWindowHitMode::EdgeEnd);
         }
         Some(LoopWindowHitMode::Body)
-    }
-
-    fn delete_column(&self) -> i32 {
-        self.content_right()
     }
 
     fn property_bar_bounds(&self, property: &PropertyTrackRow) -> Option<(u32, u32)> {
@@ -825,26 +848,16 @@ impl LayersPanelModule {
     }
 
     fn handle_property_block_click(&mut self, hit: PropertyBlockHit, button: ModulePointerButton) {
-        const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
         let now = Instant::now();
-        let is_double_click = self
-            .recent_raster_click
-            .as_ref()
-            .map(|recent| {
-                recent.button == button
-                    && recent.at.elapsed() <= DOUBLE_CLICK_WINDOW
-                    && recent.hit.layer_id == hit.layer_id
-                    && recent.hit.property_id == hit.property_id
-                    && recent.hit.block_id == hit.block_id
-                    && recent.hit.piece == hit.piece
-                    && recent.hit.cell_type == hit.cell_type
-            })
-            .unwrap_or(false);
-        self.recent_raster_click = Some(RecentRasterClick {
-            hit: hit.clone(),
+        let subject: PropertyBlockClickSubject = (
             button,
-            at: now,
-        });
+            hit.layer_id.clone(),
+            hit.property_id.clone(),
+            hit.block_id.clone(),
+            hit.piece,
+            hit.cell_type,
+        );
+        let is_double_click = self.raster_double_click.note_click(subject, now);
 
         if is_double_click {
             self.property_block_drag = None;
@@ -1243,27 +1256,51 @@ impl Module for LayersPanelModule {
             "loop window",
             "drag the bar to move the window, grab an end to trim it",
         ));
-        custom.push(self.row_hotspot(
-            3,
-            1,
-            12,
-            "new layer",
-            "adds a new layer to the document",
-        ));
+        custom.push(self.row_hotspot(3, 1, 12, "new layer", "adds a new layer to the document"));
         for (index, row_kind) in rows.into_iter().enumerate().skip(4) {
             match row_kind {
                 PanelRow::Layer(i) => {
-                    let name = state
-                        .rows
-                        .get(i)
+                    let row = state.rows.get(i);
+                    let name = row
                         .map(|row| row.name.as_str())
                         .unwrap_or("layer");
+                    let (visible_title, visible_desc) = match row.map(|row| row.visible) {
+                        Some(true) => ("visible (o)", "click to hide this layer"),
+                        Some(false) => ("hidden (-)", "click to show this layer"),
+                        None => ("visibility", "click to toggle this layer's visibility"),
+                    };
+                    let (lock_title, lock_desc) = match row.map(|row| row.locked) {
+                        Some(true) => ("locked (L)", "click to unlock edits on this layer"),
+                        Some(false) => ("unlocked (U)", "click to lock edits on this layer"),
+                        None => ("lock", "click to toggle edit lock on this layer"),
+                    };
                     custom.push(self.row_hotspot(
                         index,
-                        1,
-                        timeline_end,
+                        COL_VISIBLE,
+                        COL_VISIBLE,
+                        visible_title,
+                        visible_desc,
+                    ));
+                    custom.push(self.row_hotspot(
+                        index,
+                        COL_LOCK,
+                        COL_LOCK,
+                        lock_title,
+                        lock_desc,
+                    ));
+                    custom.push(self.row_hotspot(
+                        index,
+                        COL_DELETE,
+                        COL_DELETE,
+                        "delete (X)",
+                        "click to delete this layer",
+                    ));
+                    custom.push(self.row_hotspot(
+                        index,
+                        COL_NAME,
+                        timeline_start - 2,
                         name,
-                        "eye toggles visibility, lock toggles edits, x deletes; drag the timeline bar to move or trim",
+                        "double-click the name to rename; the timeline columns to the right are the layer's bar",
                     ));
                 }
                 PanelRow::Property(i) => {
@@ -1316,19 +1353,19 @@ impl Module for LayersPanelModule {
         let content_right = self.content_right();
         let visible_rows = self.visible_rows();
 
-        let push_text =
-            |cells: &mut Vec<Cell>, start_x: i32, y: i32, text: &str, color, max_x: i32| {
-                for (column, glyph) in text.chars().enumerate() {
-                    let x = start_x + column as i32;
-                    if x > max_x {
-                        break;
-                    }
-                    cells.push(Cell {
-                        position: CellPoint { x, y, z: 0 },
-                        graphic: CellGraphic::Glyph(glyph),
-                        color,
-                        ..Cell::default()
-                    });
+        // Name text follows the char-button weight seam (J 2026-09-12):
+        // weight 1 at rest, weight 2 while highlighted (hover or the live
+        // rename edit) — never weight 0, which reads as invisible chrome.
+        let name_hovered = |name_end_x: i32, row_y: i32| {
+            self.hover_local
+                .is_some_and(|(x, hy)| hy == row_y && x >= COL_NAME && x <= name_end_x)
+        };
+        let name_weight =
+            |name_end_x: i32, row_y: i32, highlighted: bool| {
+                if highlighted || name_hovered(name_end_x, row_y) {
+                    CellWeight::from_index_clamped(2)
+                } else {
+                    CellWeight::from_index_clamped(1)
                 }
             };
 
@@ -1340,12 +1377,13 @@ impl Module for LayersPanelModule {
             match row_kind {
                 PanelRow::AutoKeyToggle => {
                     let auto_key_glyph = if state.auto_key_enabled { 'x' } else { ' ' };
-                    push_text(
+                    push_text_cells(
                         &mut cells,
                         1,
                         y,
                         &format!("[{auto_key_glyph}] AUTO KEY"),
                         self.palette.get(UiColorRole::Medium),
+                        CellWeight::from_index_clamped(1),
                         timeline_start - 2,
                     );
 
@@ -1353,21 +1391,23 @@ impl Module for LayersPanelModule {
                     let start_label = "0";
                     let current_label = state.current_breath.to_string();
                     let end_label = end_breath.to_string();
-                    push_text(
+                    push_text_cells(
                         &mut cells,
                         timeline_start,
                         y,
                         start_label,
                         self.palette.get(UiColorRole::Dimmest),
+                        CellWeight::from_index_clamped(1),
                         timeline_end,
                     );
                     let end_start = (timeline_end - end_label.len() as i32 + 1).max(timeline_start);
-                    push_text(
+                    push_text_cells(
                         &mut cells,
                         end_start,
                         y,
                         &end_label,
                         self.palette.get(UiColorRole::Dimmest),
+                        CellWeight::from_index_clamped(1),
                         timeline_end,
                     );
                     // Loop-window edge labels sit above the bar's ends; the
@@ -1383,12 +1423,13 @@ impl Module for LayersPanelModule {
                                 timeline_start,
                                 timeline_end - loop_start_label.len() as i32 + 1,
                             );
-                        push_text(
+                        push_text_cells(
                             &mut cells,
                             loop_start_x,
                             y,
                             &loop_start_label,
                             self.palette.get(UiColorRole::Medium),
+                            CellWeight::from_index_clamped(1),
                             timeline_end,
                         );
                         let loop_end_x = (self.x_for_breath(loop_end)
@@ -1397,12 +1438,13 @@ impl Module for LayersPanelModule {
                                 timeline_start,
                                 timeline_end - loop_end_label.len() as i32 + 1,
                             );
-                        push_text(
+                        push_text_cells(
                             &mut cells,
                             loop_end_x,
                             y,
                             &loop_end_label,
                             self.palette.get(UiColorRole::Medium),
+                            CellWeight::from_index_clamped(1),
                             timeline_end,
                         );
                     }
@@ -1459,7 +1501,7 @@ impl Module for LayersPanelModule {
                     } else {
                         "[>] PLAY"
                     };
-                    push_text(
+                    push_text_cells(
                         &mut cells,
                         PLAY_BUTTON_START,
                         y,
@@ -1469,6 +1511,7 @@ impl Module for LayersPanelModule {
                         } else {
                             self.palette.get(UiColorRole::Medium)
                         },
+                        CellWeight::from_index_clamped(1),
                         PLAY_BUTTON_END,
                     );
                     let loop_label = if state.loop_enabled {
@@ -1476,7 +1519,7 @@ impl Module for LayersPanelModule {
                     } else {
                         "[ ] LOOP"
                     };
-                    push_text(
+                    push_text_cells(
                         &mut cells,
                         LOOP_BUTTON_START,
                         y,
@@ -1486,6 +1529,7 @@ impl Module for LayersPanelModule {
                         } else {
                             self.palette.get(UiColorRole::Dimmest)
                         },
+                        CellWeight::from_index_clamped(1),
                         LOOP_BUTTON_END,
                     );
                     for x in timeline_start..=timeline_end {
@@ -1531,12 +1575,13 @@ impl Module for LayersPanelModule {
                     }
                 }
                 PanelRow::AddLayer => {
-                    push_text(
+                    push_text_cells(
                         &mut cells,
                         1,
                         y,
                         "+ NEW LAYER",
                         self.palette.get(UiColorRole::Medium),
+                        CellWeight::from_index_clamped(1),
                         content_right,
                     );
                 }
@@ -1548,30 +1593,35 @@ impl Module for LayersPanelModule {
                     } else {
                         self.palette.get(UiColorRole::Medium)
                     };
-                    let visible_glyph = if row.visible { 'o' } else { '.' };
-                    let lock_glyph = if row.locked { 'L' } else { '.' };
+                    // Per-layer single-character buttons via the shared
+                    // char-button seam: bright weight 1 at rest, vivid
+                    // weight 2 on hover (J 2026-09-12).
+                    let o_glyph = if row.visible { 'o' } else { '-' };
+                    let lock_glyph = if row.locked { 'L' } else { 'U' };
                     let marker = if is_selected { '*' } else { '-' };
+                    let button_hovered = |col: i32| self.hover_local == Some((col, y));
 
-                    cells.push(Cell {
-                        position: CellPoint {
-                            x: COL_VISIBLE,
-                            y,
-                            z: 0,
-                        },
-                        graphic: CellGraphic::Glyph(visible_glyph),
-                        color: text_color,
-                        ..Cell::default()
-                    });
-                    cells.push(Cell {
-                        position: CellPoint {
-                            x: COL_LOCK,
-                            y,
-                            z: 0,
-                        },
-                        graphic: CellGraphic::Glyph(lock_glyph),
-                        color: text_color,
-                        ..Cell::default()
-                    });
+                    cells.push(char_button_cell(
+                        COL_VISIBLE,
+                        y,
+                        o_glyph,
+                        &self.palette,
+                        button_hovered(COL_VISIBLE),
+                    ));
+                    cells.push(char_button_cell(
+                        COL_LOCK,
+                        y,
+                        lock_glyph,
+                        &self.palette,
+                        button_hovered(COL_LOCK),
+                    ));
+                    cells.push(char_button_cell(
+                        COL_DELETE,
+                        y,
+                        'X',
+                        &self.palette,
+                        button_hovered(COL_DELETE),
+                    ));
                     cells.push(Cell {
                         position: CellPoint {
                             x: COL_MARKER,
@@ -1582,14 +1632,31 @@ impl Module for LayersPanelModule {
                         color: text_color,
                         ..Cell::default()
                     });
-                    push_text(
-                        &mut cells,
-                        COL_NAME,
-                        y,
-                        &row.name,
-                        text_color,
-                        timeline_start - 2,
-                    );
+                    if self
+                        .rename
+                        .as_ref()
+                        .is_some_and(|session| session.layer_id == row.id)
+                    {
+                        push_text_cells(
+                            &mut cells,
+                            COL_NAME,
+                            y,
+                            &self.rename.as_ref().expect("rename session").field.display(),
+                            self.palette.get(UiColorRole::Vivid),
+                            name_weight(timeline_start - 2, y, true),
+                            timeline_start - 2,
+                        );
+                    } else {
+                        push_text_cells(
+                            &mut cells,
+                            COL_NAME,
+                            y,
+                            &row.name,
+                            text_color,
+                            name_weight(timeline_start - 2, y, false),
+                            timeline_start - 2,
+                        );
+                    }
 
                     for x in timeline_start..=timeline_end {
                         cells.push(Cell {
@@ -1607,17 +1674,6 @@ impl Module for LayersPanelModule {
                         },
                         graphic: CellGraphic::Glyph('│'),
                         color: self.palette.get(UiColorRole::Dimmest),
-                        ..Cell::default()
-                    });
-
-                    cells.push(Cell {
-                        position: CellPoint {
-                            x: self.delete_column(),
-                            y,
-                            z: 0,
-                        },
-                        graphic: CellGraphic::Glyph('x'),
-                        color: self.palette.get(UiColorRole::Medium),
                         ..Cell::default()
                     });
                 }
@@ -1642,12 +1698,13 @@ impl Module for LayersPanelModule {
                         color: text_color,
                         ..Cell::default()
                     });
-                    push_text(
+                    push_text_cells(
                         &mut cells,
                         COL_NAME,
                         y,
                         &property.label,
                         text_color,
+                        name_weight(timeline_start - 2, y, is_selected),
                         timeline_start - 2,
                     );
                     for x in timeline_start..=timeline_end {
@@ -1799,6 +1856,22 @@ impl Module for LayersPanelModule {
                 let Some(row_kind) = self.row_at(x, y) else {
                     return;
                 };
+                // Clicking anywhere outside the renaming layer's name area
+                // ends the rename (its commit/escape runs through the
+                // key-capture seam instead).
+                let local_x = x - self.rect.x0;
+                let renaming_here = match (&self.rename, &row_kind) {
+                    (Some(session), PanelRow::Layer(i)) => self
+                        .state
+                        .borrow()
+                        .rows
+                        .get(*i)
+                        .is_some_and(|row| row.id == session.layer_id),
+                    _ => false,
+                };
+                if self.rename.is_some() && !(renaming_here && local_x >= COL_NAME) {
+                    self.rename = None;
+                }
                 match row_kind {
                     PanelRow::AutoKeyToggle => {
                         if button == ModulePointerButton::Left {
@@ -1868,6 +1941,7 @@ impl Module for LayersPanelModule {
                             return;
                         }
                         let local_x = x - self.rect.x0;
+                        let (timeline_start, _) = self.timeline_bounds();
                         let row = self.state.borrow().rows.get(row_index).cloned();
                         let Some(row) = row else {
                             return;
@@ -1884,11 +1958,28 @@ impl Module for LayersPanelModule {
                                 .queue_action(LayersPanelAction::ToggleLocked(row.id));
                             return;
                         }
-                        if local_x == self.delete_column() {
+                        if local_x == COL_DELETE {
                             self.state
                                 .borrow_mut()
                                 .queue_action(LayersPanelAction::Delete(row.id));
                             return;
+                        }
+                        // The name area: the first click selects, a
+                        // double-click starts an inline rename (J
+                        // 2026-09-12).
+                        if (COL_NAME..timeline_start - 1).contains(&local_x) {
+                            // Shared click-timing seam: the first click
+                            // selects, a double-click starts an inline
+                            // rename (J 2026-09-12).
+                            if self.name_double_click.note_click(row.id.clone(), Instant::now()) {
+                                let mut field = TextEntryField::new(RENAME_MAX_CHARS, "name + enter");
+                                field.focus();
+                                self.rename = Some(RenameSession {
+                                    layer_id: row.id.clone(),
+                                    field,
+                                });
+                                return;
+                            }
                         }
                         self.state
                             .borrow_mut()
@@ -1917,6 +2008,7 @@ impl Module for LayersPanelModule {
                 }
             }
             ModulePointerEvent::Move { x, y } => {
+                self.hover_local = Some((x - self.rect.x0, y - self.rect.y0));
                 self.gizmo_state.note_pointer(&self.gizmos, self.rect, x, y);
                 let next_hover = self.property_block_hit_at(x, y);
                 if next_hover != self.hovered_property_block {
@@ -2154,9 +2246,35 @@ impl Module for LayersPanelModule {
             ModulePointerEvent::Leave => {
                 self.gizmo_state.set_hovered(false);
                 self.hovered_property_block = None;
+                self.hover_local = None;
             }
             ModulePointerEvent::Down { .. } => {}
         }
+    }
+
+    /// Focused-layer-rename key entry through the registry's key-capture
+    /// seam: keys are consumed only while a rename is active; otherwise
+    /// every key falls through to normal binding dispatch.
+    fn on_key_capture(&mut self, label: &str) -> bool {
+        if self.hidden {
+            return false;
+        }
+        let Some(session) = self.rename.as_mut() else {
+            return false;
+        };
+        let consumed = session.field.handle_key_label(label);
+        if let Some(name) = session.field.take_commit() {
+            let session = self.rename.take().expect("rename session just checked");
+            let name = name.trim().to_string();
+            if !name.is_empty() {
+                self.state
+                    .borrow_mut()
+                    .queue_action(LayersPanelAction::Rename(session.layer_id, name));
+            }
+        } else if label == "ESCAPE" {
+            self.rename = None;
+        }
+        consumed
     }
 
     fn wants_pointer_capture(&self) -> bool {
@@ -2283,6 +2401,68 @@ mod tests {
             state.borrow_mut().take_pending_action(),
             Some(LayersPanelAction::Select("layer-1".to_string()))
         );
+    }
+
+    #[test]
+    fn double_click_then_typing_enter_queues_a_rename() {
+        let state = state_with_rows();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let x = COL_NAME;
+        let y = panel.row_y(4);
+
+        panel.on_pointer_event(ModulePointerEvent::Click { x, y, button: ModulePointerButton::Left });
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::Select("layer-1".to_string()))
+        );
+        panel.on_pointer_event(ModulePointerEvent::Click { x, y, button: ModulePointerButton::Left });
+        assert_eq!(state.borrow_mut().take_pending_action(), None, "second click starts rename, no action");
+
+        assert!(panel.on_key_capture("J"));
+        assert!(panel.on_key_capture("ENTER"));
+        assert_eq!(
+            state.borrow_mut().take_pending_action(),
+            Some(LayersPanelAction::Rename("layer-1".to_string(), "J".to_string()))
+        );
+    }
+
+    #[test]
+    fn layer_names_render_at_weight_1_at_rest_and_weight_2_when_highlighted() {
+        let state = state_with_rows();
+        let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
+        let y = panel.row_y(4);
+
+        // At rest the layer name reads at weight 1, never the invisible
+        // weight 0 chrome.
+        let group = panel.draw();
+        let cell = group
+            .cells
+            .get(&CellPoint { x: COL_NAME, y, z: 0 })
+            .unwrap();
+        assert_eq!(cell.graphic, CellGraphic::Glyph('L'));
+        assert_eq!(cell.weight, CellWeight::from_index_clamped(1));
+
+        // Hovering the name region bumps it to weight 2, like the
+        // char-button seam.
+        panel.on_pointer_event(ModulePointerEvent::Move { x: COL_NAME, y });
+        let group = panel.draw();
+        let cell = group
+            .cells
+            .get(&CellPoint { x: COL_NAME, y, z: 0 })
+            .unwrap();
+        assert_eq!(cell.weight, CellWeight::from_index_clamped(2));
+
+        // While the inline rename is live the edit text stays at weight 2.
+        panel.on_pointer_event(ModulePointerEvent::Click { x: COL_NAME, y, button: ModulePointerButton::Left });
+        panel.on_pointer_event(ModulePointerEvent::Click { x: COL_NAME, y, button: ModulePointerButton::Left });
+        assert!(panel.on_key_capture("J"));
+        let group = panel.draw();
+        let cell = group
+            .cells
+            .get(&CellPoint { x: COL_NAME, y, z: 0 })
+            .unwrap();
+        assert_eq!(cell.graphic, CellGraphic::Glyph('J'));
+        assert_eq!(cell.weight, CellWeight::from_index_clamped(2));
     }
 
     #[test]
@@ -3524,7 +3704,7 @@ mod tests {
         let mut panel = LayersPanelModule::new("layers_panel", rect(), state.clone());
 
         panel.on_pointer_event(ModulePointerEvent::Click {
-            x: panel.delete_column(),
+            x: COL_DELETE,
             y: panel.row_y(4),
             button: ModulePointerButton::Left,
         });

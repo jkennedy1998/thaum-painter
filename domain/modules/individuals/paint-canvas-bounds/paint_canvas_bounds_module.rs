@@ -1,9 +1,9 @@
 use std::{cell::RefCell, rc::Rc};
 
 use thaum_renderer_domain::{
-    Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, CellWeight, GizmoBar,
-    GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module, ModulePointerEvent, ModuleRect,
-    PanelChrome, PersistedModuleUiState, UiColorRole, UiPalette, WorldPoint, title_hotspot,
+    title_hotspot, Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, CellWeight,
+    GizmoBar, GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module, ModulePointerEvent,
+    ModuleRect, PanelChrome, PersistedModuleUiState, UiColorRole, UiPalette, WorldPoint,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,7 +133,9 @@ impl Module for PaintCanvasBoundsModule {
         let mode_description = match *mode {
             DrawingSpaceWheelMode::Pan => "the wheel scrolls the drawing space around",
             DrawingSpaceWheelMode::Depth => "the wheel steps through visible depth layers",
-            DrawingSpaceWheelMode::Time => "the wheel steps the playhead through time, wrapping at the loop window",
+            DrawingSpaceWheelMode::Time => {
+                "the wheel steps the playhead through time, wrapping at the loop window"
+            }
         };
         drop(mode);
         let x = rect.x0 + self.wheel_mode_local_x();

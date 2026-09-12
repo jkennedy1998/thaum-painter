@@ -8,14 +8,15 @@ use std::rc::Rc;
 use thaum_painter_domain::{
     GraphicPickerModule, HandSettingsModule, LayersPanelModule, LayersPanelState,
     MaterialPickerModule, PaintCanvasBoundsModule, PaintColorBlockModule, PaintColorPickerModule,
-    PaintTool, PainterSelection, SessionPanelModule, SessionPanelState, ToolDef,
-    ToolState, ToolboxModule,
+    PaintTool, PainterSelection, SessionPanelModule, SessionPanelState, ToolDef, ToolState,
+    ToolboxModule,
 };
 use thaum_renderer_domain::{
     conflicting_actions, effective_bindings, format_raw_input, ActionBindingMap, CameraDepthLink,
-    CameraLayersLink, CameraPerspectiveModule, ControlsPanelModule, ControlsProfile, ModuleRect,
-    ModuleRegistry, NumberFieldEdit, ParallaxProfile, PersistedModuleUiState, PerspectiveProfile,
-    UiCustomizationModule, UiPalette,
+    CameraLayersLink, CameraPerspectiveModule, CameraZoomLink, ControlsPanelModule,
+    ControlsProfile, ModuleRect, ModuleRegistry, NumberFieldEdit, ParallaxProfile,
+    PersistedModuleUiState, PerspectiveProfile, RenderQualityProfile, UiCustomizationModule,
+    UiPalette,
 };
 
 /// Registers every painter module and returns the registry. Shared handles
@@ -37,6 +38,8 @@ pub(crate) fn build_painter_modules(
     camera_parallax_profile: &Rc<RefCell<ParallaxProfile>>,
     camera_depth_link: &Rc<CameraDepthLink>,
     camera_layers_link: &Rc<CameraLayersLink>,
+    camera_zoom_link: &Rc<CameraZoomLink>,
+    render_quality_profile: &Rc<RefCell<RenderQualityProfile>>,
     session_panel_state: &Rc<RefCell<SessionPanelState>>,
 ) -> ModuleRegistry {
     let mut modules = ModuleRegistry::new();
@@ -169,15 +172,21 @@ pub(crate) fn build_painter_modules(
             x0: 46,
             y0: 14,
             x1: 70,
-            // 11 tall: content 8 = exactly the 7 rows (scale/position/floor/
-            // parallax/str/depth/layers) plus the reserved bottom hint row.
-            y1: 25,
+            // 13 tall: content 10 = the 9 rows (scale/position/floor/
+            // parallax/str/depth/layers/zoom/quality) plus the bottom hint row.
+            y1: 27,
         },
         camera_perspective_profile.clone(),
         camera_parallax_profile.clone(),
         camera_depth_link.clone(),
         camera_layers_link.clone(),
-    )));
+        camera_zoom_link.clone(),
+    )
+    // The shared responsive palette (J 2026-09-12): without this the panel
+    // kept its own UiPalette::default() and read as the one off-palette
+    // module on screen — chrome and rows never followed UI COLORS.
+    .with_palette(ui_palette.clone())
+    .with_render_quality(render_quality_profile.clone())));
     modules.register(Box::new(UiCustomizationModule::new(
         "painter_ui_customization",
         ModuleRect {

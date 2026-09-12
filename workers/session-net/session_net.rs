@@ -23,7 +23,9 @@ use std::time::{Duration, Instant};
 use crate::session_client::{SessionClient, SessionClientError};
 use crate::session_host::{SessionHost, SessionUser};
 use crate::session_host_tcp::{spawn_session_host_server, SessionHostServer};
-use crate::session_relay::relay_link::{spawn_relay_host_bridge, RelayClientBridge, RelayHostHandle};
+use crate::session_relay::relay_link::{
+    spawn_relay_host_bridge, RelayClientBridge, RelayHostHandle,
+};
 use thaum_painter_domain::debug_log;
 use thaum_painter_domain::storage::{
     SharedDocumentActionRecord, SharedDocumentFile, SharedDocumentRuntime,
@@ -253,7 +255,12 @@ impl SessionNet {
         seed_records: Vec<SharedDocumentActionRecord>,
     ) -> Result<usize, String> {
         match self {
-            Self::Host { host, consumed, transport, .. } => {
+            Self::Host {
+                host,
+                consumed,
+                transport,
+                ..
+            } => {
                 let mut host = host.lock().expect("session host lock");
                 host.set_snapshot_source(snapshot_source);
                 host.seed_log(seed_records);
@@ -264,8 +271,7 @@ impl SessionNet {
                 // Relay lane: the core eviction must also close the wire, or
                 // the evicted joiner's relay id stays claimed and their rejoin
                 // is denied user-id-in-use until the stale-prune timeout.
-                if let HostTransport::Relay(handle)
-                | HostTransport::Both { handle, .. } = transport
+                if let HostTransport::Relay(handle) | HostTransport::Both { handle, .. } = transport
                 {
                     handle.kick_all();
                 }
@@ -700,6 +706,7 @@ mod tests {
             graphic: CellGraphic::Glyph('a'),
             color: PaintColor::FlatRgb(color.0, color.1, color.2),
             weight_index: 2,
+            shader_stack: Vec::new(),
         }
     }
 
@@ -1048,8 +1055,14 @@ mod tests {
     #[test]
     fn boot_parse_routes_relay_join_and_host_shapes() {
         use crate::session_net::session_net_boot_from_parts as parse;
-        assert!(matches!(parse(None, None, None, None), SessionNetBoot::None));
-        assert!(matches!(parse(Some("4747".into()), None, None, None), SessionNetBoot::Host(4747)));
+        assert!(matches!(
+            parse(None, None, None, None),
+            SessionNetBoot::None
+        ));
+        assert!(matches!(
+            parse(Some("4747".into()), None, None, None),
+            SessionNetBoot::Host(4747)
+        ));
         assert!(matches!(
             parse(None, Some("10.0.0.5:4747".into()), None, None),
             SessionNetBoot::Join(addr) if addr == "10.0.0.5:4747"
@@ -1064,7 +1077,10 @@ mod tests {
                 if relay == "r:1" && code == "AAAAAA-BBBBBBBBBB"
         ));
         // Empty strings mean unset, not a lane.
-        assert!(matches!(parse(None, None, Some(String::new()), None), SessionNetBoot::None));
+        assert!(matches!(
+            parse(None, None, Some(String::new()), None),
+            SessionNetBoot::None
+        ));
         assert!(matches!(
             parse(None, None, Some("r:1".into()), Some(String::new())),
             SessionNetBoot::RelayHost(_)
@@ -1136,7 +1152,8 @@ mod tests {
         assert!(host_net.lan_port().is_some());
 
         let (mut client_net, snapshot) =
-            SessionNet::join_relay(&relay_address, &invite[0], user("client-1")).expect("relay join");
+            SessionNet::join_relay(&relay_address, &invite[0], user("client-1"))
+                .expect("relay join");
         assert_eq!(snapshot.document_id, "doc-1");
         let mut host_runtime = SharedDocumentRuntime::new(boot_document);
         let mut client_runtime = SharedDocumentRuntime::new(snapshot);
@@ -1301,7 +1318,10 @@ mod tests {
             }
             thread::sleep(Duration::from_millis(10));
         }
-        assert!(replayed, "relay seed replay did not reach the rejoined joiner");
+        assert!(
+            replayed,
+            "relay seed replay did not reach the rejoined joiner"
+        );
 
         // Post-reseed joiner records still reach the host runtime in order.
         let record = stroke(&client_net, &client_runtime, "c-2", 4, (0, 200, 0));
@@ -1316,7 +1336,10 @@ mod tests {
             }
             thread::sleep(Duration::from_millis(10));
         }
-        assert!(converged, "relay host did not apply post-reseed joiner records");
+        assert!(
+            converged,
+            "relay host did not apply post-reseed joiner records"
+        );
     }
 
     #[test]
@@ -1347,8 +1370,13 @@ mod tests {
             }
             thread::sleep(Duration::from_millis(10));
         }
-        assert!(client_net.is_reconnecting(), "joiner never saw the room close");
-        assert!(!client_net.session_ended(), "a relay drop is not a purposeful end");
+        assert!(
+            client_net.is_reconnecting(),
+            "joiner never saw the room close"
+        );
+        assert!(
+            !client_net.session_ended(),
+            "a relay drop is not a purposeful end"
+        );
     }
-
 }

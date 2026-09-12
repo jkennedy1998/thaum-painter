@@ -10,6 +10,7 @@ fn main() {
         graphic: CellGraphic::Glyph(glyph),
         color: PaintColor::flat_rgb(255, 255, 255),
         weight_index: 1,
+        shader_stack: Vec::new(),
     };
     let at = |runtime: &SharedDocumentRuntime, breath: u32| {
         runtime

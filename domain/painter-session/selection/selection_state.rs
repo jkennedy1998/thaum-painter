@@ -444,6 +444,7 @@ mod tests {
             graphic: thaum_renderer_domain::CellGraphic::Glyph(glyph),
             color: crate::paint_color::PaintColor::flat_rgb(rgb.0, rgb.1, rgb.2),
             weight_index,
+            shader_stack: Vec::new(),
         }
     }
 
@@ -691,6 +692,7 @@ mod tests {
                 graphic: thaum_renderer_domain::CellGraphic::Glyph(' '),
                 color: crate::paint_color::PaintColor::flat_rgb(1, 2, 3),
                 weight_index: 2,
+                shader_stack: Vec::new(),
             },
         );
 

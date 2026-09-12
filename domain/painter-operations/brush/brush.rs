@@ -11,6 +11,10 @@ pub struct PaintedCell {
     pub graphic: CellGraphic,
     pub color: PaintColor,
     pub weight_index: i64,
+    /// Ordered, portable renderer shader asset filenames. The order is part of
+    /// authored appearance because later shaders override only the channels
+    /// they write.
+    pub shader_stack: Vec<String>,
 }
 
 /// A live, in-memory field of painted cells. Not a saved document: this is the
@@ -50,11 +54,6 @@ pub fn brush_points(
 /// Draws (or overwrites) one cell at `position`.
 pub fn apply_brush(canvas: &mut Canvas, position: CellPoint, cell: PaintedCell) {
     canvas.insert(position, cell);
-}
-
-/// Erases whatever cell (if any) is at `position`.
-pub fn erase(canvas: &mut Canvas, position: CellPoint) {
-    canvas.remove(&position);
 }
 
 /// True when a painted cell is an authored blank: a space glyph renders
@@ -102,6 +101,7 @@ mod tests {
             graphic: CellGraphic::Glyph(glyph),
             color: PaintColor::flat_rgb(255, 255, 255),
             weight_index: 1,
+            shader_stack: Vec::new(),
         }
     }
 
@@ -147,32 +147,15 @@ mod tests {
     }
 
     #[test]
-    fn erasing_a_painted_cell_removes_it() {
-        let mut canvas = Canvas::new();
-        apply_brush(&mut canvas, point(1, 1), cell('#'));
-        erase(&mut canvas, point(1, 1));
-
-        assert!(canvas.get(&point(1, 1)).is_none());
-    }
-
-    #[test]
-    fn erasing_an_unpainted_cell_is_a_no_op() {
-        let mut canvas = Canvas::new();
-        apply_brush(&mut canvas, point(5, 5), cell('#'));
-        erase(&mut canvas, point(9, 9));
-
-        assert_eq!(canvas.len(), 1);
-        assert_eq!(canvas.get(&point(5, 5)), Some(&cell('#')));
-    }
-
-    #[test]
-    fn brush_and_erase_never_affect_other_cells() {
+    fn writing_the_clear_character_removes_only_that_cell() {
         let mut canvas = Canvas::new();
         apply_brush(&mut canvas, point(0, 0), cell('#'));
         apply_brush(&mut canvas, point(1, 0), cell('@'));
-        erase(&mut canvas, point(0, 0));
+        write_cell(&mut canvas, point(0, 0), cell(' '));
+        write_cell(&mut canvas, point(9, 9), cell(' '));
 
         assert!(canvas.get(&point(0, 0)).is_none());
         assert_eq!(canvas.get(&point(1, 0)), Some(&cell('@')));
+        assert_eq!(canvas.len(), 1);
     }
 }

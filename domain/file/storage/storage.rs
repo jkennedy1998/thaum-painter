@@ -9,11 +9,11 @@ use std::{
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use thaum_renderer_domain::{CellGraphic, CellMaterialId, CellPoint, SpriteGraphic, WorldPoint};
+use thaum_renderer_domain::{CellGraphic, CellPoint, SpriteGraphic, WorldPoint};
 
 use crate::interp_mode;
 use crate::properties::{breath_in_span, destructive_breath_span, pushed_breath_span};
-use crate::{Canvas, PaintColor, PaintedCell};
+use crate::{Canvas, PaintColor, PaintColorSlot, PaintedCell};
 
 pub const SHARED_DOCUMENT_KIND: &str = "thaum-painter-shared-document";
 pub const SHARED_DOCUMENT_SCHEMA_VERSION: u32 = 2;
@@ -83,6 +83,10 @@ pub struct SharedDocumentLayer {
     pub visible: bool,
     #[serde(default)]
     pub locked: bool,
+    /// Fixed local pivot for later rotation. Animated move-track offsets never
+    /// mutate this point; serde default retains existing live documents.
+    #[serde(default = "default_layer_origin")]
+    pub origin: PersistedCellPoint,
     /// The breath the layer's own timeline bar starts at, shown/edited on the layers-panel
     /// timeline row. Purely an authoring/UI concept for now — it does not yet gate compositing.
     #[serde(default)]
@@ -95,6 +99,10 @@ pub struct SharedDocumentLayer {
 
 fn default_layer_visible() -> bool {
     true
+}
+
+fn default_layer_origin() -> PersistedCellPoint {
+    PersistedCellPoint { x: 0, y: 0, z: 0 }
 }
 
 fn default_layer_length_breaths() -> u32 {
@@ -379,6 +387,7 @@ impl SharedDocumentFile {
                 name: layer_name.into(),
                 visible: true,
                 locked: false,
+                origin: default_layer_origin(),
                 start_breath: 0,
                 length_breaths: default_layer_length_breaths(),
                 property_tracks: vec![
@@ -487,8 +496,30 @@ pub enum SharedSelectionWriteMode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum PersistedSharedPaintColor {
+    FlatRgb {
+        red: u8,
+        green: u8,
+        blue: u8,
+    },
+    Material {
+        /// `material` was the v2 live-document spelling. It remains accepted
+        /// so old action logs keep replaying, while new writes use the same
+        /// portable `asset_file` name as file-schema v3.
+        #[serde(alias = "material")]
+        asset_file: String,
+    },
+    Slots {
+        a: PersistedSharedPaintColorSlot,
+        b: PersistedSharedPaintColorSlot,
+        c: PersistedSharedPaintColorSlot,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum PersistedSharedPaintColorSlot {
     FlatRgb { red: u8, green: u8, blue: u8 },
-    Material { material: String },
+    Material { asset_file: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -504,14 +535,19 @@ pub struct PersistedSharedPaintedCell {
     pub graphic: PersistedSharedGraphic,
     pub color: PersistedSharedPaintColor,
     pub weight_index: i64,
+    /// Default keeps old action logs and snapshots replayable. New writes
+    /// always preserve the full ordered portable shader stack.
+    #[serde(default)]
+    pub shader_stack: Vec<String>,
 }
 
 impl PersistedSharedPaintedCell {
     pub fn from_runtime(cell: &PaintedCell) -> Self {
         Self {
             graphic: PersistedSharedGraphic::from_runtime(&cell.graphic),
-            color: PersistedSharedPaintColor::from_runtime(cell.color),
+            color: PersistedSharedPaintColor::from_runtime(&cell.color),
             weight_index: cell.weight_index,
+            shader_stack: cell.shader_stack.clone(),
         }
     }
 
@@ -520,6 +556,7 @@ impl PersistedSharedPaintedCell {
             graphic: self.graphic.to_runtime(),
             color: self.color.to_runtime(),
             weight_index: self.weight_index,
+            shader_stack: self.shader_stack.clone(),
         }
     }
 }
@@ -837,12 +874,11 @@ impl SharedDocumentRuntime {
 
     /// Direct read access to one raster block's live canvas (test and debug use).
     pub fn block_canvas(&self, layer_id: &str, block_id: &str) -> Option<&Canvas> {
-        self.block_canvases
-            .get(&(
-                layer_id.to_string(),
-                "raster".to_string(),
-                block_id.to_string(),
-            ))
+        self.block_canvases.get(&(
+            layer_id.to_string(),
+            "raster".to_string(),
+            block_id.to_string(),
+        ))
     }
 
     /// Ensures every block on the layer's raster track has a canvas entry (empty
@@ -1016,11 +1052,8 @@ impl SharedDocumentRuntime {
     /// blocks (a gap renders nothing for that layer).
     pub fn canvas_for_layer(&self, layer_id: &str, current_breath: u32) -> Option<&Canvas> {
         let block_id = self.active_raster_block_id(layer_id, current_breath)?;
-        self.block_canvases.get(&(
-            layer_id.to_string(),
-            "raster".to_string(),
-            block_id,
-        ))
+        self.block_canvases
+            .get(&(layer_id.to_string(), "raster".to_string(), block_id))
     }
 
     /// The layer's RESOLVED canvas at `current_breath`: a solid raster block
@@ -1050,11 +1083,7 @@ impl SharedDocumentRuntime {
             current_breath,
             |block| {
                 canvases
-                    .get(&(
-                        layer_id.to_string(),
-                        "raster".to_string(),
-                        block.id.clone(),
-                    ))
+                    .get(&(layer_id.to_string(), "raster".to_string(), block.id.clone()))
                     .cloned()
             },
             graphic_fade,
@@ -1467,6 +1496,7 @@ impl SharedDocumentRuntime {
             name: name.into(),
             visible: true,
             locked: false,
+            origin: default_layer_origin(),
             start_breath: 0,
             length_breaths: default_layer_length_breaths(),
             property_tracks: vec![
@@ -1542,6 +1572,38 @@ impl SharedDocumentRuntime {
             start_breath,
             end_breath: end_breath.max(start_breath),
         };
+    }
+
+    /// Returns the fixed layer pivot, independent of any animated move offset.
+    pub fn layer_origin(&self, layer_id: &str) -> Option<WorldPoint> {
+        self.document
+            .layers
+            .iter()
+            .find(|layer| layer.layer_id == layer_id)
+            .map(|layer| WorldPoint {
+                x: layer.origin.x,
+                y: layer.origin.y,
+                z: layer.origin.z,
+            })
+    }
+
+    /// Changes a layer's fixed pivot without touching raster coordinates or
+    /// animated move-track values. The caller owns UI interaction and saving.
+    pub fn set_layer_origin(&mut self, layer_id: &str, origin: WorldPoint) -> bool {
+        let Some(layer) = self
+            .document
+            .layers
+            .iter_mut()
+            .find(|layer| layer.layer_id == layer_id)
+        else {
+            return false;
+        };
+        layer.origin = PersistedCellPoint {
+            x: origin.x,
+            y: origin.y,
+            z: origin.z,
+        };
+        true
     }
 
     pub fn set_layer_visible(&mut self, layer_id: &str, visible: bool) -> bool {
@@ -1769,8 +1831,7 @@ impl SharedDocumentRuntime {
                     .position(|block| block.start_breath > start)
                     .unwrap_or(track.blocks.len());
                 track.blocks.insert(insert_at, split);
-                new_canvas_keys
-                    .push((layer_id.to_string(), property_id.to_string(), split_id));
+                new_canvas_keys.push((layer_id.to_string(), property_id.to_string(), split_id));
                 continue;
             }
             trimmed_once.push(track_index);
@@ -1788,8 +1849,7 @@ impl SharedDocumentRuntime {
         for track_index in removed_track_indices {
             let removed_id = track.blocks[track_index].id.clone();
             track.blocks.remove(track_index);
-            dropped_canvas_keys
-                .push((layer_id.to_string(), property_id.to_string(), removed_id));
+            dropped_canvas_keys.push((layer_id.to_string(), property_id.to_string(), removed_id));
         }
         for key in dropped_canvas_keys {
             self.block_canvases.remove(&key);
@@ -1913,13 +1973,11 @@ impl SharedDocumentRuntime {
         user_id: &str,
         timestamp: String,
     ) -> Option<SharedDocumentActionRecord> {
-        let canvas = self
-            .block_canvases
-            .get(&(
-                layer_id.to_string(),
-                property_id.to_string(),
-                source_block_id.to_string(),
-            ))?;
+        let canvas = self.block_canvases.get(&(
+            layer_id.to_string(),
+            property_id.to_string(),
+            source_block_id.to_string(),
+        ))?;
         if canvas.is_empty() {
             return None;
         }
@@ -2327,13 +2385,11 @@ impl SharedDocumentRuntime {
         user_id: &str,
         timestamp: String,
     ) -> Option<SharedDocumentActionRecord> {
-        let canvas = self
-            .block_canvases
-            .get(&(
-                layer_id.to_string(),
-                property_id.to_string(),
-                source_block_id.to_string(),
-            ))?;
+        let canvas = self.block_canvases.get(&(
+            layer_id.to_string(),
+            property_id.to_string(),
+            source_block_id.to_string(),
+        ))?;
         if canvas.is_empty() {
             return None;
         }
@@ -3105,11 +3161,20 @@ fn write_snapshot_files(
 }
 
 impl PersistedSharedPaintColor {
-    fn from_runtime(color: PaintColor) -> Self {
+    fn from_runtime(color: &PaintColor) -> Self {
         match color {
-            PaintColor::FlatRgb(red, green, blue) => Self::FlatRgb { red, green, blue },
-            PaintColor::Material(material) => Self::Material {
-                material: material_name(material).to_string(),
+            PaintColor::FlatRgb(red, green, blue) => Self::FlatRgb {
+                red: *red,
+                green: *green,
+                blue: *blue,
+            },
+            PaintColor::Material { asset_file } => Self::Material {
+                asset_file: asset_file.clone(),
+            },
+            PaintColor::Slots { a, b, c } => Self::Slots {
+                a: PersistedSharedPaintColorSlot::from_runtime(a),
+                b: PersistedSharedPaintColorSlot::from_runtime(b),
+                c: PersistedSharedPaintColorSlot::from_runtime(c),
             },
         }
     }
@@ -3117,9 +3182,32 @@ impl PersistedSharedPaintColor {
     fn to_runtime(&self) -> PaintColor {
         match self {
             Self::FlatRgb { red, green, blue } => PaintColor::flat_rgb(*red, *green, *blue),
-            Self::Material { material } => material_from_name(material)
-                .map(PaintColor::material)
-                .unwrap_or_default(),
+            Self::Material { asset_file } => PaintColor::material_asset(asset_file),
+            Self::Slots { a, b, c } => {
+                PaintColor::slots(a.to_runtime(), b.to_runtime(), c.to_runtime())
+            }
+        }
+    }
+}
+
+impl PersistedSharedPaintColorSlot {
+    fn from_runtime(slot: &PaintColorSlot) -> Self {
+        match slot {
+            PaintColorSlot::FlatRgb(red, green, blue) => Self::FlatRgb {
+                red: *red,
+                green: *green,
+                blue: *blue,
+            },
+            PaintColorSlot::Material { asset_file } => Self::Material {
+                asset_file: asset_file.clone(),
+            },
+        }
+    }
+
+    fn to_runtime(&self) -> PaintColorSlot {
+        match self {
+            Self::FlatRgb { red, green, blue } => PaintColor::flat_slot(*red, *green, *blue),
+            Self::Material { asset_file } => PaintColor::material_slot(asset_file),
         }
     }
 }
@@ -3146,19 +3234,6 @@ impl PersistedSharedGraphic {
     }
 }
 
-pub(crate) fn material_name(material: CellMaterialId) -> &'static str {
-    match material {
-        CellMaterialId::GrayScale => "gray-scale",
-    }
-}
-
-pub(crate) fn material_from_name(name: &str) -> Option<CellMaterialId> {
-    match name {
-        "gray-scale" => Some(CellMaterialId::GrayScale),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3174,7 +3249,30 @@ mod tests {
             graphic: CellGraphic::Glyph(glyph),
             color: PaintColor::flat_rgb(255, 255, 255),
             weight_index: 1,
+            shader_stack: Vec::new(),
         }
+    }
+
+    #[test]
+    fn persisted_patches_round_trip_full_portable_cell_appearance() {
+        let authored = PaintedCell {
+            graphic: CellGraphic::Sprite(SpriteGraphic::new("cell-sprites/torch.png")),
+            color: PaintColor::slots(
+                PaintColor::material_slot("materials/fire.json"),
+                PaintColor::flat_slot(10, 20, 30),
+                PaintColor::material_slot("materials/smoke.json"),
+            ),
+            weight_index: 3,
+            shader_stack: vec![
+                "cell-shaders/fire-low.json".to_string(),
+                "cell-shaders/weight-sin.json".to_string(),
+            ],
+        };
+        let patch = SharedCellPatch::new(point(2, 3), None, Some(&authored));
+        let json = serde_json::to_string(&patch).unwrap();
+        let decoded: SharedCellPatch = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(decoded.after.unwrap().to_runtime(), authored);
     }
 
     #[test]
@@ -3229,6 +3327,7 @@ mod tests {
                     name: "Layer 1".to_string(),
                     visible: true,
                     locked: false,
+                    origin: default_layer_origin(),
                     start_breath: 0,
                     length_breaths: default_layer_length_breaths(),
                     property_tracks: vec![
@@ -3241,6 +3340,7 @@ mod tests {
                     name: "Layer 2".to_string(),
                     visible: true,
                     locked: false,
+                    origin: default_layer_origin(),
                     start_breath: 0,
                     length_breaths: default_layer_length_breaths(),
                     property_tracks: vec![
@@ -3491,6 +3591,7 @@ mod tests {
             graphic: thaum_renderer_domain::CellGraphic::Glyph(c),
             color: PaintColor::flat_rgb(1, 2, 3),
             weight_index: 0,
+            shader_stack: Vec::new(),
         };
 
         // Simulate a drag: chunks staged live, no records yet.
@@ -3548,6 +3649,7 @@ mod tests {
             graphic: thaum_renderer_domain::CellGraphic::Glyph('A'),
             color: PaintColor::flat_rgb(1, 1, 1),
             weight_index: 0,
+            shader_stack: Vec::new(),
         };
         runtime.apply_action_record(SharedDocumentActionRecord::cell_patch_set(
             "a1",
@@ -3585,6 +3687,7 @@ mod tests {
             graphic: thaum_renderer_domain::CellGraphic::Glyph(c),
             color: PaintColor::flat_rgb(1, 1, 1),
             weight_index: 0,
+            shader_stack: Vec::new(),
         };
         let paint = |id: &str, pos: (i32, i32), c: char| {
             SharedDocumentActionRecord::cell_patch_set(
@@ -3659,6 +3762,7 @@ mod tests {
             graphic: thaum_renderer_domain::CellGraphic::Glyph(c),
             color: PaintColor::flat_rgb(1, 1, 1),
             weight_index: 0,
+            shader_stack: Vec::new(),
         };
         let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
             "doc-1", "Doc", "layer-1", "Layer 1",
@@ -4303,6 +4407,22 @@ mod tests {
         assert!(runtime.set_layer_locked("layer-1", true));
         assert!(runtime.layers()[0].locked);
         assert!(!runtime.set_layer_locked("missing-layer", true));
+    }
+
+    #[test]
+    fn fixed_layer_origin_is_independent_of_move_tracks() {
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+
+        assert_eq!(runtime.layer_origin("layer-1"), Some(WorldPoint::origin()));
+        assert!(runtime.set_layer_origin("layer-1", WorldPoint { x: 4, y: 5, z: 6 }));
+        runtime.add_move_offset("layer-1", 0, WorldPoint { x: 2, y: 0, z: 0 });
+        assert_eq!(
+            runtime.layer_origin("layer-1"),
+            Some(WorldPoint { x: 4, y: 5, z: 6 })
+        );
+        assert!(!runtime.set_layer_origin("missing-layer", WorldPoint::origin()));
     }
 
     #[test]
@@ -5010,11 +5130,13 @@ mod tests {
             graphic: CellGraphic::Glyph('A'),
             color: PaintColor::flat_rgb(255, 0, 0),
             weight_index: 0,
+            shader_stack: Vec::new(),
         };
         let keyframe_b = PaintedCell {
             graphic: CellGraphic::Glyph('B'),
             color: PaintColor::flat_rgb(0, 0, 255),
             weight_index: 8,
+            shader_stack: Vec::new(),
         };
         let solid_a_id = runtime
             .property_track("layer-1", "raster")
@@ -5135,7 +5257,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn blanking_a_move_block_keeps_the_same_id_raster_canvas() {
         // Channel conflation regression (J 2026-09-09): both tracks mint ids from
@@ -5154,13 +5275,19 @@ mod tests {
             Some("block-1".to_string()),
         ));
         assert_eq!(
-            runtime.canvas_for_layer("layer-1", 3).unwrap().get(&point(0, 0)),
+            runtime
+                .canvas_for_layer("layer-1", 3)
+                .unwrap()
+                .get(&point(0, 0)),
             Some(&cell('A'))
         );
         // Delete (blank) the MOVE block-1 — the raster block-1's content must survive.
         assert!(runtime.blank_property_block("layer-1", "move", "block-1"));
         assert_eq!(
-            runtime.canvas_for_layer("layer-1", 3).unwrap().get(&point(0, 0)),
+            runtime
+                .canvas_for_layer("layer-1", 3)
+                .unwrap()
+                .get(&point(0, 0)),
             Some(&cell('A'))
         );
     }
@@ -5185,7 +5312,9 @@ mod tests {
             Some("block-1".to_string()),
         ));
         // 2. raster 3-segment: left solid / center empty / right solid.
-        let raster_right = runtime.split_property_block("layer-1", "raster", "block-1", 8).unwrap();
+        let raster_right = runtime
+            .split_property_block("layer-1", "raster", "block-1", 8)
+            .unwrap();
         let raster_tail = runtime
             .split_property_block("layer-1", "raster", &raster_right, 12)
             .unwrap();
@@ -5201,27 +5330,41 @@ mod tests {
             Some(raster_tail.clone()),
         ));
         assert_eq!(
-            runtime.block_canvas("layer-1", "block-1").unwrap().get(&point(0, 0)),
+            runtime
+                .block_canvas("layer-1", "block-1")
+                .unwrap()
+                .get(&point(0, 0)),
             Some(&cell('A'))
         );
         assert_eq!(
-            runtime.block_canvas("layer-1", &raster_tail).unwrap().get(&point(2, 0)),
+            runtime
+                .block_canvas("layer-1", &raster_tail)
+                .unwrap()
+                .get(&point(2, 0)),
             Some(&cell('B'))
         );
         // 4. MOVE bar split the same way: left solid / center empty / right solid.
-        let move_right = runtime.split_property_block("layer-1", "move", "block-1", 8).unwrap();
+        let move_right = runtime
+            .split_property_block("layer-1", "move", "block-1", 8)
+            .unwrap();
         let move_tail = runtime
             .split_property_block("layer-1", "move", &move_right, 12)
             .unwrap();
         assert!(runtime.blank_property_block("layer-1", "move", &move_right));
         // 5. every raster frame survives the move-track edit.
         assert_eq!(
-            runtime.block_canvas("layer-1", "block-1").unwrap().get(&point(0, 0)),
+            runtime
+                .block_canvas("layer-1", "block-1")
+                .unwrap()
+                .get(&point(0, 0)),
             Some(&cell('A')),
             "left raster frame lost its line after the move split"
         );
         assert_eq!(
-            runtime.block_canvas("layer-1", &raster_tail).unwrap().get(&point(2, 0)),
+            runtime
+                .block_canvas("layer-1", &raster_tail)
+                .unwrap()
+                .get(&point(2, 0)),
             Some(&cell('B')),
             "right raster frame lost its line after the move split"
         );
@@ -5470,7 +5613,9 @@ mod tests {
         assert!(runtime.add_move_offset("layer-1", 23, WorldPoint { x: 10, y: 0, z: 0 }));
         // Fraction 0 is exactly the whole-breath result.
         assert_eq!(
-            runtime.move_offset_fractional_for_layer("layer-1", 22, 0.0).x,
+            runtime
+                .move_offset_fractional_for_layer("layer-1", 22, 0.0)
+                .x,
             runtime.move_offset_for_layer("layer-1", 22).x
         );
         assert_eq!(runtime.move_offset_for_layer("layer-1", 22).x, 11);
@@ -5485,8 +5630,8 @@ mod tests {
     }
 
     #[test]
-    fn a_move_drag_inside_an_empty_lands_a_one_breath_keyframe_keeping_both_interpolation_regions(
-    ) {
+    fn a_move_drag_inside_an_empty_lands_a_one_breath_keyframe_keeping_both_interpolation_regions()
+    {
         let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
             "doc-1", "Doc", "layer-1", "Layer 1",
         ));
@@ -5654,11 +5799,7 @@ mod tests {
         // covers, so the middle empty interpolates from the unmoved position
         // to the drag — one drag on a fresh row authors visible motion, not
         // the old hold-next degradation J read as "interpolate broken").
-        assert!(runtime.add_move_offset_keyframe(
-            "layer-1",
-            20,
-            WorldPoint { x: 0, y: -3, z: -3 }
-        ));
+        assert!(runtime.add_move_offset_keyframe("layer-1", 20, WorldPoint { x: 0, y: -3, z: -3 }));
         let shape = runtime.property_track_shape("layer-1", "move");
         assert_eq!(shape, "[0..6 6..17/e 17..24 24..25/e]");
         let mid = runtime.move_offset_for_layer("layer-1", 10).y;
@@ -5671,11 +5812,7 @@ mod tests {
         // Second auto-key drag on the LEFT segment gives it a value — NOW
         // the middle empty has keyframes on both sides and interpolates
         // between them.
-        assert!(runtime.add_move_offset_keyframe(
-            "layer-1",
-            2,
-            WorldPoint { x: 5, y: 2, z: 0 }
-        ));
+        assert!(runtime.add_move_offset_keyframe("layer-1", 2, WorldPoint { x: 5, y: 2, z: 0 }));
         assert_eq!(runtime.move_offset_for_layer("layer-1", 2).y, 2);
         assert_eq!(runtime.move_offset_for_layer("layer-1", 20).y, -3);
         let mid = runtime.move_offset_for_layer("layer-1", 10).y;
@@ -6055,6 +6192,7 @@ mod tests {
                                         rand.below(256) as u8,
                                     ),
                                     weight_index: rand.below(4) as i64,
+                                    shader_stack: Vec::new(),
                                 };
                                 let point = CellPoint {
                                     x: rand.below(6) as i32,

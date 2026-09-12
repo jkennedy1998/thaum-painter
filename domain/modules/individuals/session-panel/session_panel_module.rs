@@ -29,10 +29,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use thaum_renderer_domain::{
-    text_entry::TextEntryField, Cell, CellColor, CellGraphic, CellGroup, CellGroupIntakeBehavior,
-    CellPoint, GizmoBar, GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module,
-    ModulePointerButton, ModulePointerEvent, ModuleRect, PanelChrome, PersistedModuleUiState,
-    UiColorRole, UiPalette, WorldPoint, title_hotspot,
+    text_entry::TextEntryField, title_hotspot, Cell, CellColor, CellGraphic, CellGroup,
+    CellGroupIntakeBehavior, CellPoint, GizmoBar, GizmoClickOutcome, GizmoKind, GizmoState,
+    Hotspot, Module, ModulePointerButton, ModulePointerEvent, ModuleRect, PanelChrome,
+    PersistedModuleUiState, UiColorRole, UiPalette, WorldPoint,
 };
 
 /// One roster row as synced from the live session. The host is roster entry
@@ -237,7 +237,10 @@ fn push_text(cells: &mut Vec<Cell>, x: i32, y: i32, glyph: char, color: CellColo
 
 fn push_line(cells: &mut Vec<Cell>, y: i32, line: &str, color: CellColor, width: usize) {
     // Text starts one content column in, matching the roster rows' left pad.
-    for (index, glyph) in truncate_to_width(line, width.saturating_sub(1)).chars().enumerate() {
+    for (index, glyph) in truncate_to_width(line, width.saturating_sub(1))
+        .chars()
+        .enumerate()
+    {
         push_text(cells, content_x_of(index as i32 + 1), y, glyph, color);
     }
 }
@@ -314,14 +317,7 @@ impl SessionPanelModule {
 
     /// Absolute screen-space hotspot over one content-row span (inclusive
     /// content-local x0..x1 at content row `row`).
-    fn row_hotspot(
-        &self,
-        row: i32,
-        x0: i32,
-        x1: i32,
-        title: &str,
-        description: &str,
-    ) -> Hotspot {
+    fn row_hotspot(&self, row: i32, x0: i32, x1: i32, title: &str, description: &str) -> Hotspot {
         let (origin_x, origin_y) = PanelChrome::content_origin();
         let y = self.rect.y0 + origin_y + row;
         Hotspot::new(
@@ -378,7 +374,6 @@ impl SessionPanelModule {
             self.palette.get(text_color_role()),
         ))
     }
-
 }
 
 impl Module for SessionPanelModule {
@@ -435,9 +430,15 @@ impl Module for SessionPanelModule {
                 ));
             }
             let button = if state.is_host {
-                ("end session", "ends the session for everyone and saves the host's document")
+                (
+                    "end session",
+                    "ends the session for everyone and saves the host's document",
+                )
             } else {
-                ("leave session", "leaves the session this machine keeps its own edits")
+                (
+                    "leave session",
+                    "leaves the session this machine keeps its own edits",
+                )
             };
             custom.push(self.row_hotspot(ROW_BUTTONS, 0, width, button.0, button.1));
         } else {
@@ -571,8 +572,7 @@ impl Module for SessionPanelModule {
 
             // Roster rows: entry zero is the host (crowned), you marked.
             let fit = (self.roster_top(&state) - roster_base + 1).max(0) as usize;
-            for (index, member) in state.roster.iter().take(fit).enumerate()
-            {
+            for (index, member) in state.roster.iter().take(fit).enumerate() {
                 let row_y = content_y + roster_base + index as i32;
                 let color = CellColor::Flat([
                     member.color[0] as f32 / 255.0,
@@ -598,11 +598,21 @@ impl Module for SessionPanelModule {
             }
 
             // Buttons row: the host ends, a joiner leaves.
-            let button = if state.is_host { "[END SESSION]" } else { "[LEAVE SESSION]" };
+            let button = if state.is_host {
+                "[END SESSION]"
+            } else {
+                "[LEAVE SESSION]"
+            };
             push_line(&mut cells, content_y + ROW_BUTTONS, button, bright, width);
         } else {
             // Offline: both lanes visible, host button below.
-            push_line(&mut cells, content_y + ROW_CODE_TITLE, "JOIN WITH CODE", text, width);
+            push_line(
+                &mut cells,
+                content_y + ROW_CODE_TITLE,
+                "JOIN WITH CODE",
+                text,
+                width,
+            );
             let code_color = if state.code_field.is_focused() {
                 vivid
             } else if state.code_field.is_empty() {
@@ -625,15 +635,33 @@ impl Module for SessionPanelModule {
                 width,
             );
 
-            push_line(&mut cells, content_y + ROW_JOIN_LOCAL_BTN - 1, "JOIN LOCAL", text, width);
+            push_line(
+                &mut cells,
+                content_y + ROW_JOIN_LOCAL_BTN - 1,
+                "JOIN LOCAL",
+                text,
+                width,
+            );
             match self.selected_host(&state) {
                 Some(host) => {
                     // `< name >` selector: the arrows are the click zones.
                     let label = truncate_to_width(&host.name, width.saturating_sub(6));
-                    push_text(&mut cells, content_x_of(1), content_y + ROW_SELECTOR, '<', bright);
+                    push_text(
+                        &mut cells,
+                        content_x_of(1),
+                        content_y + ROW_SELECTOR,
+                        '<',
+                        bright,
+                    );
                     let mut x = 3;
                     for glyph in label.chars() {
-                        push_text(&mut cells, content_x_of(x), content_y + ROW_SELECTOR, glyph, text);
+                        push_text(
+                            &mut cells,
+                            content_x_of(x),
+                            content_y + ROW_SELECTOR,
+                            glyph,
+                            text,
+                        );
                         x += 1;
                     }
                     push_text(
@@ -739,11 +767,7 @@ impl Module for SessionPanelModule {
                         } else {
                             ROW_ROSTER_BASE
                         };
-                        if state
-                            .roster
-                            .get((local_y - roster_base) as usize)
-                            .is_none()
-                        {
+                        if state.roster.get((local_y - roster_base) as usize).is_none() {
                             self.focus = FieldFocus::None;
                         }
                     }
@@ -771,7 +795,10 @@ impl Module for SessionPanelModule {
                     } else if count > 0 && local_x >= 3 {
                         let max = count - 1;
                         let name_width = self.selected_host(&state).map_or(0, |host| {
-                            host.name.chars().count().min(self.content_width() as usize - 6)
+                            host.name
+                                .chars()
+                                .count()
+                                .min(self.content_width() as usize - 6)
                         });
                         if local_x >= 3 + name_width as i32 + 1 {
                             self.selector_index = (self.selector_index + 1).min(max);
@@ -953,11 +980,20 @@ mod tests {
     fn offline_panel_shows_both_lanes_and_host_button() {
         let state = state();
         let module = panel(state);
-        assert_eq!(row_text(&module, ROW_CODE_TITLE).trim_end(), "JOIN WITH CODE");
+        assert_eq!(
+            row_text(&module, ROW_CODE_TITLE).trim_end(),
+            "JOIN WITH CODE"
+        );
         assert!(row_text(&module, ROW_CODE_FIELD).contains("code + enter"));
-        assert_eq!(row_text(&module, ROW_CODE_BTNS).trim_end(), "[JOIN CODE]  [PASTE]");
+        assert_eq!(
+            row_text(&module, ROW_CODE_BTNS).trim_end(),
+            "[JOIN CODE]  [PASTE]"
+        );
         assert_eq!(row_text(&module, ROW_SELECTOR).trim_end(), "none found");
-        assert_eq!(row_text(&module, ROW_JOIN_LOCAL_BTN).trim_end(), "[JOIN LOCAL]");
+        assert_eq!(
+            row_text(&module, ROW_JOIN_LOCAL_BTN).trim_end(),
+            "[JOIN LOCAL]"
+        );
         assert_eq!(row_text(&module, ROW_HOST_BTN).trim_end(), "[HOST SESSION]");
     }
 
@@ -965,8 +1001,14 @@ mod tests {
     fn selector_renders_synced_hosts_and_arrows_scroll() {
         let state = state();
         state.borrow_mut().sync_discovered(vec![
-            SessionDiscoveredHost { name: "Living Room".into(), address: "192.168.1.5:4747".into() },
-            SessionDiscoveredHost { name: "Studio".into(), address: "192.168.1.9:4747".into() },
+            SessionDiscoveredHost {
+                name: "Living Room".into(),
+                address: "192.168.1.5:4747".into(),
+            },
+            SessionDiscoveredHost {
+                name: "Studio".into(),
+                address: "192.168.1.9:4747".into(),
+            },
         ]);
         let mut module = panel(state.clone());
 
@@ -986,10 +1028,12 @@ mod tests {
         content_click(&mut module, 3, ROW_JOIN_LOCAL_BTN);
         assert!(state.borrow_mut().take_pending_action().is_none());
 
-        state.borrow_mut().sync_discovered(vec![SessionDiscoveredHost {
-            name: "Studio".into(),
-            address: "192.168.1.9:4747".into(),
-        }]);
+        state
+            .borrow_mut()
+            .sync_discovered(vec![SessionDiscoveredHost {
+                name: "Studio".into(),
+                address: "192.168.1.9:4747".into(),
+            }]);
         content_click(&mut module, 3, ROW_JOIN_LOCAL_BTN);
         assert_eq!(
             state.borrow_mut().take_pending_action(),
@@ -1102,7 +1146,9 @@ mod tests {
 
         assert!(row_text(&module, ROW_CODE).contains("CODE> abc123-def456"));
         assert!(row_text(&module, ROW_RELAY_NOTE).contains("relay down"));
-        assert!(row_text(&module, ROW_BUTTONS).trim_end().starts_with("[END SESSION]"));
+        assert!(row_text(&module, ROW_BUTTONS)
+            .trim_end()
+            .starts_with("[END SESSION]"));
 
         // Clicking the code copies it.
         content_click(&mut module, 3, ROW_CODE);
@@ -1143,7 +1189,9 @@ mod tests {
         );
         let mut module = panel(state.clone());
 
-        assert!(row_text(&module, ROW_BUTTONS).trim_end().starts_with("[LEAVE SESSION]"));
+        assert!(row_text(&module, ROW_BUTTONS)
+            .trim_end()
+            .starts_with("[LEAVE SESSION]"));
         content_click(&mut module, 3, ROW_BUTTONS);
         assert_eq!(
             state.borrow_mut().take_pending_action(),
@@ -1255,7 +1303,10 @@ mod tests {
         state.borrow_mut().push_event("join denied: session-ended");
         let module = panel(state.clone());
 
-        assert_eq!(row_text(&module, ROW_EVENTS_BASE + 1).trim_end(), "joined bob");
+        assert_eq!(
+            row_text(&module, ROW_EVENTS_BASE + 1).trim_end(),
+            "joined bob"
+        );
         assert_eq!(
             row_text(&module, ROW_EVENTS_BASE).trim_end(),
             "join denied: session-ende"

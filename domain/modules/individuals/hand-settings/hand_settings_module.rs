@@ -1,11 +1,11 @@
 use std::{cell::RefCell, rc::Rc};
 
 use thaum_renderer_domain::{
-    Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, CellWeight, GizmoBar,
-    GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module, ModulePointerEvent, ModuleRect,
-    NumberFieldEdit, PanelChrome, PersistedModuleUiState, PropertyHit, PropertyMatrixColumn,
-    PropertyMatrixSide, PropertyRow, PropertyRows, ScrollState, UiPalette, WorldPoint,
-    title_hotspot,
+    title_hotspot, Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, CellWeight,
+    GizmoBar, GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module, ModulePointerEvent,
+    ModuleRect, NumberFieldEdit, PanelChrome, PersistedModuleUiState, PropertyHit,
+    PropertyMatrixColumn, PropertyMatrixSide, PropertyRow, PropertyRows, ScrollState, UiPalette,
+    WorldPoint,
 };
 
 use crate::{
@@ -140,8 +140,12 @@ impl HandSettingsModule {
             let mut column = PropertyMatrixColumn::new(size.to_string(), size.to_string());
             column.left_value = left.brush_size == size;
             column.right_value = right.brush_size == size;
-            column.left_enabled = matches!(state.left_tool, PaintTool::Brush | PaintTool::Erase);
-            column.right_enabled = matches!(state.right_tool, PaintTool::Brush | PaintTool::Erase);
+            // Live per hand: any tool that declares the size row keeps its
+            // side's tokens clickable — the picker samples through the hand's
+            // brush-tip footprint, so its size tokens must not bar out when
+            // the picker is equipped (J 2026-09-12).
+            column.left_enabled = Self::hand_declares_row(&state, PaintHand::Left, "brush_size");
+            column.right_enabled = Self::hand_declares_row(&state, PaintHand::Right, "brush_size");
             brush_size_columns.push(column);
         }
 
@@ -150,8 +154,9 @@ impl HandSettingsModule {
             let mut column = PropertyMatrixColumn::new(id, label);
             column.left_value = left.fill_diagonal == value;
             column.right_value = right.fill_diagonal == value;
-            column.left_enabled = state.left_tool == PaintTool::Fill;
-            column.right_enabled = state.right_tool == PaintTool::Fill;
+            column.left_enabled = Self::hand_declares_row(&state, PaintHand::Left, "fill_diagonal");
+            column.right_enabled =
+                Self::hand_declares_row(&state, PaintHand::Right, "fill_diagonal");
             fill_diag_columns.push(column);
         }
 
@@ -160,8 +165,10 @@ impl HandSettingsModule {
             let mut column = PropertyMatrixColumn::new(id, label);
             column.left_value = left.pick_opposite_hand == value;
             column.right_value = right.pick_opposite_hand == value;
-            column.left_enabled = state.left_tool == PaintTool::Picker;
-            column.right_enabled = state.right_tool == PaintTool::Picker;
+            column.left_enabled =
+                Self::hand_declares_row(&state, PaintHand::Left, "picker_opposite_hand");
+            column.right_enabled =
+                Self::hand_declares_row(&state, PaintHand::Right, "picker_opposite_hand");
             picker_opp_columns.push(column);
         }
 
@@ -282,6 +289,14 @@ impl HandSettingsModule {
     fn tool_row_used(state: &ToolState, row_id: &str) -> bool {
         state.left_tool.property_row_ids().contains(&row_id)
             || state.right_tool.property_row_ids().contains(&row_id)
+    }
+
+    /// Whether ONE hand's equipped tool declares a property row — the per-hand
+    /// enablement truth for tool-property matrix columns. The picker declares
+    /// `brush_size` (it samples through the hand's brush-tip footprint), so
+    /// its size tokens stay live while the picker is up (J 2026-09-12).
+    fn hand_declares_row(state: &ToolState, hand: PaintHand, row_id: &str) -> bool {
+        state.tool_for_hand(hand).property_row_ids().contains(&row_id)
     }
 
     fn editing_for(&self, row_id: &str) -> Option<(usize, String)> {
@@ -811,7 +826,7 @@ mod tests {
                 .collect()
         };
 
-        // Default hands: brush left, erase right — brush size shows, fill hides.
+        // Default hands: brush on both hands, with right holding CLEAR — brush size shows, fill hides.
         let default_ids = row_ids(&module);
         assert!(default_ids.contains(&"brush_size".to_string()));
         assert!(!default_ids.contains(&"fill_diagonal".to_string()));
@@ -826,6 +841,63 @@ mod tests {
 
         // Standard rows stay put regardless of the equipped tools.
         assert!(mixed_ids.contains(&"weight".to_string()));
+    }
+
+    #[test]
+    fn brush_size_row_stays_live_while_the_picker_is_equipped() {
+        // J 2026-09-12: the picker samples through the hand's brush-tip
+        // footprint, so the size row must not bar out when the picker is up.
+        // The row appearing is not enough — the matrix columns carry per-side
+        // enabled flags the renderer's click path consumes, and those were
+        // hard-gated to the Brush tool, so the picker's size tokens rendered
+        // dead and the size could only be preset before switching tools.
+        let state = tool_state();
+        state.borrow_mut().set_tool_for_hand(PaintHand::Left, PaintTool::Picker);
+        let mut module =
+            HandSettingsModule::new("hands", rect(), state.clone(), selection(), number_edit());
+
+        let size_columns = |module: &HandSettingsModule| -> Vec<(bool, bool)> {
+            module
+                .build_rows()
+                .into_iter()
+                .filter_map(|row| match row {
+                    PropertyRow::Matrix { id, columns, .. } if id == "brush_size" => Some(
+                        columns
+                            .iter()
+                            .map(|column| (column.left_enabled, column.right_enabled))
+                            .collect::<Vec<_>>(),
+                    ),
+                    _ => None,
+                })
+                .next()
+                .expect("brush_size row present while the picker is equipped")
+        };
+
+        let ids: Vec<String> = module
+            .build_rows()
+            .into_iter()
+            .filter_map(|row| match row {
+                PropertyRow::Matrix { id, .. } => Some(id),
+                _ => None,
+            })
+            .collect();
+        assert!(ids.contains(&"picker_opposite_hand".to_string()));
+
+        // Left hand has the picker (declares brush_size), right hand has the
+        // default brush: BOTH sides' size tokens stay live.
+        for (left_enabled, right_enabled) in size_columns(&module) {
+            assert!(left_enabled, "picker hand's size token must be clickable");
+            assert!(right_enabled);
+        }
+
+        // A hand whose tool does not declare the row stays dead on its side.
+        state
+            .borrow_mut()
+            .set_tool_for_hand(PaintHand::Right, PaintTool::Lasso);
+        for (left_enabled, right_enabled) in size_columns(&module) {
+            assert!(left_enabled);
+            assert!(!right_enabled, "lasso does not declare brush_size");
+        }
     }
 
     #[test]
@@ -845,7 +917,7 @@ mod tests {
                 .collect()
         };
 
-        // Brush/erase hands: no text rows.
+        // Brush/CLEAR hands: no text rows.
         let default_ids = row_ids(&module);
         assert!(!default_ids.contains(&"text_char_step".to_string()));
         assert!(!default_ids.contains(&"text_enter_step".to_string()));
@@ -932,9 +1004,8 @@ mod tests {
             .iter()
             .map(|row| PropertyRows::row_height(row))
             .sum::<i32>();
-        let field_y = scroll_rect().y0 + PropertyRows::top_row_y(scroll_rect())
-            - HAND_BLOCK_ROWS
-            - row_y;
+        let field_y =
+            scroll_rect().y0 + PropertyRows::top_row_y(scroll_rect()) - HAND_BLOCK_ROWS - row_y;
         assert_eq!(
             PropertyRows::number_field_at(
                 scroll_rect(),

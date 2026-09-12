@@ -4,7 +4,7 @@
 Host one folder per registered painter tool, each owning that tool's registration truth via the `RegisteredTool` seam.
 
 ## owns
-- one folder per tool: `brush/`, `erase/`, `fill/`, `lasso/`, `text/`, `picker/`, `stamp/`
+- one folder per tool: `brush/`, `fill/`, `lasso/`, `text/`, `picker/`, `stamp/`, `move_tool/`
 - each folder's descriptor resolution and its contract
 
 ## does not own
@@ -14,8 +14,6 @@ Host one folder per registered painter tool, each owning that tool's registratio
 
 ## children-encapsulations
 - `brush/`
-  - default
-- `erase/`
   - default
 - `fill/`
   - default
@@ -31,7 +29,7 @@ Host one folder per registered painter tool, each owning that tool's registratio
 ## contents
 - `contract.md`
   - individuals contract
-- `brush/brush_tool.rs`, `erase/erase_tool.rs`, `fill/fill_tool.rs`, `lasso/lasso_tool.rs`, `text/text_tool.rs`, `picker/picker_tool.rs`, `stamp/stamp_tool.rs`
+- `brush/brush_tool.rs`, `fill/fill_tool.rs`, `lasso/lasso_tool.rs`, `text/text_tool.rs`, `picker/picker_tool.rs`, `stamp/stamp_tool.rs`, `move_tool/move_tool.rs`
   - per-tool `RegisteredTool` impls
 
 ## dependencies
@@ -56,3 +54,4 @@ Host one folder per registered painter tool, each owning that tool's registratio
 
 ## notes
 - new tool folders join here; the registry line plus the `PaintTool` arm are the only other touches.
+- the clear character is selected in the graphics picker and is applied by Brush, Fill, Lasso, and future ordinary paint tools.

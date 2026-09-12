@@ -540,9 +540,7 @@ mod tests {
             8
         );
         // Monotonic across the sampled fraction of one breath.
-        let at = |fraction: f32| {
-            resolve_move_offset_fractional(&blocks, 5, fraction).unwrap()[0]
-        };
+        let at = |fraction: f32| resolve_move_offset_fractional(&blocks, 5, fraction).unwrap()[0];
         assert!(at(0.0) <= at(0.25) && at(0.25) <= at(0.5) && at(0.5) <= at(0.75));
     }
 

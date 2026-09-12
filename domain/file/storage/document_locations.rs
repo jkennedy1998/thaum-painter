@@ -72,6 +72,9 @@ mod tests {
     #[test]
     fn painter_file_root_defaults_to_repo_artifacts_folder() {
         let root = resolve_painter_file_root(Path::new("/tmp/fake-repo"));
-        assert_eq!(root, PathBuf::from("/tmp/fake-repo/artifacts/painter-files"));
+        assert_eq!(
+            root,
+            PathBuf::from("/tmp/fake-repo/artifacts/painter-files")
+        );
     }
 }

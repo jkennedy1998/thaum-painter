@@ -1,10 +1,10 @@
 use std::{cell::RefCell, rc::Rc};
 
 use thaum_renderer_domain::{
-    Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellMaterialId, CellPoint, CellWeight,
-    ColorBand, GizmoBar, GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module,
-    ModulePointerButton, ModulePointerEvent, ModuleRect, PanelChrome, PersistedModuleUiState,
-    UiColorRole, UiPalette, WorldPoint, title_hotspot,
+    title_hotspot, Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellMaterialId,
+    CellPoint, CellWeight, ColorBand, GizmoBar, GizmoClickOutcome, GizmoKind, GizmoState, Hotspot,
+    Module, ModulePointerButton, ModulePointerEvent, ModuleRect, PanelChrome,
+    PersistedModuleUiState, UiColorRole, UiPalette, WorldPoint,
 };
 
 use crate::{
@@ -210,23 +210,19 @@ impl Module for MaterialPickerModule {
             "materials module",
             "this is largely a stub development place for lighting systems for thaumworld :3",
         )];
-        custom.extend(
-            hits
-            .into_iter()
-            .map(|hit| {
-                let name = hit.material.label().to_ascii_uppercase();
-                Hotspot::new(
-                    ModuleRect {
-                        x0: self.rect.x0 + content_x,
-                        y0: self.rect.y0 + hit.y,
-                        x1: self.rect.x0 + content_x + content_width,
-                        y1: self.rect.y0 + hit.y,
-                    },
-                    name,
-                    "click to assign the material to a hand: left-click left, right-click right",
-                )
-            }),
-        );
+        custom.extend(hits.into_iter().map(|hit| {
+            let name = hit.material.label().to_ascii_uppercase();
+            Hotspot::new(
+                ModuleRect {
+                    x0: self.rect.x0 + content_x,
+                    y0: self.rect.y0 + hit.y,
+                    x1: self.rect.x0 + content_x + content_width,
+                    y1: self.rect.y0 + hit.y,
+                },
+                name,
+                "click to assign the material to a hand: left-click left, right-click right",
+            )
+        }));
         self.gizmos.hotspots_with(self.rect, custom)
     }
 

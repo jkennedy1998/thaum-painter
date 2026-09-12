@@ -32,11 +32,11 @@ impl ToolSelectionBehavior {
 
 /// Which selection behavior the tool with this registration id uses when
 /// its hand edits the selection surface.
-pub fn selection_behavior(tool_id: &str) -> ToolSelectionBehavior {
-    match tool_id {
-        "erase" => ToolSelectionBehavior::ForceSubtract,
-        _ => ToolSelectionBehavior::UseCurrentMode,
-    }
+pub fn selection_behavior(_tool_id: &str) -> ToolSelectionBehavior {
+    // Clearing is an authored character, not a tool, so every registered
+    // tool follows the selection's current mode. A future genuinely
+    // subtract-only tool can opt into ForceSubtract here.
+    ToolSelectionBehavior::UseCurrentMode
 }
 
 #[cfg(test)]
@@ -44,12 +44,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn erase_forces_subtract_and_other_tools_use_the_current_mode() {
-        assert_eq!(
-            selection_behavior("erase"),
-            ToolSelectionBehavior::ForceSubtract
-        );
-        for id in ["brush", "fill", "text"] {
+    fn clear_and_registered_tools_use_the_current_mode() {
+        for id in ["clear", "brush", "fill", "lasso", "text"] {
             assert_eq!(
                 selection_behavior(id),
                 ToolSelectionBehavior::UseCurrentMode,

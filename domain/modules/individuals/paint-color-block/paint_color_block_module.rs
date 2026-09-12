@@ -267,7 +267,7 @@ mod tests {
     #[test]
     fn dragging_updates_the_active_hand_color() {
         let tool_state = Rc::new(RefCell::new(ToolState::default()));
-        let original = tool_state.borrow().right_hand.color;
+        let original = tool_state.borrow().right_hand.color.clone();
         let mut module =
             PaintColorBlockModule::new("block", rect(), tool_state.clone(), UiPalette::default());
 
@@ -289,7 +289,7 @@ mod tests {
             .set_color_for_hand(PaintHand::Left, PaintColor::flat_rgb(197, 181, 168));
         let mut module =
             PaintColorBlockModule::new("block", rect(), tool_state.clone(), UiPalette::default());
-        let original = tool_state.borrow().left_hand.color;
+        let original = tool_state.borrow().left_hand.color.clone();
 
         for _ in 0..12 {
             module.on_wheel(0, 0, 0.0, 1.0);

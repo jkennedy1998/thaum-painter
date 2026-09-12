@@ -50,11 +50,11 @@ use thaum_renderer_domain::{
     camera_view_orientation_for_camera, effective_bindings,
     remap_surface_units_to_active_plane_world, remap_surface_units_to_flat_2d_local,
     shape_fade::fade::ShapeFade, shape_fade::font_tiles::FontSetTiles, tooltip_card_group,
-    ActionBindingMap, ActionName, CameraDepthLink, CameraLayersLink, CellPoint, CommandBar,
-    CommandBarButton, CommandBarClickOutcome, Composition, ControlActionRow, ControlsProfile,
-    GlyphFontSet, ModulePointerButton, ModulePointerEvent, ModuleRect, ModuleRegistry,
-    PersistedRendererUiSessionState, RawInput, TooltipState, TypingMode, TypingRoute, UiColorRole,
-    UiPalette, MAX_VISIBLE_PLANE_RADIUS,
+    ActionBindingMap, ActionName, CameraDepthLink, CameraLayersLink, CameraZoomCommand,
+    CameraZoomLink, CellPoint, CommandBar, CommandBarButton, CommandBarClickOutcome, Composition,
+    ControlActionRow, ControlsProfile, GlyphFontSet, ModulePointerButton, ModulePointerEvent,
+    ModuleRect, ModuleRegistry, PersistedRendererUiSessionState, RawInput, RenderQualityProfile,
+    TooltipState, TypingMode, TypingRoute, UiColorRole, UiPalette, MAX_VISIBLE_PLANE_RADIUS,
 };
 use winit::keyboard::KeyCode;
 
@@ -95,6 +95,7 @@ fn canvas_pointer_context<'a>(
     session_user_id: &'a str,
     active_layer_id: &'a mut String,
     persist_to_disk: bool,
+    graphic_fade: Option<&'a ShapeFade>,
 ) -> CanvasPointerContext<'a> {
     CanvasPointerContext {
         tool_state,
@@ -106,6 +107,7 @@ fn canvas_pointer_context<'a>(
         session_user_id,
         active_layer_id,
         persist_to_disk,
+        graphic_fade,
     }
 }
 
@@ -334,10 +336,7 @@ fn apply_session_panel_action(
                     panel.push_event(event.clone());
                     thaum_painter_domain::debug_log::info(
                         "session",
-                        &format!(
-                            "panel: {event}; invites {:?}",
-                            net.invite_addresses()
-                        ),
+                        &format!("panel: {event}; invites {:?}", net.invite_addresses()),
                     );
                     *session_relay_note = note;
                     // Host-owned disk truth: while a session lives, the host is
@@ -384,9 +383,9 @@ fn apply_session_panel_action(
             let relay = std::env::var("THAUM_SESSION_RELAY")
                 .ok()
                 .filter(|r| !r.is_empty())
-                .unwrap_or_else(
-                    || thaum_painter_workers::session_relay::DEFAULT_RELAY_ADDRESS.to_string(),
-                );
+                .unwrap_or_else(|| {
+                    thaum_painter_workers::session_relay::DEFAULT_RELAY_ADDRESS.to_string()
+                });
             let result = thaum_painter_workers::SessionNet::join_relay(
                 &relay,
                 &code,
@@ -431,13 +430,11 @@ fn apply_session_panel_action(
         SessionPanelAction::CopyCode => {
             // One artifact, one paste: the net invite code is the whole
             // invite — no ip:port list, no lane guessing on the joiner.
-            let code = session_net
-                .as_ref()
-                .and_then(|net| {
-                    net.invite_addresses()
-                        .into_iter()
-                        .find(|address| !address.contains(':'))
-                });
+            let code = session_net.as_ref().and_then(|net| {
+                net.invite_addresses()
+                    .into_iter()
+                    .find(|address| !address.contains(':'))
+            });
             match code {
                 Some(code) => match copy_text_to_clipboard(&code) {
                     // Show what was copied, verbatim, so the invite is on
@@ -456,8 +453,10 @@ fn apply_session_panel_action(
                     // The host's runtime holds the full session truth (own +
                     // foreign records); force-save it so solo guarded saves
                     // resume from a consistent disk (J 2026-09-09).
-                    match force_save_shared_document_snapshot(shared_document_paths, shared_document)
-                    {
+                    match force_save_shared_document_snapshot(
+                        shared_document_paths,
+                        shared_document,
+                    ) {
                         Ok(()) => thaum_painter_domain::debug_log::info(
                             "session",
                             "host left session; session state force-saved to disk",
@@ -522,7 +521,11 @@ fn apply_session_panel_action(
 #[allow(clippy::too_many_arguments)]
 fn apply_join_result(
     result: Result<
-        (thaum_painter_workers::SessionNet, thaum_painter_domain::SharedDocumentFile, String),
+        (
+            thaum_painter_workers::SessionNet,
+            thaum_painter_domain::SharedDocumentFile,
+            String,
+        ),
         String,
     >,
     session_net: &mut Option<thaum_painter_workers::SessionNet>,
@@ -606,6 +609,7 @@ fn begin_canvas_press_if_eligible(
     text_stroke_start: &mut Option<(Canvas, String)>,
     typing_mode: &mut TypingMode,
     persist_to_disk: bool,
+    graphic_fade: Option<&ShapeFade>,
 ) {
     let position = CellPoint {
         x: world.x,
@@ -632,6 +636,7 @@ fn begin_canvas_press_if_eligible(
             session_user_id,
             active_layer_id,
             persist_to_disk,
+            graphic_fade,
         ),
         hand,
         position,
@@ -669,6 +674,7 @@ fn continue_canvas_drag_if_eligible(
     chrome_hit: bool,
     typing_owns_input: bool,
     persist_to_disk: bool,
+    graphic_fade: Option<&ShapeFade>,
 ) {
     match route_drag(
         screen,
@@ -694,6 +700,7 @@ fn continue_canvas_drag_if_eligible(
                 session_user_id,
                 active_layer_id,
                 persist_to_disk,
+                graphic_fade,
             ),
             hand,
             position,
@@ -728,6 +735,7 @@ fn finish_canvas_release(
     view_orientation: thaum_renderer_domain::CameraViewOrientation,
     current_breath: u32,
     persist_to_disk: bool,
+    graphic_fade: Option<&ShapeFade>,
 ) {
     // Broadcast the release to every module, not just the captured one: a
     // drag that never requested capture (or lost it) would otherwise keep
@@ -751,6 +759,7 @@ fn finish_canvas_release(
             session_user_id,
             active_layer_id,
             persist_to_disk,
+            graphic_fade,
         ),
         view_orientation,
         current_breath,
@@ -1469,6 +1478,7 @@ fn build_user_session_state(
     command_bar: &CommandBar,
     active_layer_id: Option<&str>,
     current_breath: u32,
+    render_scale_percent: u8,
     drawing_space_wheel_mode: DrawingSpaceWheelMode,
     selection_mode: SelectionMode,
     tool_state: &ToolState,
@@ -1491,6 +1501,7 @@ fn build_user_session_state(
             command_bar,
             active_layer_id,
             current_breath,
+            render_scale_percent,
             tool_state,
         ),
         controls_profile: controls_profile.clone(),
@@ -1528,11 +1539,7 @@ mod tests {
         });
         shift_overlay_group_origin(
             &mut group,
-            thaum_renderer_domain::WorldPoint {
-                x: 3,
-                y: 5,
-                z: -2,
-            },
+            thaum_renderer_domain::WorldPoint { x: 3, y: 5, z: -2 },
         );
 
         assert_eq!(
@@ -1592,6 +1599,7 @@ mod tests {
             graphic: thaum_renderer_domain::CellGraphic::Glyph('?'),
             color: thaum_painter_domain::paint_color::PaintColor::flat_rgb(255, 255, 255),
             weight_index: 1,
+            shader_stack: Vec::new(),
         };
         let mut entry = TextEntryState::begin(
             CellPoint { x: 5, y: 5, z: 0 },
@@ -1736,15 +1744,15 @@ mod tests {
         // Same state, same fingerprint: the tick skips no-op saves.
         assert_eq!(document_autosave_fingerprint(&runtime).unwrap(), first);
         // A new action record (a stroke commit shape) moves the tail.
-        runtime.actions.push(
-            thaum_painter_domain::SharedDocumentActionRecord::undo(
+        runtime
+            .actions
+            .push(thaum_painter_domain::SharedDocumentActionRecord::undo(
                 "action-test-1",
                 runtime.document.document_id.clone(),
                 "layer-1",
                 "user-1",
                 "2026-09-10T00:00:00Z",
-            ),
-        );
+            ));
         assert_ne!(document_autosave_fingerprint(&runtime).unwrap(), first);
     }
 
@@ -2307,6 +2315,15 @@ fn main() -> Result<()> {
     let session_user_id = session_identity.user_id.clone();
     let session_state_path = painter_session_state_path(&session_user_id);
     let persisted_session = load_painter_user_session_state(&session_state_path)?;
+    // Presentation resolution is a machine-local preference, restored before
+    // boot so the first rendered frame already uses the selected quality.
+    let render_quality_profile = Rc::new(RefCell::new(RenderQualityProfile::new(
+        persisted_session
+            .as_ref()
+            .map(|session| session.painter.render_scale_percent as f32 / 100.0)
+            .unwrap_or(1.0),
+    )));
+    config.window.internal_render_scale = render_quality_profile.borrow().internal_render_scale();
     // The chosen multiplayer display name rides the user session (the
     // identity file is permanent and never rewritten).
     if let Some(name) = persisted_session
@@ -2405,11 +2422,7 @@ fn main() -> Result<()> {
             );
             match net {
                 Ok(net) => {
-                    let invite = net
-                        .invite_addresses()
-                        .first()
-                        .cloned()
-                        .unwrap_or_default();
+                    let invite = net.invite_addresses().first().cloned().unwrap_or_default();
                     eprintln!(
                         "session hosting over relay {relay} as {} — invite code: {invite}",
                         net.user_id()
@@ -2529,6 +2542,11 @@ fn main() -> Result<()> {
     // the camera's visible_plane_radius (clamped) and publishes the live
     // count back for the row's display.
     let camera_layers_link = CameraLayersLink::new();
+    // The perspective panel's zoom row drives the same camera zoom the − and
+    // + keys drive through this link: the frame loop drains its pending
+    // multiplicative steps (or a clicked preset snap) into the camera and
+    // publishes the live zoom back for the row's display.
+    let camera_zoom_link = CameraZoomLink::new();
 
     let ui_palette = UiPalette::default();
     // Per-user controls profile (overrides only), restored from the saved
@@ -2580,6 +2598,8 @@ fn main() -> Result<()> {
         &camera_parallax_profile,
         &camera_depth_link,
         &camera_layers_link,
+        &camera_zoom_link,
+        &render_quality_profile,
         &session_panel_state,
     );
 
@@ -2701,8 +2721,8 @@ fn main() -> Result<()> {
             || frame.input.pointer_down != last_pointer_down
             || frame.input.right_pointer_down != last_right_pointer_down;
         let playback_playing = timeline_state.borrow().playing;
-        let playback_due = playback_playing
-            && last_playback_step.elapsed() >= PLAYBACK_BREATH_INTERVAL;
+        let playback_due =
+            playback_playing && last_playback_step.elapsed() >= PLAYBACK_BREATH_INTERVAL;
         let blink_due =
             typing_mode.is_active() && cursor_blink_at.elapsed() >= CURSOR_BLINK_INTERVAL;
         // Multiplayer frame seam: publish this frame's new local records
@@ -3136,6 +3156,10 @@ fn main() -> Result<()> {
             .unwrap_or([0.0, 0.0]);
         state.camera.perspective = *camera_perspective_profile.borrow();
         state.camera.parallax = *camera_parallax_profile.borrow();
+        // The window surface reads this after the frame provider returns and
+        // rebuilds only its size-dependent offscreen targets when it changes.
+        state.config.window.internal_render_scale =
+            render_quality_profile.borrow().internal_render_scale();
         // Depth-row wheel steps land here: drain them into the focus depth,
         // then publish the live depth back so the row shows camera truth.
         let depth_steps = camera_depth_link.drain_pending();
@@ -3154,6 +3178,31 @@ fn main() -> Result<()> {
             session_dirty = true;
         }
         camera_layers_link.set_current(state.camera.visible_plane_radius);
+        // Zoom-row input lands here: multiplicative zoom steps use the exact
+        // − / + key path (`Camera::zoom_in`/`zoom_out`, which clamp), a
+        // clicked preset snaps the zoom (clamped host-side), then the live
+        // zoom publishes back so the row shows camera truth.
+        match camera_zoom_link.drain_pending() {
+            CameraZoomCommand::Steps(steps) => {
+                for _ in 0..steps.abs() {
+                    if steps > 0 {
+                        state.camera.zoom_in();
+                    } else {
+                        state.camera.zoom_out();
+                    }
+                }
+                session_dirty = true;
+            }
+            CameraZoomCommand::Set(target) => {
+                state.camera.zoom = target.clamp(
+                    thaum_renderer_domain::Camera::MIN_ZOOM,
+                    thaum_renderer_domain::Camera::MAX_ZOOM,
+                );
+                session_dirty = true;
+            }
+            CameraZoomCommand::None => {}
+        }
+        camera_zoom_link.set_current(state.camera.zoom);
         let camera = state.camera;
         let view_orientation = camera_view_orientation_for_camera(camera.swing, camera.roll);
         let cell_clip_size = cell_clip_size_for_state(state, frame.surface_size);
@@ -3276,22 +3325,18 @@ fn main() -> Result<()> {
             // The relay note and discovery truth ride the same per-frame
             // mirror; the poller scans while the panel is visible and the
             // newest scan (empty = "none found") lands in the selector.
-            let panel_visible = !modules
-                .is_hidden("painter_session_panel")
-                .unwrap_or(true);
+            let panel_visible = !modules.is_hidden("painter_session_panel").unwrap_or(true);
             discovery_poller.set_active(panel_visible && net.is_none());
             if let Some(discovered) = discovery_poller.take_discovered() {
-                session_panel_state
-                    .borrow_mut()
-                    .sync_discovered(
-                        discovered
-                            .into_iter()
-                            .map(|host| SessionDiscoveredHost {
-                                name: host.name,
-                                address: host.address,
-                            })
-                            .collect(),
-                    );
+                session_panel_state.borrow_mut().sync_discovered(
+                    discovered
+                        .into_iter()
+                        .map(|host| SessionDiscoveredHost {
+                            name: host.name,
+                            address: host.address,
+                        })
+                        .collect(),
+                );
             }
             session_panel_state
                 .borrow_mut()
@@ -3447,6 +3492,7 @@ fn main() -> Result<()> {
                     &mut text_stroke_start,
                     &mut typing_mode,
                     persist_to_disk,
+                    shape_fade.as_ref(),
                 );
             }
         } else if let Some(click) = frame.input.just_right_clicked {
@@ -3513,6 +3559,7 @@ fn main() -> Result<()> {
                     &mut text_stroke_start,
                     &mut typing_mode,
                     persist_to_disk,
+                    shape_fade.as_ref(),
                 );
             }
             // A number-field click just began an in-place edit; typing mode
@@ -3568,6 +3615,7 @@ fn main() -> Result<()> {
                     command_bar.contains(screen.x, screen.y) || modules.is_pointer_captured(),
                     text_entry.as_ref().is_some_and(|entry| entry.is_active()),
                     persist_to_disk,
+                    shape_fade.as_ref(),
                 );
             }
         }
@@ -3587,6 +3635,7 @@ fn main() -> Result<()> {
                     &session_user_id,
                     &mut active_layer_id,
                     persist_to_disk,
+                    shape_fade.as_ref(),
                 ),
                 timeline_state.borrow().current_breath,
             );
@@ -3728,6 +3777,7 @@ fn main() -> Result<()> {
                 view_orientation,
                 current_breath,
                 persist_to_disk,
+                shape_fade.as_ref(),
             );
         }
         left_pointer_was_down = frame.input.pointer_down;
@@ -3790,6 +3840,7 @@ fn main() -> Result<()> {
             &command_bar,
             Some(&active_layer_id),
             timeline_state.borrow().current_breath,
+            render_quality_profile.borrow().render_scale_percent(),
             *drawing_space_wheel_mode.borrow(),
             selection.borrow().mode(),
             &tool_state.borrow(),
@@ -3870,9 +3921,8 @@ fn main() -> Result<()> {
         // breath, so eased empties render one position per display frame
         // instead of one per breath. Paused/scrubbing stays at whole breaths.
         let breath_fraction = if playback_playing {
-            (last_playback_step.elapsed().as_secs_f32()
-                / PLAYBACK_BREATH_INTERVAL.as_secs_f32())
-            .min(0.999)
+            (last_playback_step.elapsed().as_secs_f32() / PLAYBACK_BREATH_INTERVAL.as_secs_f32())
+                .min(0.999)
         } else {
             0.0
         };
@@ -3918,6 +3968,7 @@ fn main() -> Result<()> {
                 &session_user_id,
                 &mut active_layer_id,
                 persist_to_disk,
+                shape_fade.as_ref(),
             ),
             view_orientation,
             ui_palette.get(UiColorRole::Vivid),

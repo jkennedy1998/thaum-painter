@@ -33,8 +33,9 @@ use std::rc::Rc;
 
 use anyhow::Error;
 use thaum_renderer_domain::{
-    project_world_relative_to_view, unproject_view_relative_to_world, CameraViewOrientation,
-    CellColor, CellGraphic, CellGroup, CellPoint, ViewRelativePoint, WorldPoint,
+    project_world_relative_to_view, unproject_view_relative_to_world, shape_fade::fade::ShapeFade,
+    CameraViewOrientation, CellColor, CellGraphic, CellGroup, CellPoint, ViewRelativePoint,
+    WorldPoint,
 };
 
 use crate::{
@@ -242,6 +243,7 @@ impl MoveStroke {
             graphic: CellGraphic::Glyph(' '),
             color: PaintColor::flat_rgb(0, 0, 0),
             weight_index: 3,
+            shader_stack: Vec::new(),
         };
         let mut previews: Vec<_> = self
             .origin_points
@@ -285,6 +287,10 @@ pub struct CanvasPointerContext<'a> {
     /// touching commits (snapshot saves, log appends) skip their write half;
     /// runtime mutations and peer publishes stay live.
     pub persist_to_disk: bool,
+    /// The host's shape-fade resolver, injected into interpolation-aware
+    /// sampling (the picker's blended size pick). `None` keeps the halfway
+    /// cutoff.
+    pub graphic_fade: Option<&'a ShapeFade>,
 }
 
 /// What a text-tool press hands back to the entrypoint: the typing session
@@ -467,11 +473,28 @@ impl CanvasPointerStrokes {
         }
         if drag_behavior(pressed_tool_id) == DragBehavior::ClickOnly {
             match pressed_tool_id {
-                // The picker samples the cell under the cursor into hand state.
+                // The picker samples the cells under the picking hand's
+                // brush-tip footprint into hand state: an empty pick sets the
+                // character to the blank (the picker doubles as the eraser),
+                // a multi-cell pick blends through the raster interpolation
+                // seam, and a footprint straddling clear fades toward the dot
+                // clear-transition glyph by the clear fraction (J 2026-09-12).
                 "picker" => {
-                    ctx.tool_state
-                        .borrow_mut()
-                        .pick_at_for_hand(ctx.canvas, position, hand);
+                    let footprint = {
+                        let tool_state = ctx.tool_state.borrow();
+                        brush::brush_points(
+                            position,
+                            tool_state.hand_state(hand).brush_size,
+                            orientation,
+                        )
+                    };
+                    ctx.tool_state.borrow_mut().pick_at_for_hand(
+                        ctx.canvas,
+                        position,
+                        hand,
+                        &footprint,
+                        ctx.graphic_fade,
+                    );
                 }
                 // The stamp places the hover preview's payload at the press
                 // cell: changes stage once so release commits one undo step.
@@ -1046,6 +1069,7 @@ mod tests {
                 session_user_id: &self.user,
                 active_layer_id: &mut self.layer_id,
                 persist_to_disk: true,
+                graphic_fade: None,
             }
         }
     }
@@ -1066,6 +1090,7 @@ mod tests {
                 graphic: CellGraphic::Glyph('#'),
                 color: PaintColor::FlatRgb(255, 255, 255),
                 weight_index: 1,
+                shader_stack: Vec::new(),
             },
         );
 
@@ -1289,6 +1314,7 @@ mod tests {
                 graphic: CellGraphic::Glyph('a'),
                 color: PaintColor::FlatRgb(255, 255, 255),
                 weight_index: 1,
+                shader_stack: Vec::new(),
             },
         );
         cells.insert(
@@ -1297,6 +1323,7 @@ mod tests {
                 graphic: CellGraphic::Glyph('b'),
                 color: PaintColor::FlatRgb(255, 255, 255),
                 weight_index: 1,
+                shader_stack: Vec::new(),
             },
         );
         StampHover {
@@ -1416,6 +1443,7 @@ mod tests {
                 graphic: CellGraphic::Glyph('a'),
                 color: PaintColor::FlatRgb(255, 255, 255),
                 weight_index: 1,
+                shader_stack: Vec::new(),
             },
         );
 
@@ -1436,6 +1464,7 @@ mod tests {
             graphic: CellGraphic::Glyph(graphic),
             color: PaintColor::FlatRgb(255, 255, 255),
             weight_index: 1,
+            shader_stack: Vec::new(),
         }
     }
 

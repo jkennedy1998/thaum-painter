@@ -24,7 +24,7 @@ Own the canonical top-level saved file schema and versioned shape for thaum-pain
 - `contract.md`
   - file-schema contract
 - `file_schema.rs`
-  - rust file-schema parsing/validation shapes, owned by this encapsulation (currently still parses the pre-reversal module-wrapped shape; needs an implementation pass, see notes)
+  - rust file-schema parsing/validation shapes, including v3 portable cell appearances and declarative export sections
 - `example-thaum-painter-file-v1.json`
   - v1 generation example (historical: now rejected by the gate — kept as a generation marker)
 - `example-thaum-painter-file-v1.md`
@@ -32,11 +32,17 @@ Own the canonical top-level saved file schema and versioned shape for thaum-pain
 - `schema-thaum-painter-file-v1.json`
   - v1 machine-readable file schema draft (historical)
 - `example-thaum-painter-file-v2.json`
-  - current-generation saved file example (binary-bars generation)
+  - v2 generation record (historical; now rejected)
 - `example-thaum-painter-file-v2.md`
-  - v2 saved file shape notes (what changed from v1 and why)
+  - v2 saved file shape notes
 - `schema-thaum-painter-file-v2.json`
-  - current machine-readable file schema draft
+  - v2 machine-readable schema record (historical)
+- `example-thaum-painter-file-v3.json`
+  - current-generation portable cell-language fixture
+- `example-thaum-painter-file-v3.md`
+  - v3 saved-file shape notes
+- `schema-thaum-painter-file-v3.json`
+  - current machine-readable file schema
 
 ## dependencies
 - `thaum-painter/domain/file/`
@@ -61,16 +67,16 @@ via: rust fn
 - render-space
 
 ## artifacts
-- `example-thaum-painter-file-v2.json`
-  - current-generation saved file fixture
-- `schema-thaum-painter-file-v2.json`
+- `example-thaum-painter-file-v3.json`
+  - current-generation portable cell-language fixture
+- `schema-thaum-painter-file-v3.json`
   - current machine-readable file schema
-- `example-thaum-painter-file-v1.json` + `schema-thaum-painter-file-v1.json`
-  - v1 generation records (historical; the gate rejects v1 with the explicit version message)
+- v1 and v2 examples/schemas
+  - historical generation records; the gate rejects them with the explicit version message
 
 ## tests
 - inline `#[cfg(test)]` in `file_schema.rs`
-  - v2 example parses; v1 example rejects as an unsupported generation; unsupported version and wrong kind reject with explicit messages
+  - v3 fixture parses glyph/sprite/material/slot/shader values, fixed origins, and flat exports; v2 rejects as unsupported; malformed references reject
 
 ## data
 - none
@@ -78,5 +84,6 @@ via: rust fn
 ## notes
 - renamed from `manifest/` (2026-09-07, J-approved): "what's the current schema version" is the sentence the code should be able to say; "manifest" was vague.
 - schema version bumped 1 -> 2 (2026-09-07, binary-bars redesign): the break is binary tiling — property tracks tile the full layer span with empty/solid bars, no voids. The interchange shape is unchanged; v1 files are not imported or migrated, they reject cleanly at load (`storage/`'s typed gate). Cross-reference: `plans/project-thaum-painter-binary-bars-plan.md`.
+- schema version bumped 2 -> 3 (2026-09-12): every stored voxel now carries a portable glyph-or-sprite appearance, flat/material/slot color, weight, and ordered filename shader stack; layers gain fixed origins and documents gain the optional declarative `flat` export preset. V2 is not migrated.
 - the schema version changes ONLY when the shape breaks. No importer, no migration pass — old files are recognized as unsupported and rejected cleanly at load, never a crash. J fixes friend files case-by-case.
 - load-time gate ownership: `parse_file_schema` provides kind/version validation; `storage/`'s `load_document_file` wires it into the actual load seam so rejection happens before any body deserialization.

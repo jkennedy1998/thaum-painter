@@ -40,6 +40,8 @@ Own the thaum painter as its own repo-shaped authoring boundary for ASCII scene 
   - roadmap and design-truth notes; not an encapsulation, matching how `thaum-renderer/` treats its own `context/`
 - `plans/`
   - per-encapsulation and project-level implementation plans; not an encapsulation
+- `truth.md`
+  - direct J design decisions for the repo boundary
 
 ## dependencies
 - `thaum-renderer/`

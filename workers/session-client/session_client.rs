@@ -287,8 +287,7 @@ impl SessionClient {
                     // Everything the wire hands us counts as known — replay
                     // and live echo alike — so the publish side can never
                     // re-send a record the host already logged.
-                    self.consumed_action_ids
-                        .insert(record.action_id.clone());
+                    self.consumed_action_ids.insert(record.action_id.clone());
                     // Welcome replay (records predating this connection):
                     // own records apply too — the rebuilt runtime started
                     // from the frozen snapshot and holds none of them
@@ -557,6 +556,7 @@ mod tests {
             graphic: CellGraphic::Glyph('a'),
             color: PaintColor::FlatRgb(color.0, color.1, color.2),
             weight_index: 2,
+            shader_stack: Vec::new(),
         }
     }
 

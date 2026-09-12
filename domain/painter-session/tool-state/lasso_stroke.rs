@@ -112,6 +112,7 @@ mod tests {
             graphic: CellGraphic::Glyph(graphic),
             color: PaintColor::FlatRgb(rgb.0, rgb.1, rgb.2),
             weight_index: 2,
+            shader_stack: Vec::new(),
         }
     }
 
@@ -188,6 +189,7 @@ mod tests {
                 graphic: CellGraphic::Glyph(' '),
                 color: PaintColor::flat_rgb(1, 2, 3),
                 weight_index: 2,
+                shader_stack: Vec::new(),
             }),
             upcoming: painted('A', (1, 2, 3)),
         }];

@@ -75,3 +75,4 @@ via: each `individuals/<tool>/` type implementing `RegisteredTool`
 - source-of-truth from J: logic should be written in one place and reused through standard seams, never rewritten per tool; `shared/` hosts that cross-tool layer (selection behavior rules now, geometry/line/shape computations as tools grow).
 - lean + non-migratory: registration truth moved here first; behavior migration happens per tool later, one folder at a time.
 - adding a new tool: new folder under `individuals/` (contract.md + `<tool>_tool.rs`) + one `ToolDescriptor` line in `registry.rs` + one `PaintTool` arm in tool-state; property rows, label, icon, persistence name, and hotkey then flow from the descriptor.
+- clearing is not a tool registration: any ordinary paint tool clears when its hand has the graphics picker's clear character equipped.

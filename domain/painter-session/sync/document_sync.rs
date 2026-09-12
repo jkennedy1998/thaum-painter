@@ -132,6 +132,7 @@ mod tests {
             graphic: CellGraphic::Glyph('a'),
             color: PaintColor::FlatRgb(color.0, color.1, color.2),
             weight_index: 2,
+            shader_stack: Vec::new(),
         }
     }
 

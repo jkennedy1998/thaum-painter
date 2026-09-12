@@ -13,7 +13,7 @@ Own painter's toolbox panel: the old-feeling left/right tool chooser rebuilt as 
 
 ## does not own
 - the renderer's `Module` contract or registry semantics, owned by `thaum-renderer/domain/modules/`
-- pure brush/erase/fill behavior, owned by `domain/painter-operations/`
+- pure brush/fill and clear-character behavior, owned by `domain/painter-operations/`
 - app boot placement, owned by `orchestration/entrypoint/`
 
 ## children-encapsulations

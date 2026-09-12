@@ -8,7 +8,7 @@ Own live clipboard and copy-buffer semantics for painter session workflows.
 - the 3D world copy payload shape (`WorldCopyData`: anchor + center + sparse cells offset from the anchor)
 - copy from the selection surface (world selection first, plane selection fallback) out of the live canvas
 - paste target resolution (`paste_points` placing copy offsets relative to the copy's center cell at a paste anchor)
-- the `THAUM3D:` + JSON OS-clipboard text codec (`encode_os_clipboard` / `decode_os_clipboard`) with its own serde payload mirror of painted cells
+- the `THAUM3D:` + JSON OS-clipboard text codec (`encode_os_clipboard` / `decode_os_clipboard`) with its own serde payload mirror of full painted appearance: glyph/sprite, flat/material/slot color, weight, and ordered shader filenames
 - clipboard mode notes for plain text and world-aware selections (plain-text paste decode is future work)
 
 ## does not own
@@ -52,7 +52,7 @@ Own live clipboard and copy-buffer semantics for painter session workflows.
 - none
 
 ## notes
-- source-of-truth from J: the clipboard must be 3D — payload cells carry full x/y/z offsets, mirroring the old system's `world_selection.ts` `WorldCopyData` (`THAUM3D:` prefix), not the old 2D `copy_paste.ts` grid.
+- source-of-truth from J: the clipboard must be 3D — payload cells carry full x/y/z offsets, mirroring the old system's `world_selection.ts` `WorldCopyData` (`THAUM3D:` prefix), not the old 2D `copy_paste.ts` grid. Its cell payload retains portable asset filenames and shader ordering exactly.
 - source-of-truth from J: clipboards are user-based for multiplayer — one buffer per `user_id`; the OS-clipboard codec is the shared cross-session bridge so users see pasted structures emerge in their own session.
 - source-of-truth from J: paste always uses the user's **own** buffer — users handle their own copy/paste. A `THAUM3D:` payload found on the OS clipboard (e.g. copied in another session) imports into the own buffer on first paste; other users' buffers are never read.
 - source-of-truth from J: the paste cursor sits in the **middle** of the copied content, empty tiles included — the copy records the bounds-center cell of the copied region (odd extents center exactly, even extents round away from the min) and `paste_points` lands that center on the cursor.

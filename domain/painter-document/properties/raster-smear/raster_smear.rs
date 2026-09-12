@@ -288,6 +288,7 @@ mod tests {
             graphic: CellGraphic::Glyph(glyph),
             color,
             weight_index: weight,
+            shader_stack: Vec::new(),
         }
     }
 

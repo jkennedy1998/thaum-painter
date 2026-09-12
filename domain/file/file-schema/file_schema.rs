@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
 pub const FILE_SCHEMA_KIND: &str = "thaum-painter-file";
-pub const FILE_SCHEMA_VERSION: u32 = 2;
+pub const FILE_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GridPoint {
@@ -16,6 +16,46 @@ pub struct Rgb {
     pub r: u8,
     pub g: u8,
     pub b: u8,
+}
+
+/// One portable visual graphic. Asset files are renderer-asset-root-relative;
+/// painter documents intentionally do not store game-local IDs or host paths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CellGraphicValue {
+    Glyph(char),
+    Sprite { asset_file: String },
+}
+
+/// One source color assignment. Slots give sprites their native A/B/C palette
+/// assignments while remaining valid for glyphs (which resolve through slot A).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CellColorValue {
+    Flat(Rgb),
+    Material {
+        asset_file: String,
+    },
+    Slots {
+        a: CellColorSlotValue,
+        b: CellColorSlotValue,
+        c: CellColorSlotValue,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CellColorSlotValue {
+    Flat(Rgb),
+    Material { asset_file: String },
+}
+
+/// The complete authored visual value for one non-empty painter cell. This is
+/// deliberately source-facing: runtime texture/warble codes and renderer IDs
+/// do not leak into transferable painter files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CellAppearance {
+    pub graphic: CellGraphicValue,
+    pub color: CellColorValue,
+    pub weight_index: i64,
+    pub shader_stack: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,12 +84,10 @@ pub struct BreathWindow {
     pub window_end_breath: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Voxel {
     pub position: GridPoint,
-    pub char: char,
-    pub rgb: Rgb,
-    pub weight_index: i64,
+    pub appearance: CellAppearance,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -82,6 +120,9 @@ pub struct Group {
     pub visible: bool,
     pub locked: bool,
     pub opacity: f64,
+    /// Fixed authored pivot. Animated `move` property values offset rendered
+    /// cells from here and must never rewrite this point.
+    pub origin: GridPoint,
     pub placement: GridPoint,
     pub timing: BreathWindow,
     pub raster_segments: Vec<RasterSegment>,
@@ -96,12 +137,28 @@ pub struct PlaybackWindow {
     pub document_window_end_breath: u32,
 }
 
+/// Declarative configuration consumed by the future general exporter. It says
+/// what to export, never where or when an exporter wrote it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlatExport {
+    pub file_name: String,
+    pub name: String,
+    pub facing: String,
+    pub interpolation: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ExportSections {
+    pub flat: Option<FlatExport>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DocumentContent {
     pub bounds: DocumentBounds,
     pub group_order: Vec<String>,
     pub groups: Vec<Group>,
     pub playback: PlaybackWindow,
+    pub exports: ExportSections,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -251,6 +308,82 @@ fn parse_rgb(value: &Value) -> Result<Rgb> {
     })
 }
 
+fn validate_asset_file(asset_file: &str, field_name: &str) -> Result<()> {
+    if asset_file.is_empty()
+        || asset_file.starts_with('/')
+        || asset_file.starts_with('\\')
+        || asset_file.split('/').any(|part| part == "..")
+        || asset_file.split('\\').any(|part| part == "..")
+    {
+        bail!("{field_name} must be a non-empty relative asset filename");
+    }
+    Ok(())
+}
+
+fn require_asset_file(value: &Value, name: &str) -> Result<String> {
+    let asset_file = require_str(value, name)?;
+    validate_asset_file(asset_file, &format!("field '{name}'"))?;
+    Ok(asset_file.to_owned())
+}
+
+fn parse_color_slot(value: &Value) -> Result<CellColorSlotValue> {
+    match require_str(value, "kind")? {
+        "flat" => Ok(CellColorSlotValue::Flat(parse_rgb(field(value, "rgb")?)?)),
+        "material" => Ok(CellColorSlotValue::Material {
+            asset_file: require_asset_file(value, "asset_file")?,
+        }),
+        kind => bail!("color slot kind must be 'flat' or 'material', got '{kind}'"),
+    }
+}
+
+fn parse_color(value: &Value) -> Result<CellColorValue> {
+    match require_str(value, "kind")? {
+        "flat" => Ok(CellColorValue::Flat(parse_rgb(field(value, "rgb")?)?)),
+        "material" => Ok(CellColorValue::Material {
+            asset_file: require_asset_file(value, "asset_file")?,
+        }),
+        "slots" => Ok(CellColorValue::Slots {
+            a: parse_color_slot(field(value, "a")?).context("invalid color slot a")?,
+            b: parse_color_slot(field(value, "b")?).context("invalid color slot b")?,
+            c: parse_color_slot(field(value, "c")?).context("invalid color slot c")?,
+        }),
+        kind => bail!("color kind must be 'flat', 'material', or 'slots', got '{kind}'"),
+    }
+}
+
+fn parse_graphic(value: &Value) -> Result<CellGraphicValue> {
+    match require_str(value, "kind")? {
+        "glyph" => Ok(CellGraphicValue::Glyph(require_char(value, "glyph")?)),
+        "sprite" => Ok(CellGraphicValue::Sprite {
+            asset_file: require_asset_file(value, "asset_file")?,
+        }),
+        kind => bail!("graphic kind must be 'glyph' or 'sprite', got '{kind}'"),
+    }
+}
+
+fn parse_shader_stack(value: &Value) -> Result<Vec<String>> {
+    require_array(value, "shader_stack")?
+        .iter()
+        .enumerate()
+        .map(|(index, shader)| {
+            let asset_file = shader
+                .as_str()
+                .with_context(|| format!("shader_stack[{index}] must be a string"))?;
+            validate_asset_file(asset_file, &format!("shader_stack[{index}]"))?;
+            Ok(asset_file.to_owned())
+        })
+        .collect()
+}
+
+fn parse_cell_appearance(value: &Value) -> Result<CellAppearance> {
+    Ok(CellAppearance {
+        graphic: parse_graphic(field(value, "graphic")?).context("invalid cell graphic")?,
+        color: parse_color(field(value, "color")?).context("invalid cell color")?,
+        weight_index: require_i64(value, "weight_index")?,
+        shader_stack: parse_shader_stack(value)?,
+    })
+}
+
 fn parse_breath_window(value: &Value) -> Result<BreathWindow> {
     Ok(BreathWindow {
         start_breath: require_u32(value, "start_breath")?,
@@ -262,9 +395,8 @@ fn parse_breath_window(value: &Value) -> Result<BreathWindow> {
 fn parse_voxel(value: &Value) -> Result<Voxel> {
     Ok(Voxel {
         position: parse_grid_point(value)?,
-        char: require_char(value, "char")?,
-        rgb: parse_rgb(field(value, "rgb")?)?,
-        weight_index: require_i64(value, "weight_index")?,
+        appearance: parse_cell_appearance(field(value, "appearance")?)
+            .context("invalid voxel appearance")?,
     })
 }
 
@@ -304,6 +436,27 @@ fn parse_group_property(value: &Value) -> Result<GroupProperty> {
     })
 }
 
+fn parse_flat_export(value: &Value) -> Result<FlatExport> {
+    let interpolation = require_str(value, "interpolation")?;
+    if interpolation != "preserve" {
+        bail!("flat export interpolation must be 'preserve', got '{interpolation}'");
+    }
+    Ok(FlatExport {
+        file_name: require_asset_file(value, "file_name")?,
+        name: require_str(value, "name")?.to_owned(),
+        facing: require_str(value, "facing")?.to_owned(),
+        interpolation: interpolation.to_owned(),
+    })
+}
+
+fn parse_export_sections(value: &Value) -> Result<ExportSections> {
+    let flat = match field(value, "flat")? {
+        Value::Null => None,
+        flat => Some(parse_flat_export(flat).context("invalid flat export")?),
+    };
+    Ok(ExportSections { flat })
+}
+
 fn parse_group(value: &Value) -> Result<Group> {
     let raster_segments = require_array(value, "raster_segments")?
         .iter()
@@ -321,6 +474,7 @@ fn parse_group(value: &Value) -> Result<Group> {
         visible: require_bool(value, "visible")?,
         locked: require_bool(value, "locked")?,
         opacity: require_f64(value, "opacity")?,
+        origin: parse_grid_point(field(value, "origin")?)?,
         placement: parse_grid_point(field(value, "placement")?)?,
         timing: parse_breath_window(field(value, "timing")?)?,
         raster_segments,
@@ -361,6 +515,8 @@ fn parse_document(value: &Value) -> Result<DocumentContent> {
         group_order: require_string_array(value, "group_order")?,
         groups,
         playback: parse_playback_window(field(value, "playback")?)?,
+        exports: parse_export_sections(field(value, "exports")?)
+            .context("invalid document exports")?,
     })
 }
 
@@ -482,110 +638,98 @@ pub fn parse_file_schema_from_str(text: &str) -> Result<FileSchema> {
 mod tests {
     use super::*;
 
-    const EXAMPLE_FILE_SCHEMA_JSON: &str = include_str!("example-thaum-painter-file-v2.json");
-    const EXAMPLE_FILE_SCHEMA_V1_JSON: &str = include_str!("example-thaum-painter-file-v1.json");
+    const EXAMPLE_FILE_SCHEMA_JSON: &str = include_str!("example-thaum-painter-file-v3.json");
+    const EXAMPLE_FILE_SCHEMA_V2_JSON: &str = include_str!("example-thaum-painter-file-v2.json");
 
     #[test]
     fn parses_the_pinned_example_file_schema_without_error() {
         let schema = parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap();
-        assert_eq!(schema.version, 2);
-        assert_eq!(schema.metadata.document_id, "doc_cavern_sign_001");
+        assert_eq!(schema.version, 3);
+        assert_eq!(schema.metadata.document_id, "doc_cell_language_001");
     }
 
     #[test]
-    fn the_v1_example_is_now_an_unsupported_generation() {
-        // Binary-bars schema break: v1 files are recognized as unsupported with
-        // the explicit version-difference message, never imported or migrated.
-        let error = parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_V1_JSON).unwrap_err();
+    fn the_v2_example_is_now_an_unsupported_generation() {
+        // The cell-language schema break has no importer or migration pass.
+        let error = parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_V2_JSON).unwrap_err();
         assert!(error.to_string().contains("version"));
-        assert!(error.to_string().contains("got 1"));
+        assert!(error.to_string().contains("got 2"));
     }
 
     #[test]
-    fn parses_four_flat_groups_each_with_their_own_placement() {
+    fn parses_groups_with_distinct_fixed_origin_and_placement() {
         let schema = parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap();
+        assert_eq!(schema.document.group_order, vec!["group_asset"]);
+        let asset = &schema.document.groups[0];
+        assert_eq!(asset.placement, GridPoint { x: 3, y: 2, z: 1 });
+        assert_eq!(asset.origin, GridPoint { x: 1, y: 0, z: 0 });
+    }
+
+    #[test]
+    fn parses_glyph_sprite_material_slots_and_ordered_shaders() {
+        let schema = parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap();
+        let segment = &schema.document.groups[0].raster_segments[0];
+        assert_eq!(segment.voxels.len(), 4);
         assert_eq!(
-            schema.document.group_order,
-            vec![
-                "group_background",
-                "group_letters",
-                "group_glow",
-                "group_torch_flame"
-            ]
+            segment.voxels[0].appearance.graphic,
+            CellGraphicValue::Glyph('R')
         );
-        assert_eq!(schema.document.groups.len(), 4);
-
-        let background = &schema.document.groups[0];
-        assert_eq!(background.id, "group_background");
-        assert_eq!(background.placement, GridPoint { x: 0, y: 0, z: 0 });
-
-        let torch = &schema.document.groups[3];
-        assert_eq!(torch.id, "group_torch_flame");
-        assert_eq!(torch.placement, GridPoint { x: 18, y: 0, z: 0 });
-    }
-
-    #[test]
-    fn each_group_carries_its_own_directly_authored_placement() {
-        let schema = parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap();
-        let glow = schema
-            .document
-            .groups
-            .iter()
-            .find(|group| group.id == "group_glow")
-            .unwrap();
-        assert_eq!(glow.placement, GridPoint { x: 2, y: 1, z: 2 });
-    }
-
-    #[test]
-    fn parses_raster_segment_voxels_with_color_and_weight() {
-        let schema = parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap();
-        let letters = &schema.document.groups[1];
-        assert_eq!(letters.id, "group_letters");
-        let segment = &letters.raster_segments[0];
-        assert_eq!(segment.voxels.len(), 3);
-        assert_eq!(segment.voxels[0].char, 'R');
         assert_eq!(
-            segment.voxels[0].rgb,
-            Rgb {
-                r: 255,
-                g: 210,
-                b: 120
+            segment.voxels[1].appearance.color,
+            CellColorValue::Material {
+                asset_file: "materials/gray-scale.json".to_owned()
             }
         );
-        assert_eq!(segment.voxels[0].weight_index, 2);
+        assert_eq!(
+            segment.voxels[2].appearance.graphic,
+            CellGraphicValue::Sprite {
+                asset_file: "cell-sprites/torch.png".to_owned()
+            }
+        );
+        assert!(matches!(
+            segment.voxels[3].appearance.color,
+            CellColorValue::Slots { .. }
+        ));
+        assert_eq!(
+            segment.voxels[0].appearance.shader_stack,
+            vec![
+                "cell-shaders/weight-sin.json",
+                "cell-shaders/texture-shimmer.json"
+            ]
+        );
     }
 
     #[test]
     fn parses_property_blocks_with_arbitrary_json_value_shapes() {
         let schema = parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap();
-        let glow = &schema.document.groups[2];
-        let move_property = glow
+        let asset = &schema.document.groups[0];
+        let move_property = asset
             .properties
             .iter()
             .find(|property| property.kind == "move")
             .unwrap();
-        assert_eq!(move_property.blocks.len(), 2);
+        assert_eq!(move_property.blocks.len(), 1);
         assert_eq!(
-            move_property.blocks[1].value,
+            move_property.blocks[0].value,
             serde_json::json!({ "x": 1, "y": 0, "z": 0 })
         );
     }
 
     #[test]
-    fn parses_time_assets_and_saved_camera_defaults() {
+    fn parses_flat_export_and_saved_camera_defaults() {
         let schema = parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap();
-        assert_eq!(schema.time_assets.particle_effects.len(), 1);
-        assert_eq!(schema.time_assets.particle_effects[0].visual.char, '*');
+        assert!(schema.time_assets.particle_effects.is_empty());
         assert_eq!(schema.saved_camera_defaults.orientation, "xy");
         assert_eq!(schema.saved_camera_defaults.pan_x, 0.0);
-    }
-
-    #[test]
-    fn parses_import_export_bookkeeping_with_null_source_import() {
-        let schema = parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap();
-        assert!(schema.import_export_bookkeeping.source_import.is_none());
-        let last_export = schema.import_export_bookkeeping.last_export.unwrap();
-        assert_eq!(last_export.profile, "renderer-scene-preview");
+        assert_eq!(
+            schema.document.exports.flat,
+            Some(FlatExport {
+                file_name: "exports/cell-language-proof.taf".to_owned(),
+                name: "Cell Language Proof".to_owned(),
+                facing: "pos-z".to_owned(),
+                interpolation: "preserve".to_owned(),
+            })
+        );
     }
 
     #[test]
@@ -616,14 +760,16 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_multi_character_voxel_char() {
-        let value = serde_json::json!({
-            "x": 0, "y": 0, "z": 0,
-            "char": "ab",
-            "rgb": { "r": 0, "g": 0, "b": 0 },
-            "weight_index": 0
-        });
-        let error = parse_voxel(&value).unwrap_err();
-        assert!(error.to_string().contains("exactly one character"));
+    fn rejects_a_multi_character_glyph_and_absolute_asset_file() {
+        let glyph = serde_json::json!({ "kind": "glyph", "glyph": "ab" });
+        assert!(parse_graphic(&glyph)
+            .unwrap_err()
+            .to_string()
+            .contains("exactly one character"));
+        let sprite = serde_json::json!({ "kind": "sprite", "asset_file": "/torch.png" });
+        assert!(parse_graphic(&sprite)
+            .unwrap_err()
+            .to_string()
+            .contains("relative asset filename"));
     }
 }

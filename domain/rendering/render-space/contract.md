@@ -57,7 +57,7 @@ send: `&SharedDocumentRuntime, current_breath: u32, pending_move_offset: Option<
 returns: `Vec<thaum_renderer_domain::CellGroup>`
 effects: none
 via: rust fn
-notes: each layer's cells shift by the layer's active `move` property block offset (`move_offset_for_layer`) plus the pending delta of an in-flight vector move drag on `pending_layer` — the offset changes where the layer renders, never the raster data. No move track/block/value renders the layer unshifted.
+notes: each layer's cells shift by the layer's active `move` property block offset (`move_offset_for_layer`) plus the pending delta of an in-flight vector move drag on `pending_layer` — the offset changes where the layer renders, never the raster data. The handoff carries its stored ordered shader filenames through the current built-in resolver; unsupported names remain losslessly stored and await the renderer asset registry. No move track/block/value renders the layer unshifted.
 
 ## interface consumers
 - future painter app boot flow

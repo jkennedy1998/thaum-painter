@@ -6,6 +6,7 @@ Own painter's graphic picker panel: one painter-facing module for choosing eithe
 ## owns
 - the `GraphicPickerModule` type
 - the picker presentation for sprite choices and glyph choices
+- a visible `CHARACTER` → `CLEAR` row that equips the blank glyph for any paint tool
 - left/right click assignment from picker hits into live painter `tool-state`
 - glyph section ordering sourced from Thaum Mono's supported-character sections; parsing must stay in lockstep with the renderer's sprite-section parser (`glyph_graphic.rs::parse_glyph_sprite_sections`) — a section title may sit on its own line or be glued to its glyph line (`borders:━┃…`), and a stricter parser here silently drops whole sections from the picker
 - the space-glyph display placeholder while still assigning the real `' '` glyph
@@ -46,7 +47,7 @@ Own painter's graphic picker panel: one painter-facing module for choosing eithe
 ## tests
 - inline `#[cfg(test)]` in `graphic_picker_module.rs`
   - light
-  - validates glyph-section parsing plus left/right glyph and sprite assignment
+  - validates glyph-section parsing plus left/right glyph, clear-character, and sprite assignment
 
 ## data
 - none
@@ -56,6 +57,7 @@ Own painter's graphic picker panel: one painter-facing module for choosing eithe
 - source-of-truth from J: "I like my glyphs sorted by asci section."
 - source-of-truth from J: "We have those ASCII sections in thaum mono. Use the supported characters."
 - glyphs stay their own section inside this picker even though the live hand state now stores one shared `graphic` slot that can be either glyph or sprite.
+- `CLEAR` is a deliberately visible space glyph: it renders as a dot in the picker but equips `' '`, so brush, fill, lasso, and future standard paint tools all remove cells through the shared blank-cell write seam.
 - source-of-truth from J: the picker should scroll up and down with its content cropped inside the module bounds, so the panel can be made smaller and the user can still look for characters.
 - source-of-truth from J: the horizontal glyph layout must expand and contract with horizontal module resizing (rows re-chunk at the panel's content width).
 - source-of-truth from J: the scroll list is one set of standard categories — sprites and glyphs are not separated in this menu, only RECENT stays a pinned section, and it must sit at the top of the module on screen.

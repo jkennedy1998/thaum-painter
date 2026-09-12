@@ -219,6 +219,9 @@ pub fn apply_layers_panel_action(
                 shared_document.set_layer_locked(&layer_id, next_locked);
             }
         }
+        LayersPanelAction::Rename(layer_id, name) => {
+            shared_document.rename_layer(&layer_id, name);
+        }
         LayersPanelAction::Delete(layer_id) => {
             if shared_document.layers().len() > 1 && shared_document.remove_layer(&layer_id) {
                 if *active_layer_id == layer_id {
@@ -458,9 +461,10 @@ pub fn apply_layers_panel_action(
                 session_user_id,
                 action_timestamp_string(),
             );
-            if let Err(error) =
-                crate::storage::append_action_record(&shared_document_paths.actions_file_path, &record)
-            {
+            if let Err(error) = crate::storage::append_action_record(
+                &shared_document_paths.actions_file_path,
+                &record,
+            ) {
                 crate::debug_log::error(
                     "storage",
                     &format!("failed to append structure record: {error:#}"),
@@ -498,6 +502,7 @@ mod tests {
                     name: format!("Layer {id}"),
                     visible: true,
                     locked: false,
+                    origin: crate::storage::PersistedCellPoint { x: 0, y: 0, z: 0 },
                     start_breath: 0,
                     length_breaths: 24,
                     property_tracks: vec![],

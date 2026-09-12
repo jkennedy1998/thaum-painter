@@ -90,13 +90,14 @@ pub mod toolbox_module;
 #[path = "user-state/user-session-state/user_session_state.rs"]
 pub mod user_session_state;
 
-pub use brush::{apply_brush, brush_points, erase, Canvas, PaintedCell};
+pub use brush::{apply_brush, brush_points, Canvas, PaintedCell};
 pub use camera_actions::{apply_painter_camera_action, apply_painter_pan_action};
 pub use file_schema::{
-    parse_file_schema, parse_file_schema_from_str, BreathWindow, DocumentBounds, DocumentContent,
-    FileSchema, FileSchemaMetadata, GridPoint, Group, GroupProperty, ImportExportBookkeeping,
-    LastExport, ParticleEffect, ParticleEffectVisual, PlaybackWindow, PropertyBlock, RasterSegment,
-    Rgb, SavedCameraDefaults, TimeAssets, Voxel,
+    parse_file_schema, parse_file_schema_from_str, BreathWindow, CellAppearance,
+    CellColorSlotValue, CellColorValue, CellGraphicValue, DocumentBounds, DocumentContent,
+    ExportSections, FileSchema, FileSchemaMetadata, FlatExport, GridPoint, Group, GroupProperty,
+    ImportExportBookkeeping, LastExport, ParticleEffect, ParticleEffectVisual, PlaybackWindow,
+    PropertyBlock, RasterSegment, Rgb, SavedCameraDefaults, TimeAssets, Voxel,
 };
 pub use fill::{
     flood_fill, flood_fill_with_connectivity, CanvasBounds, CanvasPlaneAxis, FillConnectivity,
@@ -111,7 +112,7 @@ pub use layers_panel_module::{
 pub use legacy_indexed_palette::legacy_indexed_palette;
 pub use material_picker_module::MaterialPickerModule;
 pub use paint_canvas_bounds_module::{DrawingSpaceWheelMode, PaintCanvasBoundsModule};
-pub use paint_color::PaintColor;
+pub use paint_color::{PaintColor, PaintColorSlot};
 pub use paint_color_block_module::PaintColorBlockModule;
 pub use paint_color_picker_module::PaintColorPickerModule;
 pub use pieces::{classify_bar_piece, covering_bar_cell, BarCell, BarPiece, BreathBar, CellType};

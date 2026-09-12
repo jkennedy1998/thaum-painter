@@ -10,9 +10,6 @@ pub mod registry;
 #[path = "individuals/brush/brush_tool.rs"]
 pub mod brush;
 
-#[path = "individuals/erase/erase_tool.rs"]
-pub mod erase;
-
 #[path = "individuals/fill/fill_tool.rs"]
 pub mod fill;
 

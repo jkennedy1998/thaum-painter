@@ -38,15 +38,6 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
         hotkey: Some("P"),
     },
     ToolDescriptor {
-        id: "erase",
-        label: "Erase",
-        icon: '=',
-        description: "clear cell content near the cursor",
-        property_row_ids: &["brush_size"],
-        select_action: None,
-        hotkey: None,
-    },
-    ToolDescriptor {
         id: "fill",
         label: "Fill",
         icon: '█',
@@ -96,7 +87,10 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
         label: "Picker",
         icon: 'V',
         description: "pick the content and color under the cursor",
-        property_row_ids: &["picker_opposite_hand"],
+        // brush_size rides along (J 2026-09-12): the picker samples through
+        // the hand's brush-tip footprint and blends multi-cell picks, so the
+        // size row must stay live while the picker is up.
+        property_row_ids: &["picker_opposite_hand", "brush_size"],
         select_action: None,
         hotkey: None,
     },
@@ -150,18 +144,16 @@ mod tests {
         // One assertion per `individuals/` folder: each tool type resolves
         // its own descriptor from this registry.
         assert_eq!(BrushTool::descriptor().id, "brush");
-        assert_eq!(EraseTool::descriptor().id, "erase");
         assert_eq!(FillTool::descriptor().id, "fill");
         assert_eq!(LassoTool::descriptor().id, "lasso");
         assert_eq!(TextTool::descriptor().id, "text");
         assert_eq!(PickerTool::descriptor().id, "picker");
         assert_eq!(StampTool::descriptor().id, "stamp");
         assert_eq!(MoveTool::descriptor().id, "move");
-        assert_eq!(all().len(), 8);
+        assert_eq!(all().len(), 7);
     }
 
     use crate::painter_tools::brush::BrushTool;
-    use crate::painter_tools::erase::EraseTool;
     use crate::painter_tools::fill::FillTool;
     use crate::painter_tools::lasso::LassoTool;
     use crate::painter_tools::move_tool::MoveTool;
