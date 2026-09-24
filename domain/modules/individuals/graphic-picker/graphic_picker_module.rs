@@ -1,9 +1,9 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, path::Path, rc::Rc};
 
 use thaum_renderer_domain::{
     title_hotspot, Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, CellWeight,
     GizmoBar, GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module, ModulePointerButton,
-    ModulePointerEvent, ModuleRect, PanelChrome, PersistedModuleUiState, ScrollState,
+    ModulePointerEvent, ModuleRect, PanelChrome, PersistedModuleUiState, ScrollState, SidedGraphic,
     SpriteGraphic, UiColorRole, UiPalette, WorldPoint,
 };
 
@@ -26,6 +26,48 @@ struct SpriteOption {
     path: String,
 }
 
+/// One sided declaration option: a declaration file under the asset root's
+/// `sided/` folder, parsed once at boot. The declaration content paints onto
+/// cells; the file stays the authoring source of truth.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SidedOption {
+    pub label: String,
+    pub path: String,
+    pub graphic: SidedGraphic,
+}
+
+/// Loads every parseable `sided/*.json` declaration under the asset root.
+/// Broken files are skipped rather than blocking the picker; the declaration
+/// format rejects them loudly at authoring time.
+pub fn load_sided_options(asset_root: &Path) -> Vec<SidedOption> {
+    let folder = asset_root.join("sided");
+    let Ok(entries) = std::fs::read_dir(&folder) else {
+        return Vec::new();
+    };
+    let mut options = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(graphic) = thaum_renderer_domain::load_sided_declaration(&path) else {
+            continue;
+        };
+        let file = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let label = file.strip_suffix(".json").unwrap_or(&file).to_string();
+        options.push(SidedOption {
+            label,
+            path: format!("sided/{file}"),
+            graphic,
+        });
+    }
+    options.sort_by(|a, b| a.label.cmp(&b.label));
+    options
+}
+
 /// One content row of the picker, top to bottom. Materialized into cells
 /// only for the rows currently visible inside the module bounds so content
 /// larger than the panel crops and scrolls instead of forcing panel size.
@@ -37,6 +79,7 @@ enum ContentRow {
     Clear,
     Glyphs(Vec<char>),
     Sprite(usize),
+    Sided(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +95,12 @@ enum LayoutHit {
         graphic: CellGraphic,
     },
     Sprite {
+        x0: i32,
+        x1: i32,
+        y: i32,
+        graphic: CellGraphic,
+    },
+    Sided {
         x0: i32,
         x1: i32,
         y: i32,
@@ -203,6 +252,7 @@ pub struct GraphicPickerModule {
     tool_state: Rc<RefCell<ToolState>>,
     glyph_sections: Vec<GlyphSection>,
     sprites: Vec<SpriteOption>,
+    sided: Vec<SidedOption>,
     palette: UiPalette,
     gizmos: GizmoBar,
     gizmo_state: GizmoState,
@@ -226,6 +276,7 @@ impl GraphicPickerModule {
             tool_state,
             glyph_sections: supported_glyph_sections(),
             sprites: supported_sprites(),
+            sided: Vec::new(),
             palette: UiPalette::default(),
             gizmos: GizmoBar::standard(),
             gizmo_state: GizmoState::new(),
@@ -237,6 +288,13 @@ impl GraphicPickerModule {
 
     pub fn with_palette(mut self, palette: UiPalette) -> Self {
         self.palette = palette;
+        self
+    }
+
+    /// Sets the sided declaration options (loaded from the asset root by the
+    /// booting program). Empty by default so tests run without assets.
+    pub fn with_sided_options(mut self, sided: Vec<SidedOption>) -> Self {
+        self.sided = sided;
         self
     }
 
@@ -258,6 +316,10 @@ impl GraphicPickerModule {
         rows.push(ContentRow::SectionTitle("sprites".to_string()));
         for index in 0..self.sprites.len() {
             rows.push(ContentRow::Sprite(index));
+        }
+        rows.push(ContentRow::SectionTitle("sided".to_string()));
+        for index in 0..self.sided.len() {
+            rows.push(ContentRow::Sided(index));
         }
         rows
     }
@@ -498,6 +560,44 @@ impl GraphicPickerModule {
                         graphic,
                     });
                 }
+                ContentRow::Sided(index) => {
+                    let option = &self.sided[*index];
+                    let graphic = CellGraphic::Sided(option.graphic.clone());
+                    let indicator = assignment_indicator(&state, &graphic);
+                    let role = assignment_role(&state, &graphic);
+                    cells.push(Cell {
+                        position: CellPoint {
+                            x: content_x,
+                            y,
+                            z: 0,
+                        },
+                        graphic: CellGraphic::Glyph(indicator),
+                        color: self.palette.get(role),
+                        weight: preview_weight(&state, &graphic),
+                        ..Cell::default()
+                    });
+                    // The preview cell carries the Sided graphic itself: boot
+                    // staging resolves the visible side, so the picker preview
+                    // shows the declaration's front look with zero extra code.
+                    cells.push(Cell {
+                        position: CellPoint {
+                            x: content_x + 2,
+                            y,
+                            z: 0,
+                        },
+                        graphic: graphic.clone(),
+                        color: preview_color(&state, &graphic, &self.palette),
+                        weight: preview_weight(&state, &graphic),
+                        ..Cell::default()
+                    });
+                    draw_text(&option.label, content_x + 4, y, role, &mut cells);
+                    hits.push(LayoutHit::Sided {
+                        x0: content_x,
+                        x1: max_x,
+                        y,
+                        graphic,
+                    });
+                }
             }
         }
 
@@ -529,6 +629,12 @@ impl GraphicPickerModule {
                 graphic,
             } => (x - self.rect.x0 == hit_x && y - self.rect.y0 == hit_y).then_some(graphic),
             LayoutHit::Sprite {
+                x0,
+                x1,
+                y: hit_y,
+                graphic,
+            }
+            | LayoutHit::Sided {
                 x0,
                 x1,
                 y: hit_y,
@@ -598,7 +704,9 @@ impl Module for GraphicPickerModule {
                     format!("{key} — click to equip on a hand: left-click left, right-click right"),
                 )
             }
-            LayoutHit::Sprite { x0, x1, y, .. } | LayoutHit::Recent { x0, x1, y, .. } => {
+            LayoutHit::Sprite { x0, x1, y, .. }
+            | LayoutHit::Sided { x0, x1, y, .. }
+            | LayoutHit::Recent { x0, x1, y, .. } => {
                 Hotspot::new(
                     ModuleRect {
                         x0: self.rect.x0 + x0,

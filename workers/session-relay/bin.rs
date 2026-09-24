@@ -47,9 +47,7 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        eprintln!(
-            "session relay (PLAIN, loopback-only dev mode) listening on 127.0.0.1:{port}"
-        );
+        eprintln!("session relay (PLAIN, loopback-only dev mode) listening on 127.0.0.1:{port}");
         if let Ok(server) = serve_relay(listener, RelayCaps::default()) {
             keep_alive(server);
         }
@@ -67,8 +65,7 @@ fn main() {
     // socket via the same upgrader seam the plain loopback dev mode bypasses.
     let acceptor =
         match thaum_painter_workers::session_relay::TlsRelayServerAcceptor::from_pem_files(
-            &cert,
-            &key,
+            &cert, &key,
         ) {
             Ok(acceptor) => acceptor,
             Err(error) => {

@@ -1,17 +1,20 @@
 #[path = "session-client/session_client.rs"]
 pub mod session_client;
+#[path = "session-net/session_discovery.rs"]
+pub mod session_discovery;
 #[path = "session-host/session_host.rs"]
 pub mod session_host;
 #[path = "session-host/tcp.rs"]
 pub mod session_host_tcp;
 #[path = "session-net/session_net.rs"]
 pub mod session_net;
-#[path = "session-net/session_discovery.rs"]
-pub mod session_discovery;
 #[path = "session-relay/mod.rs"]
 pub mod session_relay;
 
 pub use session_client::{SessionClient, SessionClientError};
+pub use session_discovery::{
+    spawn_discovery_responder, DiscoveredHost, DiscoveryPoller, DiscoveryResponder,
+};
 pub use session_host::{
     ClientMessage, ClientRejection, HostMessage, SessionHost, SessionUser, SESSION_PROTOCOL_VERSION,
 };
@@ -19,4 +22,3 @@ pub use session_host_tcp::{host_port_from_env, spawn_session_host_server, Sessio
 pub use session_net::{
     join_address, session_net_boot_from_env, session_user_from_identity, SessionNet, SessionNetBoot,
 };
-pub use session_discovery::{spawn_discovery_responder, DiscoveryPoller, DiscoveryResponder, DiscoveredHost};

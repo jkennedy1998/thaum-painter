@@ -83,10 +83,14 @@ pub mod text_entry;
 pub mod timeline_state;
 #[path = "painter-session/tool-state/tool_state.rs"]
 pub mod tool_state;
+#[path = "tool-presets/tool_presets.rs"]
+pub mod tool_presets;
 #[path = "modules/individuals/toolbar/toolbar_module.rs"]
 pub mod toolbar_module;
 #[path = "modules/individuals/toolbox/toolbox_module.rs"]
 pub mod toolbox_module;
+#[path = "modules/individuals/tool-presets/tool_presets_module.rs"]
+pub mod tool_presets_module;
 #[path = "user-state/user-session-state/user_session_state.rs"]
 pub mod user_session_state;
 
@@ -102,7 +106,7 @@ pub use file_schema::{
 pub use fill::{
     flood_fill, flood_fill_with_connectivity, CanvasBounds, CanvasPlaneAxis, FillConnectivity,
 };
-pub use graphic_picker_module::GraphicPickerModule;
+pub use graphic_picker_module::{load_sided_options, GraphicPickerModule, SidedOption};
 pub use hand_settings_module::HandSettingsModule;
 pub use identity::{SessionIdentity, PRESENCE_CANDIDATE_COLORS};
 pub use layers_panel_module::{
@@ -141,8 +145,13 @@ pub use timeline_state::TimelineState;
 pub use tool_state::{
     EditChannels, HandState, PaintChannel, PaintHand, PaintTarget, PaintTool, ToolState,
 };
+pub use tool_presets::{
+    hand_field, preset_for_number_slot, starter_presets, HandFieldDescriptor, HAND_FIELDS,
+    ToolPreset, ToolPresetHand,
+};
 pub use toolbar_module::{ToolbarButton, ToolbarModule};
 pub use toolbox_module::{ToolDef, ToolboxModule};
+pub use tool_presets_module::ToolPresetsModule;
 pub use user_session_state::{
     painter_default_camera, PainterUserSessionState, PersistedPainterUiState,
 };

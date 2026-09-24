@@ -22,6 +22,7 @@ fn format_graphic(graphic: &CellGraphic) -> String {
         CellGraphic::None => "none".into(),
         CellGraphic::Glyph(glyph) => glyph.to_string(),
         CellGraphic::Sprite(sprite) => format!("spr:{}", sprite.atlas_relative_path().display()),
+        CellGraphic::Sided(_) => "sided".into(),
     }
 }
 pub struct HandSettingsModule {
@@ -296,7 +297,10 @@ impl HandSettingsModule {
     /// `brush_size` (it samples through the hand's brush-tip footprint), so
     /// its size tokens stay live while the picker is up (J 2026-09-12).
     fn hand_declares_row(state: &ToolState, hand: PaintHand, row_id: &str) -> bool {
-        state.tool_for_hand(hand).property_row_ids().contains(&row_id)
+        state
+            .tool_for_hand(hand)
+            .property_row_ids()
+            .contains(&row_id)
     }
 
     fn editing_for(&self, row_id: &str) -> Option<(usize, String)> {
@@ -534,6 +538,8 @@ impl Module for HandSettingsModule {
                 // "a sprite is equipped".
                 CellGraphic::Sprite(_) => '█',
                 CellGraphic::None => '·',
+                // A sided object is equipped; its sides pick the art.
+                CellGraphic::Sided(_) => '▓',
             };
             let weight = CellWeight::from_index_clamped(hand.weight_index as i32);
             for dy in 0..3 {
@@ -852,7 +858,9 @@ mod tests {
         // hard-gated to the Brush tool, so the picker's size tokens rendered
         // dead and the size could only be preset before switching tools.
         let state = tool_state();
-        state.borrow_mut().set_tool_for_hand(PaintHand::Left, PaintTool::Picker);
+        state
+            .borrow_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Picker);
         let mut module =
             HandSettingsModule::new("hands", rect(), state.clone(), selection(), number_edit());
 

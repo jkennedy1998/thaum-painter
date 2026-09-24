@@ -30,12 +30,14 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Instant;
 
 use anyhow::Error;
+use thaum_renderer_domain::CellFacing;
 use thaum_renderer_domain::{
-    project_world_relative_to_view, unproject_view_relative_to_world, shape_fade::fade::ShapeFade,
-    CameraViewOrientation, CellColor, CellGraphic, CellGroup, CellPoint, ViewRelativePoint,
-    WorldPoint,
+    project_world_relative_to_view, shape_fade::fade::ShapeFade, unproject_view_relative_to_world,
+    CameraViewOrientation, CellColor, CellGraphic, CellGroup, CellPoint, DoubleClick,
+    ViewRelativePoint, WorldPoint,
 };
 
 use crate::{
@@ -50,8 +52,8 @@ use crate::{
     selection_state::{PainterSelection, SelectionMode},
     selection_stroke::{build_plane_selection_cell_groups, interpolate_cell_path, SelectionStroke},
     session_document::{
-        commit_move_offset, commit_selection_channel, commit_staged_paint_stroke,
-        stage_image_edit_chunk, stage_painted_cells_chunk,
+        commit_layer_origin, commit_move_offset, commit_selection_channel,
+        commit_staged_paint_stroke, stage_image_edit_chunk, stage_painted_cells_chunk,
     },
     storage::{SharedDocumentPaths, SharedDocumentRuntime},
     text_entry::TextEntryState,
@@ -240,6 +242,7 @@ impl MoveStroke {
     pub fn preview_cells(&self, canvas: &Canvas) -> Vec<LassoPreviewCell> {
         let (dx, dy, dz) = self.world_offset();
         let cleared = PaintedCell {
+            facing: CellFacing::PosZ,
             graphic: CellGraphic::Glyph(' '),
             color: PaintColor::flat_rgb(0, 0, 0),
             weight_index: 3,
@@ -311,6 +314,20 @@ pub struct CanvasPointerStrokes {
     stamp_hover: Option<StampHover>,
     move_stroke: Option<MoveStroke>,
     vector_move: Option<VectorMoveStroke>,
+    /// The move tool's pivot-set detector: two presses on the same cell within
+    /// the shared double-click window pin the active layer's fixed origin.
+    move_origin_click: DoubleClick<(PaintHand, CellPoint)>,
+    /// The just-set pivot, held for the one-second flash window the entrypoint
+    /// renders through the selection's vivid flash shader pair.
+    pivot_flash: Option<PivotFlash>,
+}
+
+/// How long the pivot-set flash renders after a double-click pin.
+const PIVOT_FLASH_DURATION: std::time::Duration = std::time::Duration::from_secs(1);
+
+struct PivotFlash {
+    pivot: WorldPoint,
+    at: Instant,
 }
 
 impl Default for CanvasPointerStrokes {
@@ -331,6 +348,8 @@ impl CanvasPointerStrokes {
             stamp_hover: None,
             move_stroke: None,
             vector_move: None,
+            move_origin_click: DoubleClick::new(),
+            pivot_flash: None,
         }
     }
 
@@ -436,6 +455,46 @@ impl CanvasPointerStrokes {
             // stroke. Without an active plane selection it is a deliberate
             // no-op stub for the future layer-offset behavior.
             if ctx.tool_state.borrow().hand_state(hand).target == PaintTarget::Image {
+                // Double-click with the move tool pins the active layer's
+                // fixed pivot to the pressed cell (J 2026-09-12): the pivot
+                // is where the feet/head are for multi-cell assets, and the
+                // render path relatives cells to it, so re-pivoting never
+                // visually moves the layer. The pair's first press may have
+                // begun a move stroke, but its release is a zero-delta no-op,
+                // so the pivot set is the only effect.
+                if self
+                    .move_origin_click
+                    .note_click((hand, position), Instant::now())
+                {
+                    // The pivot is a WORLD-fixed point (the anchor content
+                    // animates around), but `position` is a content-space
+                    // canvas cell — the pointer path already subtracts the
+                    // layer's active move offset so clicks land on the right
+                    // content. Add the resolved move offset back so the pivot
+                    // lands exactly where the user clicked, on a moved layer
+                    // or not (J 2026-09-12 bug: with move != 0 the placed
+                    // axis was offset wrong by exactly the move offset).
+                    let move_offset = ctx
+                        .document
+                        .move_offset_for_layer(ctx.active_layer_id, current_breath);
+                    let pivot = WorldPoint {
+                        x: position.x + move_offset.x,
+                        y: position.y + move_offset.y,
+                        z: position.z + move_offset.z,
+                    };
+                    commit_layer_origin(
+                        ctx.document,
+                        ctx.document_paths,
+                        ctx.active_layer_id,
+                        pivot,
+                        ctx.persist_to_disk,
+                    );
+                    self.pivot_flash = Some(PivotFlash {
+                        pivot,
+                        at: Instant::now(),
+                    });
+                    return None;
+                }
                 let origin_points: Vec<CellPoint> = {
                     let selection = ctx.selection.borrow();
                     if selection.plane().has_selection() {
@@ -653,6 +712,26 @@ impl CanvasPointerStrokes {
             any = true;
         }
         any.then_some(total)
+    }
+
+    /// The pivot to flash, if a double-click pin is still inside its one-second
+    /// window. Expired flashes clear here, so the entrypoint can call this
+    /// every frame and the flash simply stops rendering after the window.
+    pub fn active_pivot_flash(&mut self) -> Option<WorldPoint> {
+        let expired = self
+            .pivot_flash
+            .as_ref()
+            .is_some_and(|flash| flash.at.elapsed() >= PIVOT_FLASH_DURATION);
+        if expired {
+            self.pivot_flash = None;
+        }
+        self.pivot_flash.as_ref().map(|flash| flash.pivot)
+    }
+
+    /// The pending pivot flash without expiry bookkeeping (test seam).
+    #[cfg(test)]
+    fn pending_pivot_flash(&self) -> Option<WorldPoint> {
+        self.pivot_flash.as_ref().map(|flash| flash.pivot)
     }
 
     /// Continues the in-progress stroke for `hand` with a canvas drag.
@@ -1087,6 +1166,7 @@ mod tests {
             &mut session.canvas,
             point(1, 1),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('#'),
                 color: PaintColor::FlatRgb(255, 255, 255),
                 weight_index: 1,
@@ -1311,6 +1391,7 @@ mod tests {
         cells.insert(
             CellPoint { x: 0, y: 0, z: 0 },
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('a'),
                 color: PaintColor::FlatRgb(255, 255, 255),
                 weight_index: 1,
@@ -1320,6 +1401,7 @@ mod tests {
         cells.insert(
             CellPoint { x: 1, y: 0, z: 0 },
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('b'),
                 color: PaintColor::FlatRgb(255, 255, 255),
                 weight_index: 1,
@@ -1440,6 +1522,7 @@ mod tests {
             &mut session.canvas,
             point(5, 5),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('a'),
                 color: PaintColor::FlatRgb(255, 255, 255),
                 weight_index: 1,
@@ -1461,6 +1544,7 @@ mod tests {
 
     fn brush_cell(graphic: char) -> PaintedCell {
         PaintedCell {
+            facing: CellFacing::PosZ,
             graphic: CellGraphic::Glyph(graphic),
             color: PaintColor::FlatRgb(255, 255, 255),
             weight_index: 1,
@@ -1508,6 +1592,80 @@ mod tests {
         assert_eq!(
             session.canvas.get(&point_at(3, 1, 2)).unwrap().graphic,
             CellGraphic::Glyph('#')
+        );
+    }
+
+    #[test]
+    fn move_tool_double_click_pins_the_layer_pivot_without_moving_content() {
+        let mut session = Session::new();
+        session
+            .tool_state
+            .get_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Move);
+        // The layer sits at a non-zero move offset (J 2026-09-12 bug): the
+        // pivot is world-fixed, so a click on the moved layer must store the
+        // world spot under the cursor — clicked content cell + move offset —
+        // not the raw canvas cell, or the placed axis lands offset wrong.
+        session
+            .document
+            .add_move_offset(&session.layer_id, 0, WorldPoint { x: 4, y: -2, z: 0 });
+        let mut strokes = CanvasPointerStrokes::new();
+        let bounds = canvas_bounds();
+
+        // First press on the cell: a plain single click — the vector move
+        // stroke starts, releases as a zero-delta no-op, and the pivot stays
+        // at the default.
+        strokes.begin_press(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(3, 2),
+            bounds,
+            flat_view(),
+            0,
+        );
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0, false);
+        assert!(errors.is_empty());
+        assert_eq!(
+            session.document.layer_origin(&session.layer_id),
+            Some(WorldPoint { x: 0, y: 0, z: 0 })
+        );
+
+        // Immediate second press on the same cell: the double-click pivot
+        // set — no move stroke begins, the pivot lands on the clicked cell
+        // PLUS the layer's move offset (world-fixed pivot), and the
+        // one-second pivot flash arms at that same world spot.
+        strokes.begin_press(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(3, 2),
+            bounds,
+            flat_view(),
+            0,
+        );
+        assert_eq!(
+            session.document.layer_origin(&session.layer_id),
+            Some(WorldPoint { x: 7, y: 0, z: 0 })
+        );
+        assert_eq!(
+            strokes.pending_pivot_flash(),
+            Some(WorldPoint { x: 7, y: 0, z: 0 })
+        );
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0, false);
+        assert!(errors.is_empty());
+
+        // A press on a different cell opens a fresh click window: no pivot
+        // change until a matching second click arrives.
+        strokes.begin_press(
+            &mut session.ctx(),
+            PaintHand::Left,
+            point(0, 0),
+            bounds,
+            flat_view(),
+            0,
+        );
+        assert_eq!(
+            session.document.layer_origin(&session.layer_id),
+            Some(WorldPoint { x: 7, y: 0, z: 0 })
         );
     }
 

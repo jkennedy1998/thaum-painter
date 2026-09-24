@@ -1,3 +1,4 @@
+use thaum_renderer_domain::CellFacing;
 use thaum_renderer_domain::{
     shape_fade::fade::ShapeFade, CameraViewOrientation, CellGraphic, CellMaterialId, CellPoint,
 };
@@ -447,6 +448,7 @@ impl ToolState {
     pub fn text_brush_cell_for_hand(&self, hand: PaintHand) -> PaintedCell {
         let hand_state = self.hand_state(hand);
         PaintedCell {
+            facing: CellFacing::PosZ,
             graphic: hand_state.graphic.clone(),
             color: hand_state.color.clone(),
             weight_index: hand_state.weight_index,
@@ -469,6 +471,7 @@ impl ToolState {
         // resolve there — the same no-op the gfx-locked case already had.
         if existing.is_none() && !hand_state.edit_channels.all_enabled() {
             return PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph(' '),
                 color: hand_state.color.clone(),
                 weight_index: hand_state.weight_index,
@@ -488,6 +491,7 @@ impl ToolState {
             .map(|cell| cell.weight_index)
             .unwrap_or(hand_state.weight_index);
         PaintedCell {
+            facing: CellFacing::PosZ,
             graphic: if hand_state.edit_channels.graphic {
                 hand_state.graphic.clone()
             } else {
@@ -746,6 +750,7 @@ impl ToolState {
             .map(|point| {
                 let current = canvas.get(&point).cloned();
                 let upcoming = current.clone().unwrap_or(PaintedCell {
+                    facing: CellFacing::PosZ,
                     graphic: CellGraphic::Glyph(' '),
                     color: PaintColor::flat_rgb(0, 0, 0),
                     weight_index: 3,
@@ -794,6 +799,7 @@ impl ToolState {
                     return None;
                 }
                 let upcoming = PaintedCell {
+                    facing: CellFacing::PosZ,
                     graphic: if hand_state.edit_channels.graphic {
                         copied.graphic.clone()
                     } else {
@@ -985,6 +991,7 @@ mod tests {
             &mut canvas,
             point(3, 3),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('&'),
                 color: color(9, 8, 7),
                 weight_index: 1,
@@ -992,7 +999,13 @@ mod tests {
             },
         );
 
-        tool_state.pick_at_for_hand(&mut canvas, point(3, 3), PaintHand::Left, &[point(3, 3)], None);
+        tool_state.pick_at_for_hand(
+            &mut canvas,
+            point(3, 3),
+            PaintHand::Left,
+            &[point(3, 3)],
+            None,
+        );
 
         let hand = tool_state.left_hand;
         assert_eq!(hand.graphic, CellGraphic::Glyph('&'));
@@ -1010,6 +1023,7 @@ mod tests {
             &mut canvas,
             point(3, 3),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('&'),
                 color: color(9, 8, 7),
                 weight_index: 1,
@@ -1017,7 +1031,13 @@ mod tests {
             },
         );
 
-        tool_state.pick_at_for_hand(&mut canvas, point(3, 3), PaintHand::Left, &[point(3, 3)], None);
+        tool_state.pick_at_for_hand(
+            &mut canvas,
+            point(3, 3),
+            PaintHand::Left,
+            &[point(3, 3)],
+            None,
+        );
 
         let hand = tool_state.left_hand;
         assert_eq!(hand.graphic, CellGraphic::Glyph('#'));
@@ -1038,6 +1058,7 @@ mod tests {
             &mut canvas,
             point(3, 3),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('&'),
                 color: color(9, 8, 7),
                 weight_index: 1,
@@ -1045,7 +1066,13 @@ mod tests {
             },
         );
 
-        tool_state.pick_at_for_hand(&mut canvas, point(3, 3), PaintHand::Left, &[point(3, 3)], None);
+        tool_state.pick_at_for_hand(
+            &mut canvas,
+            point(3, 3),
+            PaintHand::Left,
+            &[point(3, 3)],
+            None,
+        );
 
         let hand = tool_state.left_hand;
         assert_eq!(hand.graphic, CellGraphic::Glyph('&'));
@@ -1065,6 +1092,7 @@ mod tests {
             &mut canvas,
             point(3, 3),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('&'),
                 color: color(9, 8, 7),
                 weight_index: 1,
@@ -1072,7 +1100,13 @@ mod tests {
             },
         );
 
-        tool_state.pick_at_for_hand(&mut canvas, point(3, 3), PaintHand::Left, &[point(3, 3)], None);
+        tool_state.pick_at_for_hand(
+            &mut canvas,
+            point(3, 3),
+            PaintHand::Left,
+            &[point(3, 3)],
+            None,
+        );
 
         let hand = tool_state.left_hand;
         assert_eq!(hand.graphic, CellGraphic::Glyph('#'));
@@ -1091,6 +1125,7 @@ mod tests {
             &mut canvas,
             point(3, 3),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('&'),
                 color: color(9, 8, 7),
                 weight_index: 1,
@@ -1098,7 +1133,13 @@ mod tests {
             },
         );
 
-        tool_state.pick_at_for_hand(&mut canvas, point(3, 3), PaintHand::Left, &[point(3, 3)], None);
+        tool_state.pick_at_for_hand(
+            &mut canvas,
+            point(3, 3),
+            PaintHand::Left,
+            &[point(3, 3)],
+            None,
+        );
 
         let right = tool_state.right_hand;
         assert_eq!(right.graphic, CellGraphic::Glyph(' '));
@@ -1146,6 +1187,7 @@ mod tests {
             &mut canvas,
             point(3, 3),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph(' '),
                 color: color(9, 8, 7),
                 weight_index: 2,
@@ -1195,6 +1237,7 @@ mod tests {
             &mut canvas,
             point(2, 3),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('a'),
                 color: color(10, 20, 40),
                 weight_index: 1,
@@ -1205,6 +1248,7 @@ mod tests {
             &mut canvas,
             point(4, 3),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('b'),
                 color: color(30, 40, 80),
                 weight_index: 3,
@@ -1244,6 +1288,7 @@ mod tests {
             &mut canvas,
             point(2, 3),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('a'),
                 color: color(9, 8, 7),
                 weight_index: 3,
@@ -1370,6 +1415,7 @@ mod tests {
             &mut canvas,
             point(2, 2),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('#'),
                 color: color(255, 255, 255),
                 weight_index: 1,
@@ -1412,6 +1458,7 @@ mod tests {
                 &mut canvas,
                 position,
                 PaintedCell {
+                    facing: CellFacing::PosZ,
                     graphic: CellGraphic::Glyph('A'),
                     color: color(1, 1, 1),
                     weight_index: 1,
@@ -1444,6 +1491,7 @@ mod tests {
             &mut canvas,
             point(1, 1),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('#'),
                 color: color(1, 2, 3),
                 weight_index: 0,
@@ -1463,6 +1511,7 @@ mod tests {
         assert_eq!(
             canvas.get(&point(1, 1)),
             Some(&PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('@'),
                 color: color(1, 2, 3),
                 weight_index: 0,
@@ -1527,6 +1576,7 @@ mod tests {
             &mut canvas,
             point(3, 3),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('A'),
                 color: color(1, 1, 1),
                 weight_index: 0,
@@ -1582,6 +1632,7 @@ mod tests {
             &mut canvas,
             point(0, 0),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('A'),
                 color: color(1, 1, 1),
                 weight_index: 1,
@@ -1592,6 +1643,7 @@ mod tests {
             &mut canvas,
             point(1, 1),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('A'),
                 color: color(1, 1, 1),
                 weight_index: 1,
@@ -1632,6 +1684,7 @@ mod tests {
             &mut canvas,
             point(0, 0),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('A'),
                 color: color(1, 1, 1),
                 weight_index: 0,
@@ -1642,6 +1695,7 @@ mod tests {
             &mut canvas,
             point(1, 0),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('B'),
                 color: color(1, 1, 1),
                 weight_index: 3,
@@ -1723,6 +1777,7 @@ mod tests {
             &mut canvas,
             point(0, 0),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('#'),
                 color: color(1, 1, 1),
                 weight_index: 1,
@@ -1733,6 +1788,7 @@ mod tests {
             &mut canvas,
             point(1, 1),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('#'),
                 color: color(1, 1, 1),
                 weight_index: 1,
@@ -1773,6 +1829,7 @@ mod tests {
             &mut canvas,
             point(0, 0),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('A'),
                 color: color(1, 1, 1),
                 weight_index: 1,
@@ -1783,6 +1840,7 @@ mod tests {
             &mut canvas,
             point(1, 0),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('A'),
                 color: color(1, 1, 1),
                 weight_index: 1,
@@ -1793,6 +1851,7 @@ mod tests {
             &mut canvas,
             point(2, 0),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('A'),
                 color: color(1, 1, 1),
                 weight_index: 1,
@@ -1839,6 +1898,7 @@ mod tests {
             &mut canvas,
             point(0, 0),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('A'),
                 color: color(1, 1, 1),
                 weight_index: 0,
@@ -1849,6 +1909,7 @@ mod tests {
             &mut canvas,
             point(1, 0),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('A'),
                 color: color(9, 9, 9),
                 weight_index: 3,
@@ -1859,6 +1920,7 @@ mod tests {
             &mut canvas,
             point(2, 0),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('B'),
                 color: color(1, 1, 1),
                 weight_index: 0,
@@ -1900,6 +1962,7 @@ mod tests {
             &mut canvas,
             point(0, 0),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('A'),
                 color: color(1, 1, 1),
                 weight_index: 0,
@@ -1910,6 +1973,7 @@ mod tests {
             &mut canvas,
             point(1, 0),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('B'),
                 color: color(1, 1, 1),
                 weight_index: 0,
@@ -1920,6 +1984,7 @@ mod tests {
             &mut canvas,
             point(2, 0),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('B'),
                 color: color(9, 9, 9),
                 weight_index: 0,
@@ -1981,6 +2046,7 @@ mod tests {
             &mut canvas,
             point(1, 1),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('#'),
                 color: color(255, 255, 255),
                 weight_index: 1,
@@ -2018,6 +2084,7 @@ mod tests {
             &mut canvas,
             point(1, 1),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('#'),
                 color: color(255, 255, 255),
                 weight_index: 1,
@@ -2047,6 +2114,7 @@ mod tests {
             &mut canvas,
             point(1, 1),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('#'),
                 color: color(255, 255, 255),
                 weight_index: 1,
@@ -2116,6 +2184,7 @@ mod tests {
             &mut canvas,
             point(0, 0),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('A'),
                 color: color(1, 1, 1),
                 weight_index: 0,
@@ -2134,6 +2203,7 @@ mod tests {
         assert_eq!(
             canvas.get(&point(0, 0)),
             Some(&PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('A'),
                 color: color(9, 8, 7),
                 weight_index: 0,
@@ -2193,6 +2263,7 @@ mod tests {
             cells.insert(
                 CellPoint { x, y, z: 0 },
                 PaintedCell {
+                    facing: CellFacing::PosZ,
                     graphic: CellGraphic::Glyph(glyph),
                     color: color(255, 255, 255),
                     weight_index: 1,
@@ -2250,6 +2321,7 @@ mod tests {
             &mut canvas,
             point(5, 5),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('a'),
                 color: color(10, 10, 10),
                 weight_index: 2,
@@ -2343,6 +2415,7 @@ mod tests {
             &mut canvas,
             point(5, 5),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('a'),
                 color: color(10, 10, 10),
                 weight_index: 2,

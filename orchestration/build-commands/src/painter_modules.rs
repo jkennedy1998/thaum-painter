@@ -8,8 +8,8 @@ use std::rc::Rc;
 use thaum_painter_domain::{
     GraphicPickerModule, HandSettingsModule, LayersPanelModule, LayersPanelState,
     MaterialPickerModule, PaintCanvasBoundsModule, PaintColorBlockModule, PaintColorPickerModule,
-    PaintTool, PainterSelection, SessionPanelModule, SessionPanelState, ToolDef, ToolState,
-    ToolboxModule,
+    PaintTool, PainterSelection, SessionPanelModule, SessionPanelState, ToolDef, ToolPreset,
+    ToolState, ToolboxModule, ToolPresetsModule,
 };
 use thaum_renderer_domain::{
     conflicting_actions, effective_bindings, format_raw_input, ActionBindingMap, CameraDepthLink,
@@ -41,6 +41,8 @@ pub(crate) fn build_painter_modules(
     camera_zoom_link: &Rc<CameraZoomLink>,
     render_quality_profile: &Rc<RefCell<RenderQualityProfile>>,
     session_panel_state: &Rc<RefCell<SessionPanelState>>,
+    asset_root: &std::path::Path,
+    tool_presets: &Rc<RefCell<Vec<ToolPreset>>>,
 ) -> ModuleRegistry {
     let mut modules = ModuleRegistry::new();
     modules.register(Box::new(
@@ -64,6 +66,22 @@ pub(crate) fn build_painter_modules(
                     })
                 })
                 .collect(),
+        )
+        .with_palette(ui_palette.clone()),
+    ));
+    modules.register(Box::new(
+        ToolPresetsModule::new(
+            "painter_tool_presets",
+            // Below the toolbox in the left rail; 17 content rows hold the
+            // SAVE row, the capture toggles, and the starter presets.
+            ModuleRect {
+                x0: -41,
+                y0: 36,
+                x1: -26,
+                y1: 56,
+            },
+            tool_state.clone(),
+            tool_presets.clone(),
         )
         .with_palette(ui_palette.clone()),
     ));
@@ -113,7 +131,8 @@ pub(crate) fn build_painter_modules(
             },
             tool_state.clone(),
         )
-        .with_palette(ui_palette.clone()),
+        .with_palette(ui_palette.clone())
+        .with_sided_options(thaum_painter_domain::load_sided_options(asset_root)),
     ));
     modules.register(Box::new(
         HandSettingsModule::new(
@@ -164,29 +183,31 @@ pub(crate) fn build_painter_modules(
         )
         .with_palette(ui_palette.clone()),
     ));
-    modules.register(Box::new(CameraPerspectiveModule::new(
-        "painter_camera_perspective",
-        // Right column, below the UI-colors panel; tucks under the graphic
-        // picker's toggle region when that one is shown.
-        ModuleRect {
-            x0: 46,
-            y0: 14,
-            x1: 70,
-            // 13 tall: content 10 = the 9 rows (scale/position/floor/
-            // parallax/str/depth/layers/zoom/quality) plus the bottom hint row.
-            y1: 27,
-        },
-        camera_perspective_profile.clone(),
-        camera_parallax_profile.clone(),
-        camera_depth_link.clone(),
-        camera_layers_link.clone(),
-        camera_zoom_link.clone(),
-    )
-    // The shared responsive palette (J 2026-09-12): without this the panel
-    // kept its own UiPalette::default() and read as the one off-palette
-    // module on screen — chrome and rows never followed UI COLORS.
-    .with_palette(ui_palette.clone())
-    .with_render_quality(render_quality_profile.clone())));
+    modules.register(Box::new(
+        CameraPerspectiveModule::new(
+            "painter_camera_perspective",
+            // Right column, below the UI-colors panel; tucks under the graphic
+            // picker's toggle region when that one is shown.
+            ModuleRect {
+                x0: 46,
+                y0: 14,
+                x1: 70,
+                // 13 tall: content 10 = the 9 rows (scale/position/floor/
+                // parallax/str/depth/layers/zoom/quality) plus the bottom hint row.
+                y1: 27,
+            },
+            camera_perspective_profile.clone(),
+            camera_parallax_profile.clone(),
+            camera_depth_link.clone(),
+            camera_layers_link.clone(),
+            camera_zoom_link.clone(),
+        )
+        // The shared responsive palette (J 2026-09-12): without this the panel
+        // kept its own UiPalette::default() and read as the one off-palette
+        // module on screen — chrome and rows never followed UI COLORS.
+        .with_palette(ui_palette.clone())
+        .with_render_quality(render_quality_profile.clone()),
+    ));
     modules.register(Box::new(UiCustomizationModule::new(
         "painter_ui_customization",
         ModuleRect {
@@ -265,26 +286,42 @@ pub(crate) fn build_painter_modules(
     modules
 }
 
-/// The painter's default module layout: the tuned Linux-boot positions
-/// captured as the shared default. Rects are HUD-space and tuned against
-/// `painter_default_camera()`, silence (seamless chrome) defaults to off,
-/// and every module starts open.
+/// The painter's default module layout: J's current Linux-build layout
+/// (captured from the persisting user-session state on 2026-09-24), so a
+/// fresh user boots into the same workspace J paints in. Rects are HUD-space;
+/// silence (seamless chrome) defaults to off; hidden flags match J's live
+/// panel visibility. This list is also the reset target for the command
+/// bar's RESET LAYOUT button, so it stays the one default-layout source of
+/// truth.
 pub(crate) fn default_module_layout() -> Vec<PersistedModuleUiState> {
-    fn at(module_id: &str, x0: i32, y0: i32, x1: i32, y1: i32) -> PersistedModuleUiState {
-        PersistedModuleUiState::new(module_id, ModuleRect { x0, y0, x1, y1 }, false, false)
+    fn at(
+        module_id: &str,
+        x0: i32,
+        y0: i32,
+        x1: i32,
+        y1: i32,
+        hidden: bool,
+    ) -> PersistedModuleUiState {
+        PersistedModuleUiState::new(
+            module_id,
+            ModuleRect { x0, y0, x1, y1 },
+            false,
+            hidden,
+        )
     }
     vec![
-        at("painter_toolbox", -41, 14, -26, 34),
-        at("painter_session_panel", 38, -21, 62, -4),
-        at("painter_color_picker", 8, -1, 16, 13),
-        at("painter_color_block", 8, -18, 36, -2),
-        at("painter_material_picker", 17, -1, 36, 13),
-        at("painter_graphic_picker", -81, -1, -42, 34),
-        at("painter_hand_settings", -25, 14, 7, 34),
-        at("paint_canvas_bounds", -41, -18, 7, 13),
-        at("painter_layers_panel", -81, -18, -42, -2),
-        at("painter_camera_perspective", 37, 20, 62, 34),
-        at("painter_ui_customization", 37, 6, 62, 19),
-        at("painter_controls_panel", 8, 14, 36, 34),
+        at("painter_toolbox", -80, 14, -65, 24, false),
+        at("painter_tool_presets", -64, 14, -42, 24, false),
+        at("painter_session_panel", 38, -21, 62, -4, true),
+        at("painter_color_picker", 8, -1, 16, 13, false),
+        at("painter_color_block", 8, -10, 36, 2, false),
+        at("painter_material_picker", 17, -1, 36, 13, true),
+        at("painter_graphic_picker", 8, 3, 36, 24, false),
+        at("painter_hand_settings", -80, -4, -42, 13, false),
+        at("paint_canvas_bounds", -41, -25, 7, 24, false),
+        at("painter_layers_panel", -80, -25, -42, -5, false),
+        at("painter_camera_perspective", 8, -25, 36, -11, false),
+        at("painter_ui_customization", 37, 6, 62, 19, false),
+        at("painter_controls_panel", 8, 14, 36, 34, true),
     ]
 }

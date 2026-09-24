@@ -2,9 +2,9 @@ use anyhow::{Context, Result};
 use thaum_renderer_domain::{
     Camera, Cell, CellColor, CellColorSlot, CellGraphic, CellGroup, CellGroupIntakeBehavior,
     CellMaterialId, CellPoint, CellWeight, Composition, DataLanes, SpriteGraphic, WorldPoint,
-    CELL_SHADER_TEXTURE_SHIMMER, CELL_SHADER_WARBLE_DIAGONAL, CELL_SHADER_WARBLE_DISTORT_1,
-    CELL_SHADER_WARBLE_DISTORT_5, CELL_SHADER_WARBLE_FUDGE_1, CELL_SHADER_WARBLE_FUDGE_5,
-    CELL_SHADER_WEIGHT_SIN,
+    CELL_SHADER_TEXTURE_SHIMMER, CELL_SHADER_VIVID_FLASH, CELL_SHADER_VIVID_FLASH_ALT,
+    CELL_SHADER_WARBLE_DIAGONAL, CELL_SHADER_WARBLE_DISTORT_1, CELL_SHADER_WARBLE_DISTORT_5,
+    CELL_SHADER_WARBLE_FUDGE_1, CELL_SHADER_WARBLE_FUDGE_5, CELL_SHADER_WEIGHT_SIN,
 };
 
 use crate::file_schema::{
@@ -95,6 +95,14 @@ fn resolve_graphic(graphic: &CellGraphicValue) -> CellGraphic {
         CellGraphicValue::Sprite { asset_file } => {
             CellGraphic::Sprite(SpriteGraphic::new(asset_file))
         }
+        CellGraphicValue::Sided { declaration } => {
+            thaum_renderer_domain::parse_sided_declaration(declaration)
+                .map(CellGraphic::Sided)
+                // A malformed inline declaration degrades to an empty cell;
+                // the parse-only schema already validated the shape, so this
+                // only guards hand-edited declarations.
+                .unwrap_or(CellGraphic::None)
+        }
     }
 }
 
@@ -112,11 +120,14 @@ fn resolve_shader_asset(asset_file: &str) -> Result<u32> {
 }
 
 fn renderer_cell_from_appearance(position: CellPoint, appearance: &CellAppearance) -> Result<Cell> {
+    let facing = facing_from_portable_name(&appearance.facing)
+        .ok_or_else(|| anyhow::anyhow!("unknown facing '{}' at voxel", appearance.facing))?;
     Ok(Cell {
         position,
         graphic: resolve_graphic(&appearance.graphic),
         color: resolve_color(&appearance.color)?,
         weight: CellWeight::from_index_clamped(appearance.weight_index as i32),
+        facing,
         shader_stack: appearance
             .shader_stack
             .iter()
@@ -235,9 +246,9 @@ pub fn build_render_space(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file_schema::parse_file_schema_from_str;
+    use crate::file_schema::{parse_file_schema, parse_file_schema_from_str};
     use crate::{PaintColor, PaintedCell};
-    use thaum_renderer_domain::CellGraphic;
+    use thaum_renderer_domain::{CellFacing, CellGraphic};
 
     use crate::storage::{SharedCellPatch, SharedDocumentFile};
 
@@ -288,6 +299,49 @@ mod tests {
                 .unwrap()
                 .shader_stack,
             vec![CELL_SHADER_WEIGHT_SIN, CELL_SHADER_TEXTURE_SHIMMER]
+        );
+    }
+
+    #[test]
+    fn authored_voxel_facing_lands_on_the_renderer_cell() {
+        let mut value: serde_json::Value = serde_json::from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap();
+        value["document"]["groups"][0]["raster_segments"][0]["voxels"][0]["appearance"]["facing"] =
+            serde_json::json!("neg-y");
+        let schema = parse_file_schema(&value).unwrap();
+
+        let composition = build_composition(&schema, 4).unwrap();
+        let cell = composition.groups[0]
+            .get(CellPoint { x: 1, y: 0, z: 0 })
+            .unwrap();
+        assert_eq!(cell.facing, CellFacing::NegY);
+    }
+
+    #[test]
+    fn live_canvas_cells_carry_their_authored_facing() {
+        let mut painted = PaintedCell {
+            graphic: CellGraphic::Glyph('Q'),
+            color: PaintColor::flat_rgb(1, 2, 3),
+            weight_index: 1,
+            shader_stack: Vec::new(),
+            facing: CellFacing::NegX,
+        };
+        let mut canvas = Canvas::new();
+        canvas.insert(CellPoint { x: 2, y: 3, z: 0 }, painted.clone());
+        painted.facing = CellFacing::PosY;
+        canvas.insert(CellPoint { x: 5, y: 3, z: 0 }, painted);
+
+        let group = build_paint_canvas_cell_group(
+            &canvas,
+            WorldPoint { x: 0, y: 0, z: 0 },
+            WorldPoint { x: 0, y: 0, z: 0 },
+        );
+        assert_eq!(
+            group.get(CellPoint { x: 2, y: 3, z: 0 }).unwrap().facing,
+            CellFacing::NegX
+        );
+        assert_eq!(
+            group.get(CellPoint { x: 5, y: 3, z: 0 }).unwrap().facing,
+            CellFacing::PosY
         );
     }
 
@@ -355,6 +409,7 @@ mod tests {
             .active_raster_block_id("layer-1", 0)
             .expect("default raster block");
         let painted = PaintedCell {
+            facing: CellFacing::PosZ,
             graphic: CellGraphic::Glyph('#'),
             color: PaintColor::FlatRgb(255, 255, 255),
             weight_index: 1,
@@ -375,10 +430,17 @@ mod tests {
         let groups = build_document_layer_cell_groups(&runtime, 0, 0.0, None, None);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].origin, WorldPoint { x: 4, y: 5, z: 6 });
+        // Cells are pivot-relative: canvas + move − pivot, so the composed
+        // world point (origin + local) stays exactly where the raster data
+        // authored it no matter where the pivot sits.
         let moved_cell = groups[0]
             .iter_cells()
-            .find(|cell| cell.position == CellPoint { x: 7, y: 5, z: 3 })
-            .expect("moved painted cell");
+            .find(|cell| cell.position == CellPoint { x: 3, y: 0, z: -3 })
+            .expect("painted cell relative to pivot");
+        assert_eq!(
+            groups[0].world_point_for(moved_cell.position),
+            WorldPoint { x: 7, y: 5, z: 3 }
+        );
         assert_eq!(moved_cell.shader_stack, vec![CELL_SHADER_WEIGHT_SIN]);
 
         // An in-flight drag's pending delta stacks on the committed offset.
@@ -389,14 +451,40 @@ mod tests {
             Some(("layer-1", WorldPoint { x: 1, y: 1, z: 0 })),
             None,
         );
-        assert!(groups[0]
+        let dragged = groups[0]
             .iter_cells()
-            .any(|cell| cell.position == CellPoint { x: 8, y: 6, z: 3 }));
+            .find(|cell| cell.position == CellPoint { x: 4, y: 1, z: -3 })
+            .expect("dragged painted cell relative to pivot");
+        assert_eq!(
+            groups[0].world_point_for(dragged.position),
+            WorldPoint { x: 8, y: 6, z: 3 }
+        );
+    }
+
+    #[test]
+    fn pivot_flash_groups_hang_from_the_pivot_through_both_flash_phases() {
+        let vivid = CellColor::Flat([1.0, 0.0, 0.0, 1.0]);
+        let groups = build_pivot_flash_cell_groups(WorldPoint { x: 7, y: 3, z: 1 }, vivid);
+        assert_eq!(groups.len(), 2);
+        for (group, shader) in groups
+            .iter()
+            .zip([CELL_SHADER_VIVID_FLASH, CELL_SHADER_VIVID_FLASH_ALT])
+        {
+            assert_eq!(group.origin, WorldPoint { x: 7, y: 3, z: 1 });
+            let marker = group
+                .iter_cells()
+                .find(|cell| cell.position == CellPoint::origin())
+                .expect("pivot flash cell");
+            assert_eq!(marker.graphic, CellGraphic::Glyph('+'));
+            assert_eq!(marker.color, vivid);
+            assert_eq!(marker.shader_stack, vec![shader]);
+        }
     }
 }
 
 // --- live document composition ------------------------------------------------
 
+use crate::brush::facing_from_portable_name;
 use crate::storage::SharedDocumentRuntime;
 use crate::Canvas;
 
@@ -404,20 +492,29 @@ use crate::Canvas;
 /// real rotating 3D intake path, not as module chrome, so the painter canvas
 /// lives in scene space while the UI panels stay in the flat 2D layer. Every
 /// cell shifts by the layer's active move offset — the offset changes where
-/// the layer renders, never the raster data itself. The returned group origin
-/// is supplied by the document-layer seam, where it remains a fixed pivot.
-pub fn build_paint_canvas_cell_group(canvas: &Canvas, move_offset: WorldPoint) -> CellGroup {
-    let mut group = CellGroup::new(WorldPoint { x: 0, y: 0, z: 0 });
+/// the layer renders, never the raster data itself. Cells are authored
+/// relative to the layer's fixed pivot (`pivot`): locals = canvas + move −
+/// pivot, so the caller can hang the group from the pivot origin and the
+/// world placement stays pixel-identical no matter where the pivot sits
+/// (J 2026-09-12) — re-pivoting is a pure metadata change with no visual
+/// jump, and rotation later turns the asset around its true pivot cell.
+pub fn build_paint_canvas_cell_group(
+    canvas: &Canvas,
+    move_offset: WorldPoint,
+    pivot: WorldPoint,
+) -> CellGroup {
+    let mut group = CellGroup::new(pivot);
     for (position, painted) in canvas {
         group.insert(Cell {
             position: CellPoint {
-                x: position.x + move_offset.x,
-                y: position.y + move_offset.y,
-                z: position.z + move_offset.z,
+                x: position.x + move_offset.x - pivot.x,
+                y: position.y + move_offset.y - pivot.y,
+                z: position.z + move_offset.z - pivot.z,
             },
             graphic: painted.graphic.clone(),
             color: painted.color.to_cell_color(),
             weight: CellWeight::from_index_clamped(painted.weight_index as i32),
+            facing: painted.facing,
             // Until the renderer registry lands, live preview can resolve its
             // currently built-in filenames; persistence still retains unknown
             // filenames verbatim for a future asset root.
@@ -479,11 +576,38 @@ pub fn build_document_layer_cell_groups(
                     };
                 }
             }
-            let mut group = build_paint_canvas_cell_group(&canvas, offset);
-            group.origin = runtime
+            let pivot = runtime
                 .layer_origin(&layer.layer_id)
                 .unwrap_or_else(WorldPoint::origin);
+            let mut group = build_paint_canvas_cell_group(&canvas, offset, pivot);
+            group.origin = pivot;
             Some(group)
+        })
+        .collect()
+}
+
+/// The pivot-set flash (J 2026-09-12): when the user double-clicks a pivot
+/// with the move tool, the pivot cell flashes through the selection's vivid
+/// flash shader pair for about a second, then disappears — the pivot is a
+/// set-once fact, not a permanent annotation. Two groups, one per flash
+/// phase, exactly like the plane-selection overlay: the shader gates
+/// visibility, so nothing is staged into the canvas or document. The groups
+/// hang from the pivot itself, so the flash never rides the layer's move
+/// offset — the pivot is the fixed point the animated move renders from.
+pub fn build_pivot_flash_cell_groups(pivot: WorldPoint, vivid: CellColor) -> Vec<CellGroup> {
+    [CELL_SHADER_VIVID_FLASH, CELL_SHADER_VIVID_FLASH_ALT]
+        .into_iter()
+        .map(|shader| {
+            let mut group = CellGroup::new(pivot);
+            group.insert(Cell {
+                position: CellPoint::origin(),
+                graphic: CellGraphic::Glyph('+'),
+                color: vivid,
+                weight: CellWeight::from_index_clamped(3),
+                shader_stack: vec![shader],
+                ..Cell::default()
+            });
+            group
         })
         .collect()
 }

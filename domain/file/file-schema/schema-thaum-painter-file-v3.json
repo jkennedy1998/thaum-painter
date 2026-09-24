@@ -51,12 +51,14 @@
         "graphic": {
           "oneOf": [
             { "type": "object", "required": ["kind", "glyph"], "properties": { "kind": { "const": "glyph" }, "glyph": { "type": "string", "minLength": 1, "maxLength": 1 } } },
-            { "type": "object", "required": ["kind", "asset_file"], "properties": { "kind": { "const": "sprite" }, "asset_file": { "$ref": "#/$defs/assetFile" } } }
+            { "type": "object", "required": ["kind", "asset_file"], "properties": { "kind": { "const": "sprite" }, "asset_file": { "$ref": "#/$defs/assetFile" } } },
+            { "type": "object", "required": ["kind", "declaration"], "properties": { "kind": { "const": "sided" }, "declaration": { "type": "string", "minLength": 1 } } }
           ]
         },
         "color": { "$ref": "#/$defs/color" },
         "weight_index": { "type": "integer" },
-        "shader_stack": { "type": "array", "items": { "$ref": "#/$defs/assetFile" } }
+        "shader_stack": { "type": "array", "items": { "$ref": "#/$defs/assetFile" } },
+        "facing": { "type": "string", "enum": ["pos-x", "neg-x", "pos-y", "neg-y", "pos-z", "neg-z"] }
       }
     },
     "voxel": {

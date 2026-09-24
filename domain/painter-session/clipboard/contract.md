@@ -8,7 +8,7 @@ Own live clipboard and copy-buffer semantics for painter session workflows.
 - the 3D world copy payload shape (`WorldCopyData`: anchor + center + sparse cells offset from the anchor)
 - copy from the selection surface (world selection first, plane selection fallback) out of the live canvas
 - paste target resolution (`paste_points` placing copy offsets relative to the copy's center cell at a paste anchor)
-- the `THAUM3D:` + JSON OS-clipboard text codec (`encode_os_clipboard` / `decode_os_clipboard`) with its own serde payload mirror of full painted appearance: glyph/sprite, flat/material/slot color, weight, and ordered shader filenames
+- the `THAUM3D:` + JSON OS-clipboard text codec (`encode_os_clipboard` / `decode_os_clipboard`) with its own serde payload mirror of full painted appearance: glyph/sprite/sided (inline `thaum-sided-declaration` JSON), flat/material/slot color, weight, ordered shader filenames, and the portable facing name (defaulted so pre-facing payloads still paste)
 - clipboard mode notes for plain text and world-aware selections (plain-text paste decode is future work)
 
 ## does not own

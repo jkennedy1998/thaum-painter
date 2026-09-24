@@ -4,6 +4,13 @@ use serde_json::Value;
 pub const FILE_SCHEMA_KIND: &str = "thaum-painter-file";
 pub const FILE_SCHEMA_VERSION: u32 = 3;
 
+/// The default portable facing name: the identity orientation.
+pub const FACING_POS_Z: &str = "pos-z";
+/// All six portable facing names, comma-joined for error messages.
+pub const FACING_VOCABULARY: &str = "pos-x, neg-x, pos-y, neg-y, pos-z, neg-z";
+
+use crate::brush::facing_from_portable_name;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GridPoint {
     pub x: i64,
@@ -23,7 +30,14 @@ pub struct Rgb {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CellGraphicValue {
     Glyph(char),
-    Sprite { asset_file: String },
+    Sprite {
+        asset_file: String,
+    },
+    /// A full sided declaration, carried inline as portable
+    /// `thaum-sided-declaration` JSON text.
+    Sided {
+        declaration: String,
+    },
 }
 
 /// One source color assignment. Slots give sprites their native A/B/C palette
@@ -56,6 +70,11 @@ pub struct CellAppearance {
     pub color: CellColorValue,
     pub weight_index: i64,
     pub shader_stack: Vec<String>,
+    /// Portable facing name (`pos-x` .. `neg-z`, `pos-z` the identity). The
+    /// authored cell orientation carried through so re-rendering per side and
+    /// later rotate tooling survives save/load. Optional on load so existing
+    /// v3 files keep parsing; absent means `pos-z`.
+    pub facing: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -357,7 +376,10 @@ fn parse_graphic(value: &Value) -> Result<CellGraphicValue> {
         "sprite" => Ok(CellGraphicValue::Sprite {
             asset_file: require_asset_file(value, "asset_file")?,
         }),
-        kind => bail!("graphic kind must be 'glyph' or 'sprite', got '{kind}'"),
+        "sided" => Ok(CellGraphicValue::Sided {
+            declaration: require_asset_file(value, "declaration")?,
+        }),
+        kind => bail!("graphic kind must be 'glyph', 'sprite', or 'sided', got '{kind}'"),
     }
 }
 
@@ -376,11 +398,22 @@ fn parse_shader_stack(value: &Value) -> Result<Vec<String>> {
 }
 
 fn parse_cell_appearance(value: &Value) -> Result<CellAppearance> {
+    let facing = match value.get("facing") {
+        None | Some(Value::Null) => FACING_POS_Z.to_owned(),
+        Some(Value::String(name)) => {
+            if facing_from_portable_name(name).is_none() {
+                bail!("facing must be one of {FACING_VOCABULARY}, got '{name}'");
+            }
+            name.to_owned()
+        }
+        Some(_) => bail!("facing must be a string"),
+    };
     Ok(CellAppearance {
         graphic: parse_graphic(field(value, "graphic")?).context("invalid cell graphic")?,
         color: parse_color(field(value, "color")?).context("invalid cell color")?,
         weight_index: require_i64(value, "weight_index")?,
         shader_stack: parse_shader_stack(value)?,
+        facing,
     })
 }
 
@@ -657,6 +690,25 @@ mod tests {
     }
 
     #[test]
+    fn parses_inline_sided_declarations() {
+        let declaration = r#"{ "format": "thaum-sided-declaration", "version": 1, "sides": { "pos-z": { "glyph": "\u2503" } } }"#;
+        let value: serde_json::Value = serde_json::from_str(&format!(
+            r#"{{ "kind": "sided", "declaration": "{}" }}"#,
+            declaration.replace('"', "\\\"")
+        ))
+        .unwrap();
+        match parse_graphic(&value).unwrap() {
+            CellGraphicValue::Sided { declaration } => {
+                assert!(declaration.contains("thaum-sided-declaration"));
+                // The declaration text itself validates through the shared
+                // parser (the same one render resolution uses).
+                assert!(thaum_renderer_domain::parse_sided_declaration(&declaration).is_ok());
+            }
+            other => panic!("expected sided graphic, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_groups_with_distinct_fixed_origin_and_placement() {
         let schema = parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap();
         assert_eq!(schema.document.group_order, vec!["group_asset"]);
@@ -669,7 +721,7 @@ mod tests {
     fn parses_glyph_sprite_material_slots_and_ordered_shaders() {
         let schema = parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap();
         let segment = &schema.document.groups[0].raster_segments[0];
-        assert_eq!(segment.voxels.len(), 4);
+        assert_eq!(segment.voxels.len(), 5);
         assert_eq!(
             segment.voxels[0].appearance.graphic,
             CellGraphicValue::Glyph('R')
@@ -697,6 +749,37 @@ mod tests {
                 "cell-shaders/texture-shimmer.json"
             ]
         );
+    }
+
+    #[test]
+    fn voxel_facing_parses_defaults_and_rejects_unknown_names() {
+        let mut value: serde_json::Value = serde_json::from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap();
+
+        // Absent facing means the identity orientation.
+        let schema = parse_file_schema(&value).unwrap();
+        assert_eq!(
+            schema.document.groups[0].raster_segments[0].voxels[0]
+                .appearance
+                .facing,
+            FACING_POS_Z
+        );
+
+        // An authored facing name round-trips verbatim.
+        value["document"]["groups"][0]["raster_segments"][0]["voxels"][0]["appearance"]["facing"] =
+            serde_json::json!("neg-y");
+        let schema = parse_file_schema(&value).unwrap();
+        assert_eq!(
+            schema.document.groups[0].raster_segments[0].voxels[0]
+                .appearance
+                .facing,
+            "neg-y"
+        );
+
+        // Anything outside the six-name vocabulary rejects cleanly.
+        value["document"]["groups"][0]["raster_segments"][0]["voxels"][0]["appearance"]["facing"] =
+            serde_json::json!("up");
+        let error = format!("{:#}", parse_file_schema(&value).unwrap_err());
+        assert!(error.contains("facing"), "unexpected error: {error}");
     }
 
     #[test]

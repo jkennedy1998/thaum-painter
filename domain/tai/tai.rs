@@ -120,23 +120,30 @@ pub fn painter_bindings() -> ActionBindingMap {
         RawInput::Key("NUMPAD_ADD".to_string()),
     );
     map.bind(ActionName::new("painter_zoom_in"), RawInput::MouseWheelUp);
-    // Selection modes.
-    map.bind(
-        ActionName::new("painter_selection_mode_replace"),
-        RawInput::Key("1".to_string()),
-    );
-    map.bind(
-        ActionName::new("painter_selection_mode_additive"),
-        RawInput::Key("2".to_string()),
-    );
-    map.bind(
-        ActionName::new("painter_selection_mode_subtract"),
-        RawInput::Key("3".to_string()),
-    );
-    map.bind(
-        ActionName::new("painter_selection_mode_intersect"),
-        RawInput::Key("4".to_string()),
-    );
+    // Tool presets (J 2026-09-24): top-row digits 1-9 apply that preset to
+    // BOTH hands. The numpad stays on the camera keys, and the selection
+    // modes' old 1-4 digit bindings are freed for this — they remain one
+    // click in the hand-settings panel and are remappable through the
+    // controls panel.
+    for (digit, action) in (1..=9).map(|digit| {
+        (
+            digit.to_string(),
+            ActionName::new(format!("painter_preset_{digit}")),
+        )
+    }) {
+        map.bind(action, RawInput::Key(digit));
+    }
+    // Selection mode actions keep no default key bindings (the digits they
+    // used now drive the tool presets) but stay declared so the live dispatch
+    // and the controls panel can still reach and remap them.
+    for mode in [
+        "painter_selection_mode_replace",
+        "painter_selection_mode_additive",
+        "painter_selection_mode_subtract",
+        "painter_selection_mode_intersect",
+    ] {
+        map.register_action(ActionName::new(mode));
+    }
     // Selection plane operations.
     map.bind(
         ActionName::new("painter_selection_clear"),

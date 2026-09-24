@@ -26,7 +26,7 @@ use thaum_painter_domain::{
         apply_layers_panel_action, build_selected_layer_property_rows, resolved_active_layer_id,
     },
     painter_default_camera,
-    render_space::build_document_layer_cell_groups,
+    render_space::{build_document_layer_cell_groups, build_pivot_flash_cell_groups},
     save_shared_document_snapshot,
     session_document::{
         action_timestamp_string, apply_shared_history_action, commit_staged_paint_stroke,
@@ -38,7 +38,7 @@ use thaum_painter_domain::{
     PaintCanvasBoundsModule, PaintHand, PaintTool, PainterSelection, PainterUserSessionState,
     PersistedPainterUiState, SelectionMode, SessionDiscoveredHost, SessionIdentity,
     SessionPanelAction, SessionPanelState, SessionRosterRow, SharedDocumentPaths,
-    SharedDocumentRuntime, TimelineState, ToolState, UnsupportedFileError,
+    SharedDocumentRuntime, TimelineState, ToolPreset, ToolState, UnsupportedFileError,
     DEFAULT_SELECTION_CHANNEL_ID,
 };
 use thaum_renderer_boot::{
@@ -1482,6 +1482,7 @@ fn build_user_session_state(
     drawing_space_wheel_mode: DrawingSpaceWheelMode,
     selection_mode: SelectionMode,
     tool_state: &ToolState,
+    tool_presets: &[ToolPreset],
     controls_profile: &ControlsProfile,
     session_display_name: Option<&str>,
 ) -> PainterUserSessionState {
@@ -1503,6 +1504,7 @@ fn build_user_session_state(
             current_breath,
             render_scale_percent,
             tool_state,
+            tool_presets,
         ),
         controls_profile: controls_profile.clone(),
         session_display_name: session_display_name.map(str::to_string),
@@ -1600,6 +1602,7 @@ mod tests {
             color: thaum_painter_domain::paint_color::PaintColor::flat_rgb(255, 255, 255),
             weight_index: 1,
             shader_stack: Vec::new(),
+            facing: thaum_renderer_domain::CellFacing::PosZ,
         };
         let mut entry = TextEntryState::begin(
             CellPoint { x: 5, y: 5, z: 0 },
@@ -2146,9 +2149,8 @@ fn read_text_from_clipboard() -> Result<String, String> {
         .map_err(|error| error.to_string())
 }
 
-/// Live painter behavior for one registry action. One entry per action the
-/// dispatcher handles; `LIVE_PAINTER_ACTIONS` and the dispatch match below
-/// must stay in sync, which the drift tests assert in both directions.
+/// Which painter tool one registered select-action equips (the toolbox's
+/// hotkey path), resolved through the painter-tools registry.
 fn painter_tool_for_action(action: &ActionName) -> Option<PaintTool> {
     // Derived from the tool registry: a descriptor's select_action maps to
     // its registered tool, so new tools become hotkey-equippable by
@@ -2157,6 +2159,16 @@ fn painter_tool_for_action(action: &ActionName) -> Option<PaintTool> {
         .iter()
         .find(|descriptor| descriptor.select_action == Some(action.0.as_str()))
         .and_then(|descriptor| PaintTool::from_id(descriptor.id))
+}
+
+/// Which tool-preset slot one `painter_preset_N` action applies: the number
+/// after the prefix, one-based into the saved preset list (J 2026-09-24).
+fn painter_preset_slot_for_action(action: &ActionName) -> Option<usize> {
+    action
+        .0
+        .as_str()
+        .strip_prefix("painter_preset_")
+        .and_then(|slot| slot.parse::<usize>().ok())
 }
 
 /// Bridges a `THAUM3D:` payload from the OS clipboard into the session
@@ -2226,6 +2238,18 @@ pub const LIVE_PAINTER_ACTIONS: &[&str] = &[
     "painter_select_stamp",
     "painter_select_move",
     "painter_play_pause",
+    // Tool presets: digits 1-9 (J 2026-09-24). Each action applies that
+    // preset slot to both hands; the dispatch resolves the slot from the
+    // action name below.
+    "painter_preset_1",
+    "painter_preset_2",
+    "painter_preset_3",
+    "painter_preset_4",
+    "painter_preset_5",
+    "painter_preset_6",
+    "painter_preset_7",
+    "painter_preset_8",
+    "painter_preset_9",
 ];
 
 /// Presentation rows for the controls panel: the declared action list with
@@ -2307,7 +2331,8 @@ fn main() -> Result<()> {
     // newest five, and installs the panic hook. `THAUM_DEBUG` raises the floor.
     let run_log_dir = run_log::boot(&painter_root());
     let mut config = BootConfig::default();
-    config.asset_root = resolve_asset_root();
+    let asset_root = resolve_asset_root();
+    config.asset_root = asset_root.clone();
     config.window.title = "thaum-painter".to_string();
     config.window.performance_log_path = run_log_dir.as_ref().map(|dir| dir.join("perf.jsonl"));
 
@@ -2564,6 +2589,16 @@ fn main() -> Result<()> {
         &controls_profile.borrow(),
     )));
     let tool_state = Rc::new(RefCell::new(ToolState::default()));
+    // Saved tool presets (J 2026-09-24): loaded from the user session (or
+    // the starter presets on first boot), then shared by the presets
+    // module's clicks and the number-key dispatch below. Edits flow straight
+    // into this handle; the session save picks it up per save tick.
+    let tool_presets: Rc<RefCell<Vec<ToolPreset>>> = Rc::new(RefCell::new(
+        persisted_session
+            .as_ref()
+            .map(|session| session.painter.tool_presets.clone())
+            .unwrap_or_else(thaum_painter_domain::starter_presets),
+    ));
     let timeline_state = Rc::new(RefCell::new(TimelineState::default()));
     let paint_canvas_viewport = Rc::new(RefCell::new(INITIAL_PAINT_CANVAS_VIEWPORT));
     let drawing_space_wheel_mode = Rc::new(RefCell::new(DrawingSpaceWheelMode::Pan));
@@ -2601,6 +2636,8 @@ fn main() -> Result<()> {
         &camera_zoom_link,
         &render_quality_profile,
         &session_panel_state,
+        &asset_root,
+        &tool_presets,
     );
 
     if let Some(session) = &persisted_session {
@@ -3040,6 +3077,16 @@ fn main() -> Result<()> {
                     }
                     continue;
                 }
+                // Tool presets (J 2026-09-24): a `painter_preset_N` action
+                // applies that preset slot to BOTH hands at once — left half
+                // onto the left hand, right half onto the right.
+                if let Some(slot) = painter_preset_slot_for_action(action) {
+                    let preset = tool_presets.borrow().get(slot.saturating_sub(1)).cloned();
+                    if let Some(preset) = preset {
+                        preset.apply_to_runtime(&mut tool_state.borrow_mut());
+                    }
+                    continue;
+                }
                 // Camera actions (pan/swing/roll/depth/zoom) live on the
                 // domain seam; the hover split of the pan route is owned there.
                 if apply_painter_camera_action(
@@ -3251,6 +3298,24 @@ fn main() -> Result<()> {
                 );
             }
         }
+        // Key-driven panel actions (the ENTER commit of a layer rename) have
+        // no pointer event to ride: drain the queue unconditionally each
+        // frame so the commit reaches the document in the same frame it was
+        // queued — otherwise the rename strands in the queue until the next
+        // click and the row reads as if the name went back to Layer 1/2.
+        drain_layers_panel_action(
+            &layers_panel_state,
+            &mut shared_document,
+            &shared_document_paths,
+            &mut shared_action_counter,
+            &session_user_id,
+            &mut active_layer_id,
+            &mut selected_property_id,
+            &mut canvas,
+            &timeline_state,
+            &selection,
+            persist_to_disk,
+        );
         layers_panel_state.borrow_mut().sync(
             shared_document
                 .layers()
@@ -3844,6 +3909,7 @@ fn main() -> Result<()> {
             *drawing_space_wheel_mode.borrow(),
             selection.borrow().mode(),
             &tool_state.borrow(),
+            &tool_presets.borrow(),
             &controls_profile.borrow(),
             Some(session_identity.display_name.as_str()),
         );
@@ -3975,6 +4041,15 @@ fn main() -> Result<()> {
         ) {
             shift_overlay_group_origin(&mut group, overlay_move_offset);
             groups.push(group);
+        }
+        // Pivot-set flash (J 2026-09-12): for one second after a move-tool
+        // double-click pin, the pivot cell flashes through the selection's
+        // vivid flash shader pair. NOT shifted by the overlay move offset —
+        // the pivot is the fixed point the animated move renders from.
+        if let Some(pivot) = pointer_strokes.active_pivot_flash() {
+            for group in build_pivot_flash_cell_groups(pivot, ui_palette.get(UiColorRole::Vivid)) {
+                groups.push(group);
+            }
         }
         // Typing cursor: a flashing bright block on the cell that will receive
         // the next character. Composed on top like the selection overlay, never

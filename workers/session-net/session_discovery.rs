@@ -67,7 +67,10 @@ pub fn spawn_discovery_responder(
             }
         }
     });
-    Ok(DiscoveryResponder { stopped, worker: Some(worker) })
+    Ok(DiscoveryResponder {
+        stopped,
+        worker: Some(worker),
+    })
 }
 
 /// Handle keeping one host discoverable. Dropping it detaches the thread's
@@ -108,7 +111,9 @@ fn scan_once() -> Vec<DiscoveredHost> {
     socket
         .send_to(PROBE.as_bytes(), ("255.255.255.255", DISCOVERY_PORT))
         .ok();
-    socket.set_read_timeout(Some(Duration::from_millis(100))).ok();
+    socket
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .ok();
     let start = Instant::now();
     let mut buffer = [0u8; 512];
     let mut hosts = Vec::new();
@@ -143,7 +148,10 @@ fn parse_reply(line: &str, source_ip: &str) -> Option<DiscoveredHost> {
     if name.is_empty() {
         return None;
     }
-    Some(DiscoveredHost { name: name.to_string(), address: format!("{source_ip}:{port}") })
+    Some(DiscoveredHost {
+        name: name.to_string(),
+        address: format!("{source_ip}:{port}"),
+    })
 }
 
 /// Frame-facing discovery cadence owner. The orchestration layer calls

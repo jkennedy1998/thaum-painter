@@ -1,5 +1,6 @@
 use std::collections::{BTreeSet, VecDeque};
 
+use thaum_renderer_domain::CellFacing;
 use thaum_renderer_domain::CellPoint;
 
 use crate::brush::{effective_cell, Canvas, PaintedCell};
@@ -284,6 +285,7 @@ mod tests {
 
     fn cell(glyph: char) -> PaintedCell {
         PaintedCell {
+            facing: CellFacing::PosZ,
             graphic: thaum_renderer_domain::CellGraphic::Glyph(glyph),
             color: PaintColor::flat_rgb(255, 255, 255),
             weight_index: 1,
@@ -326,6 +328,7 @@ mod tests {
         canvas.insert(
             point(1, 1),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph(' '),
                 color: crate::paint_color::PaintColor::flat_rgb(1, 2, 3),
                 weight_index: 2,

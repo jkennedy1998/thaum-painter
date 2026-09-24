@@ -5,8 +5,8 @@ use thaum_renderer_domain::{
 };
 
 use crate::{
-    tool_state::ChannelMask, DrawingSpaceWheelMode, HandState, PaintColor, PaintColorSlot,
-    PaintHand, PaintTarget, PaintTool, SelectionMode, ToolState,
+    tool_presets::ToolPreset, tool_state::ChannelMask, DrawingSpaceWheelMode, HandState,
+    PaintColor, PaintColorSlot, PaintHand, PaintTarget, PaintTool, SelectionMode, ToolState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -47,6 +47,13 @@ pub struct PersistedPainterUiState {
     #[serde(default = "default_render_scale_percent")]
     pub render_scale_percent: u8,
     pub tool_state: PersistedToolState,
+    /// The user's saved tool presets (J 2026-09-24): named two-hand
+    /// tool+property snapshots. User bound, never file bound — they ride
+    /// this machine-local session file and follow the user across every
+    /// document. `default` keeps pre-preset session files loading as an
+    /// empty list.
+    #[serde(default)]
+    pub tool_presets: Vec<ToolPreset>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -109,8 +116,16 @@ pub enum PersistedPaintColorSlot {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum PersistedGraphic {
     None,
-    Glyph { glyph: char },
-    Sprite { atlas_relative_path: String },
+    Glyph {
+        glyph: char,
+    },
+    Sprite {
+        atlas_relative_path: String,
+    },
+    /// The hand's full sided declaration, serialized inline.
+    Sided {
+        declaration: String,
+    },
 }
 
 fn default_render_scale_percent() -> u8 {
@@ -126,6 +141,7 @@ impl PersistedPainterUiState {
         current_breath: u32,
         render_scale_percent: u8,
         tool_state: &ToolState,
+        tool_presets: &[ToolPreset],
     ) -> Self {
         Self {
             drawing_space_wheel_mode: wheel_mode_name(drawing_space_wheel_mode).to_string(),
@@ -135,6 +151,7 @@ impl PersistedPainterUiState {
             current_breath,
             render_scale_percent: render_scale_percent.clamp(25, 100),
             tool_state: PersistedToolState::from_runtime(tool_state),
+            tool_presets: tool_presets.to_vec(),
         }
     }
 
@@ -290,6 +307,11 @@ impl PersistedGraphic {
             CellGraphic::Sprite(sprite) => Self::Sprite {
                 atlas_relative_path: sprite.atlas_relative_path().to_string_lossy().into_owned(),
             },
+            // Sided hands carry their full declaration inline so session
+            // state restores without an asset root.
+            CellGraphic::Sided(sided) => Self::Sided {
+                declaration: thaum_renderer_domain::sided_declaration_json(sided),
+            },
         }
     }
 
@@ -300,6 +322,13 @@ impl PersistedGraphic {
             Self::Sprite {
                 atlas_relative_path,
             } => CellGraphic::Sprite(SpriteGraphic::new(atlas_relative_path)),
+            Self::Sided { declaration } => {
+                thaum_renderer_domain::parse_sided_declaration(declaration)
+                    .map(CellGraphic::Sided)
+                    // A malformed declaration degrades to an empty hand rather than
+                    // failing session restore; the text stays in the state file.
+                    .unwrap_or(CellGraphic::None)
+            }
         }
     }
 }
@@ -386,8 +415,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use thaum_renderer_domain::{
-    Camera, CameraRoll, CameraSwing, CellPoint, ParallaxProfile,
-    PerspectiveProfile, WorldPoint,
+    Camera, CameraRoll, CameraSwing, CellPoint, ParallaxProfile, PerspectiveProfile, WorldPoint,
 };
 
 pub fn painter_session_state_path(artifacts_root: &Path, user_id: &str) -> PathBuf {
@@ -463,6 +491,31 @@ pub fn painter_default_camera() -> Camera {
 mod tests {
     use super::*;
     use crate::{DrawingSpaceWheelMode, SelectionMode, ToolState};
+    use thaum_renderer_domain::{CellFacing, SideGraphic, SidedGraphic};
+
+    const STICK_DECLARATION: &str = r#"{
+        "format": "thaum-sided-declaration",
+        "version": 1,
+        "sides": {
+            "pos-z": { "glyph": "\u2503" },
+            "pos-y": { "glyph": "\u25aa" }
+        }
+    }"#;
+
+    fn stick_graphic() -> CellGraphic {
+        CellGraphic::Sided(
+            thaum_renderer_domain::parse_sided_declaration(STICK_DECLARATION).unwrap(),
+        )
+    }
+
+    #[test]
+    fn sided_hand_graphics_round_trip_through_persisted_state() {
+        let persisted = PersistedGraphic::from_runtime(&stick_graphic());
+        let json = serde_json::to_string(&persisted).unwrap();
+        let decoded: PersistedGraphic = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.to_runtime(), stick_graphic());
+    }
+
     use thaum_renderer_domain::{CommandBar, UiPalette};
 
     fn sample_painter_state(render_scale_percent: u8) -> PersistedPainterUiState {
@@ -475,6 +528,7 @@ mod tests {
             12,
             render_scale_percent,
             &ToolState::default(),
+            &[],
         )
     }
 
@@ -490,8 +544,7 @@ mod tests {
     fn render_scale_percent_survives_a_serde_round_trip() {
         let state = sample_painter_state(50);
         let text = serde_json::to_string(&state).expect("serialize");
-        let restored: PersistedPainterUiState =
-            serde_json::from_str(&text).expect("deserialize");
+        let restored: PersistedPainterUiState = serde_json::from_str(&text).expect("deserialize");
         assert_eq!(restored.render_scale_percent, 50);
     }
 
@@ -506,5 +559,27 @@ mod tests {
         let restored: PersistedPainterUiState =
             serde_json::from_value(value).expect("deserialize legacy snapshot");
         assert_eq!(restored.render_scale_percent, 100);
+    }
+
+    #[test]
+    fn snapshots_from_before_tool_presets_default_to_an_empty_list() {
+        let state = sample_painter_state(50);
+        let mut value = serde_json::to_value(&state).expect("serialize");
+        value
+            .as_object_mut()
+            .expect("painter state is an object")
+            .remove("tool_presets");
+        let restored: PersistedPainterUiState =
+            serde_json::from_value(value).expect("deserialize legacy snapshot");
+        assert!(restored.tool_presets.is_empty());
+    }
+
+    #[test]
+    fn tool_presets_survive_a_session_state_round_trip() {
+        let mut state = sample_painter_state(50);
+        state.tool_presets = crate::tool_presets::starter_presets();
+        let text = serde_json::to_string(&state).expect("serialize");
+        let restored: PersistedPainterUiState = serde_json::from_str(&text).expect("deserialize");
+        assert_eq!(restored.tool_presets, state.tool_presets);
     }
 }

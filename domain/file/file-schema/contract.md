@@ -9,6 +9,7 @@ Own the canonical top-level saved file schema and versioned shape for thaum-pain
 - the load-time schema gate truth: a file's kind and version are checked before its body is trusted (gate mechanism wired in `storage/`, owned jointly — see notes)
 - canonical placement of painter-only metadata versus renderable content sections
 - the stable saved split between document content, time assets, authoring metadata, saved camera defaults, and other painter-only sections
+- the v3 graphic payload vocabulary: glyph, sprite, and sided (one inline `thaum-sided-declaration` JSON document per sided cell)
 - canonical group identity, group order, and group-level (global-board) placement
 
 ## does not own
@@ -85,5 +86,6 @@ via: rust fn
 - renamed from `manifest/` (2026-09-07, J-approved): "what's the current schema version" is the sentence the code should be able to say; "manifest" was vague.
 - schema version bumped 1 -> 2 (2026-09-07, binary-bars redesign): the break is binary tiling — property tracks tile the full layer span with empty/solid bars, no voids. The interchange shape is unchanged; v1 files are not imported or migrated, they reject cleanly at load (`storage/`'s typed gate). Cross-reference: `plans/project-thaum-painter-binary-bars-plan.md`.
 - schema version bumped 2 -> 3 (2026-09-12): every stored voxel now carries a portable glyph-or-sprite appearance, flat/material/slot color, weight, and ordered filename shader stack; layers gain fixed origins and documents gain the optional declarative `flat` export preset. V2 is not migrated.
+- v3 appearance later gained the optional `facing` name (2026-09-12, J-approved persistence pass): authored cell orientation persists per voxel so re-rendering per side and the future rotate tool survive save/load. Optional on load, defaulted to `pos-z`, so the shape did not break and the version stayed 3. Unknown facing names reject cleanly.
 - the schema version changes ONLY when the shape breaks. No importer, no migration pass — old files are recognized as unsupported and rejected cleanly at load, never a crash. J fixes friend files case-by-case.
 - load-time gate ownership: `parse_file_schema` provides kind/version validation; `storage/`'s `load_document_file` wires it into the actual load seam so rejection happens before any body deserialization.

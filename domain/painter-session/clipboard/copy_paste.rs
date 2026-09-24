@@ -22,9 +22,11 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use thaum_renderer_domain::{CellGraphic, CellPoint};
+use thaum_renderer_domain::{CellFacing, CellGraphic, CellPoint};
 
-use crate::brush::{is_blank_cell, Canvas, PaintedCell};
+use crate::brush::{
+    facing_from_portable_name, facing_portable_name, is_blank_cell, Canvas, PaintedCell,
+};
 use crate::paint_color::PaintColor;
 use crate::paint_color::PaintColorSlot;
 use crate::selection_state::PainterSelection;
@@ -236,6 +238,14 @@ struct ClipboardCellPayload {
     weight_index: i64,
     #[serde(default)]
     shader_stack: Vec<String>,
+    /// Portable facing name. Default keeps older clipboard payloads pastable;
+    /// absent means the identity `pos-z`.
+    #[serde(default = "clipboard_default_facing")]
+    facing: String,
+}
+
+fn clipboard_default_facing() -> String {
+    crate::file_schema::FACING_POS_Z.to_owned()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -243,6 +253,10 @@ enum ClipboardGraphicPayload {
     None,
     Glyph(char),
     Sprite(String),
+    /// The cell's full sided declaration, serialized inline.
+    Sided {
+        declaration: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -338,10 +352,16 @@ impl ClipboardPayload {
                         CellGraphic::Sprite(sprite) => ClipboardGraphicPayload::Sprite(
                             sprite.atlas_relative_path().to_string_lossy().into_owned(),
                         ),
+                        // Sided cells carry their full declaration inline
+                        // so clipboard payloads replay without an asset root.
+                        CellGraphic::Sided(sided) => ClipboardGraphicPayload::Sided {
+                            declaration: thaum_renderer_domain::sided_declaration_json(sided),
+                        },
                     },
                     color: clipboard_color_from_runtime(&cell.color),
                     weight_index: cell.weight_index,
                     shader_stack: cell.shader_stack.clone(),
+                    facing: facing_portable_name(cell.facing).to_owned(),
                 })
                 .collect(),
         }
@@ -361,6 +381,11 @@ impl ClipboardPayload {
                         ClipboardGraphicPayload::Sprite(path) => {
                             CellGraphic::Sprite(thaum_renderer_domain::SpriteGraphic::new(path))
                         }
+                        ClipboardGraphicPayload::Sided { declaration } => {
+                            thaum_renderer_domain::parse_sided_declaration(&declaration)
+                                .map(CellGraphic::Sided)
+                                .unwrap_or(CellGraphic::None)
+                        }
                     };
                     Some((
                         point_from(cell.offset),
@@ -369,6 +394,8 @@ impl ClipboardPayload {
                             color: clipboard_color_to_runtime(cell.color),
                             weight_index: cell.weight_index,
                             shader_stack: cell.shader_stack,
+                            facing: facing_from_portable_name(&cell.facing)
+                                .unwrap_or(CellFacing::PosZ),
                         },
                     ))
                 })
@@ -406,11 +433,48 @@ mod tests {
 
     fn cell(glyph: char) -> PaintedCell {
         PaintedCell {
+            facing: CellFacing::PosZ,
             graphic: CellGraphic::Glyph(glyph),
             color: PaintColor::flat_rgb(255, 255, 255),
             weight_index: 1,
             shader_stack: Vec::new(),
         }
+    }
+
+    fn sided_cell() -> PaintedCell {
+        let declaration = r#"{
+            "format": "thaum-sided-declaration",
+            "version": 1,
+            "sides": {
+                "pos-z": { "glyph": "\u2503" }
+            }
+        }"#;
+        PaintedCell {
+            facing: CellFacing::PosZ,
+            graphic: CellGraphic::Sided(
+                thaum_renderer_domain::parse_sided_declaration(declaration).unwrap(),
+            ),
+            color: PaintColor::flat_rgb(255, 255, 255),
+            weight_index: 1,
+            shader_stack: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn sided_cells_survive_a_copy_paste_round_trip() {
+        let mut selection = selection_with(&[point(0, 0, 0)]);
+        let _ = &mut selection;
+        let mut canvas = Canvas::default();
+        canvas.insert(point(0, 0, 0), sided_cell());
+
+        let copied = copy_from_canvas(&canvas, &selection).unwrap();
+        let text = encode_os_clipboard(&copied);
+        let decoded = decode_os_clipboard(&text).expect("os clipboard decodes");
+
+        let pasted = decoded.paste_points(point(1, 1, 1));
+        assert_eq!(pasted.len(), 1);
+        let (_, cell) = &pasted[0];
+        assert_eq!(cell.graphic, sided_cell().graphic);
     }
 
     fn selection_with(points: &[CellPoint]) -> PainterSelection {
@@ -455,6 +519,22 @@ mod tests {
 
         assert_eq!(data.cells.len(), 1);
         assert_eq!(data.anchor, point(0, 0, 0));
+    }
+
+    #[test]
+    fn clipboard_round_trip_preserves_authored_facing() {
+        let mut authored = cell('A');
+        authored.facing = CellFacing::NegX;
+        let data = WorldCopyData {
+            anchor: point(0, 0, 0),
+            center: point(0, 0, 0),
+            cells: BTreeMap::from([(point(0, 0, 0), authored)]),
+        };
+
+        let text = encode_os_clipboard(&data);
+        let decoded = decode_os_clipboard(&text).expect("decode");
+
+        assert_eq!(decoded.cells[&point(0, 0, 0)].facing, CellFacing::NegX);
     }
 
     #[test]
@@ -558,6 +638,7 @@ mod tests {
         canvas.insert(
             point(1, 0, 0),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph(' '),
                 color: PaintColor::flat_rgb(1, 2, 3),
                 weight_index: 2,
@@ -580,6 +661,7 @@ mod tests {
         legacy.cells.insert(
             point(0, 0, 0),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph(' '),
                 color: PaintColor::flat_rgb(1, 2, 3),
                 weight_index: 2,
@@ -600,6 +682,7 @@ mod tests {
         data.cells.insert(
             point(0, 0, 0),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Sprite(thaum_renderer_domain::SpriteGraphic::new(
                     "cell-sprites/torch.png",
                 )),
@@ -618,6 +701,7 @@ mod tests {
         data.cells.insert(
             point(1, 0, 2),
             PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph('x'),
                 color: PaintColor::flat_rgb(79, 157, 53),
                 weight_index: 0,

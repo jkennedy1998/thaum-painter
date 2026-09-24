@@ -6,6 +6,7 @@
 //! applies one cell change live, and pending changes commit as ONE undo-able
 //! 'Type Text' action at Enter/exit — the old commit granularity.
 
+use thaum_renderer_domain::CellFacing;
 use thaum_renderer_domain::{
     CameraViewOrientation, Cell, CellColor, CellGraphic, CellGroup, CellPoint, CellWeight,
     WorldPoint,
@@ -266,6 +267,7 @@ mod tests {
 
     fn brush(glyph: char) -> PaintedCell {
         PaintedCell {
+            facing: CellFacing::PosZ,
             graphic: CellGraphic::Glyph(glyph),
             color: PaintColor::flat_rgb(255, 255, 255),
             weight_index: 1,

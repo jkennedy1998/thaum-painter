@@ -116,7 +116,7 @@ mod tests {
     use crate::paint_color::PaintColor;
     use crate::session_document::{action_timestamp_string, next_action_id};
     use crate::storage::{SharedCellPatch, SharedDocumentFile};
-    use thaum_renderer_domain::{CellGraphic, CellPoint};
+    use thaum_renderer_domain::{CellFacing, CellGraphic, CellPoint};
 
     fn single_layer_document() -> SharedDocumentRuntime {
         let document = SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "Layer 1");
@@ -129,6 +129,7 @@ mod tests {
 
     fn paint(color: (u8, u8, u8)) -> PaintedCell {
         PaintedCell {
+            facing: CellFacing::PosZ,
             graphic: CellGraphic::Glyph('a'),
             color: PaintColor::FlatRgb(color.0, color.1, color.2),
             weight_index: 2,

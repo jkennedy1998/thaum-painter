@@ -11,6 +11,7 @@ fn main() {
         color: PaintColor::flat_rgb(255, 255, 255),
         weight_index: 1,
         shader_stack: Vec::new(),
+        facing: thaum_renderer_domain::CellFacing::PosZ,
     };
     let at = |runtime: &SharedDocumentRuntime, breath: u32| {
         runtime

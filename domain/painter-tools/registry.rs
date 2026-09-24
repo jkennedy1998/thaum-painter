@@ -68,7 +68,7 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
         id: "move",
         label: "Move",
         icon: '#',
-        description: "move selected cell content",
+        description: "move cell content · double-click sets the layer's origin",
         property_row_ids: &[],
         select_action: Some("painter_select_move"),
         hotkey: Some("M"),

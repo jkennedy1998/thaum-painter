@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use thaum_renderer_domain::{CameraViewOrientation, CellGraphic, CellPoint};
+use thaum_renderer_domain::{CameraViewOrientation, CellFacing, CellGraphic, CellPoint};
 
 use crate::paint_color::PaintColor;
 
@@ -15,6 +15,49 @@ pub struct PaintedCell {
     /// authored appearance because later shaders override only the channels
     /// they write.
     pub shader_stack: Vec<String>,
+    /// Authored cell orientation. The default leaves the cell facing-invariant;
+    /// a facing-facing rotate tool later writes this per cell.
+    pub facing: CellFacing,
+}
+
+impl Default for PaintedCell {
+    fn default() -> Self {
+        Self {
+            graphic: CellGraphic::default(),
+            color: PaintColor::default(),
+            weight_index: 0,
+            shader_stack: Vec::new(),
+            facing: CellFacing::PosZ,
+        }
+    }
+}
+
+/// Portable kebab-case name for one facing, as persisted in file schemas,
+/// clipboard payloads, and action-log records. `PosZ` (the identity) is
+/// `"pos-z"`.
+pub const fn facing_portable_name(facing: CellFacing) -> &'static str {
+    match facing {
+        CellFacing::PosX => "pos-x",
+        CellFacing::NegX => "neg-x",
+        CellFacing::PosY => "pos-y",
+        CellFacing::NegY => "neg-y",
+        CellFacing::PosZ => "pos-z",
+        CellFacing::NegZ => "neg-z",
+    }
+}
+
+/// Parses one portable facing name; `None` for anything outside the six-name
+/// vocabulary.
+pub fn facing_from_portable_name(name: &str) -> Option<CellFacing> {
+    match name {
+        "pos-x" => Some(CellFacing::PosX),
+        "neg-x" => Some(CellFacing::NegX),
+        "pos-y" => Some(CellFacing::PosY),
+        "neg-y" => Some(CellFacing::NegY),
+        "pos-z" => Some(CellFacing::PosZ),
+        "neg-z" => Some(CellFacing::NegZ),
+        _ => None,
+    }
 }
 
 /// A live, in-memory field of painted cells. Not a saved document: this is the
@@ -98,6 +141,7 @@ mod tests {
 
     fn cell(glyph: char) -> PaintedCell {
         PaintedCell {
+            facing: CellFacing::PosZ,
             graphic: CellGraphic::Glyph(glyph),
             color: PaintColor::flat_rgb(255, 255, 255),
             weight_index: 1,

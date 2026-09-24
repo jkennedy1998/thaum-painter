@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use thaum_renderer_domain::shape_fade::fade::ShapeFade;
+use thaum_renderer_domain::CellFacing;
 use thaum_renderer_domain::{CellGraphic, CellPoint};
 
 use crate::brush::{effective_cell, Canvas, PaintedCell};
@@ -285,6 +286,7 @@ mod tests {
 
     fn cell(glyph: char, color: PaintColor, weight: i64) -> PaintedCell {
         PaintedCell {
+            facing: CellFacing::PosZ,
             graphic: CellGraphic::Glyph(glyph),
             color,
             weight_index: weight,

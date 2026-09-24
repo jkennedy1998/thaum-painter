@@ -406,8 +406,10 @@ fn join_room(
     stream: &SharedStream,
     kick: Option<TcpStream>,
 ) -> Option<((String, String), String)> {
-    let (room, token) = match (relay_codes::parse_code(&format!("{room_id}-{token}")), room_id)
-    {
+    let (room, token) = match (
+        relay_codes::parse_code(&format!("{room_id}-{token}")),
+        room_id,
+    ) {
         (Some((parsed_room, parsed_token)), _) if parsed_room == room_id => {
             (room_id.to_string(), parsed_token)
         }
@@ -724,7 +726,10 @@ mod tests {
         let (mut host, room, token) = claim_host(&address);
         assert_eq!(room.len(), ROOM_ID_LEN);
         assert_eq!(token.len(), ROOM_TOKEN_LEN);
-        assert_eq!(parse_code(&format!("{room}-{token}")), Some((room.clone(), token.clone())));
+        assert_eq!(
+            parse_code(&format!("{room}-{token}")),
+            Some((room.clone(), token.clone()))
+        );
 
         // Two joiners in.
         let mut alice = TestConn::connect(&address);
@@ -735,10 +740,9 @@ mod tests {
         let _ = read_server_ok(&mut bob);
 
         // Joiner line reaches the host wrapped with its user id.
-        alice
-            .send(&DataFromJoiner {
-                line: "{\"type\":\"ping\"}".into(),
-            });
+        alice.send(&DataFromJoiner {
+            line: "{\"type\":\"ping\"}".into(),
+        });
         let from_host_view = host.recv().expect("host gets alice's line");
         let parsed: DataToHost = serde_json::from_str(&from_host_view).unwrap();
         assert_eq!(parsed.from, "alice");

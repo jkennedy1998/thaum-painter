@@ -2,6 +2,7 @@
 //! A lasso drag records the freehand bound; release rasterizes it through
 //! the pure `lasso` operation and applies it through the hand's tool state.
 
+use thaum_renderer_domain::CellFacing;
 use thaum_renderer_domain::{
     Cell, CellColor, CellGraphic, CellGroup, CellPoint, CellWeight, WorldPoint,
     CELL_SHADER_VIVID_FLASH, CELL_SHADER_VIVID_FLASH_ALT,
@@ -109,6 +110,7 @@ mod tests {
 
     fn painted(graphic: char, rgb: (u8, u8, u8)) -> PaintedCell {
         PaintedCell {
+            facing: CellFacing::PosZ,
             graphic: CellGraphic::Glyph(graphic),
             color: PaintColor::FlatRgb(rgb.0, rgb.1, rgb.2),
             weight_index: 2,
@@ -186,6 +188,7 @@ mod tests {
         let previews = vec![LassoPreviewCell {
             point: point(0, 0),
             current: Some(PaintedCell {
+                facing: CellFacing::PosZ,
                 graphic: CellGraphic::Glyph(' '),
                 color: PaintColor::flat_rgb(1, 2, 3),
                 weight_index: 2,

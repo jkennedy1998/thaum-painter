@@ -6,7 +6,8 @@ Own direct brush-style cell application and the shared blank-cell write seam.
 ## owns
 - single-cell draw semantics
 - blank-cell writes that remove the target cell
-- brush-to-cell mapping rules including glyph/sprite graphic, portable flat/material/slot color, weight, and ordered shader-stack appearance payloads
+- brush-to-cell mapping rules including glyph/sprite graphic, portable flat/material/slot color, weight, ordered shader-stack, and authored cell-facing appearance payloads
+- the portable facing name vocabulary (`pos-x` .. `neg-z`) and its parse/format helpers
 - camera-facing brush footprints: `brush_points(position, size, orientation)` expands the tip along the camera view orientation's right/up axes (`CameraViewOrientation` from the renderer domain) so the tip always lies flat in the plane the camera is looking at, at every swing and roll. The default PosZ view reproduces the original x/y expansion. Flood fill stays canvas-topology based and is angle-independent by construction.
 
 ## does not own

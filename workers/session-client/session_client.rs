@@ -465,7 +465,7 @@ mod tests {
     use thaum_painter_domain::storage::{
         SharedCellPatch, SharedDocumentActionRecord, SharedDocumentFile,
     };
-    use thaum_renderer_domain::{CellGraphic, CellPoint};
+    use thaum_renderer_domain::{CellFacing, CellGraphic, CellPoint};
 
     fn spawn_host() -> (Arc<StdMutex<SessionHost>>, SessionHostServer) {
         let mut host = SessionHost::new();
@@ -553,6 +553,7 @@ mod tests {
 
     fn paint(color: (u8, u8, u8)) -> PaintedCell {
         PaintedCell {
+            facing: CellFacing::PosZ,
             graphic: CellGraphic::Glyph('a'),
             color: PaintColor::FlatRgb(color.0, color.1, color.2),
             weight_index: 2,

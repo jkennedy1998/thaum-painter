@@ -37,6 +37,7 @@
 use std::collections::BTreeSet;
 
 use thaum_renderer_domain::shape_fade::fade::ShapeFade;
+use thaum_renderer_domain::CellFacing;
 use thaum_renderer_domain::{CellGraphic, CellWeight};
 
 use crate::brush::{effective_cell, Canvas, PaintedCell};
@@ -338,6 +339,9 @@ pub(crate) fn blend_cells_with_weight_scale(
         } else {
             to.shader_stack.clone()
         },
+        // Facing is discrete authored orientation: same endpoint rule as the
+        // shader stack — hold the active side's facing, never blend angles.
+        facing: if from_active { from.facing } else { to.facing },
     }
 }
 
@@ -509,6 +513,7 @@ mod tests {
 
     fn cell(glyph: char, color: PaintColor, weight: i64) -> PaintedCell {
         PaintedCell {
+            facing: CellFacing::PosZ,
             graphic: CellGraphic::Glyph(glyph),
             color,
             weight_index: weight,

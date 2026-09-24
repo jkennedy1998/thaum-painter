@@ -115,16 +115,18 @@ impl Default for PaintColor {
 fn material_asset_file(material: CellMaterialId) -> &'static str {
     match material {
         CellMaterialId::GrayScale => PaintColor::GRAY_SCALE_ASSET_FILE,
+        CellMaterialId::Wood => "materials/wood.json",
+        CellMaterialId::Stone => "materials/stone.json",
+        CellMaterialId::Mole => "materials/mole.json",
+        CellMaterialId::Dirt => "materials/dirt.json",
     }
 }
 
 fn resolve_material(asset_file: &str) -> CellMaterialId {
-    match asset_file {
-        PaintColor::GRAY_SCALE_ASSET_FILE | "gray-scale" => CellMaterialId::GrayScale,
-        // The renderer registry is the next step. Keep unknown source values
-        // intact here; this temporary preview falls back to the built-in.
-        _ => CellMaterialId::GrayScale,
-    }
+    // The renderer's shared id bridge is the source of truth for portable
+    // material filenames; unknown source values keep falling back to the
+    // built-in gray-scale preview material.
+    CellMaterialId::resolve_material_asset(asset_file).unwrap_or(CellMaterialId::GrayScale)
 }
 
 fn flat_renderer_color(red: u8, green: u8, blue: u8) -> CellColor {

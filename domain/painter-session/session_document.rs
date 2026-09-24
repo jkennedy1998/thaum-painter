@@ -358,6 +358,36 @@ pub fn commit_move_offset(
     Ok(())
 }
 
+/// Writes one layer-pivot commit: the double-click's document-space cell
+/// becomes the active layer's fixed origin (J 2026-09-12). Raster coordinates
+/// and move-track values stay untouched — the render path relatives cells to
+/// the pivot, so re-pivoting never visually moves the layer. Persists like
+/// the other property metadata edits, through the document snapshot, not the
+/// per-cell undo log.
+pub fn commit_layer_origin(
+    runtime: &mut SharedDocumentRuntime,
+    paths: &SharedDocumentPaths,
+    active_layer_id: &str,
+    origin: WorldPoint,
+    persist_to_disk: bool,
+) -> Result<()> {
+    if runtime.set_layer_origin(active_layer_id, origin) {
+        crate::debug_log::info(
+            "origin",
+            &format!(
+                "layer pivot commit layer={active_layer_id} origin=({}, {}, {})",
+                origin.x, origin.y, origin.z
+            ),
+        );
+        // Session-client mode: the pivot rides the snapshot the host owns;
+        // single-user mode saves directly.
+        if persist_to_disk {
+            save_shared_document_snapshot(paths, runtime)?;
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)] // session-bridge seam: one fn carries the live session state; struct-izing touches the entrypoint
 pub fn apply_shared_history_action(
     runtime: &mut SharedDocumentRuntime,

@@ -20,8 +20,8 @@ use std::time::Duration;
 
 use rustls::pki_types::{CertificateDer, ServerName};
 use rustls::server::ServerConnection;
-use rustls_pemfile::certs;
 use rustls::RootCertStore;
+use rustls_pemfile::certs;
 
 use crate::session_relay::relay_server::{
     ConnState, RelayConnectionUpgrader, RelayStreamBox, SharedStream, RELAY_STREAM_READ_SLICE,
@@ -312,15 +312,15 @@ impl TlsRelayServerAcceptor {
     pub fn from_pem_files(cert_path: &str, key_path: &str) -> std::io::Result<Self> {
         let certs: Vec<CertificateDer<'static>> = certs(&mut BufReader::new(
             File::open(cert_path).map_err(|error| {
-                std::io::Error::new(
-                    error.kind(),
-                    format!("relay TLS cert {cert_path}: {error}"),
-                )
+                std::io::Error::new(error.kind(), format!("relay TLS cert {cert_path}: {error}"))
             })?,
         ))
         .collect::<Result<_, _>>()
         .map_err(|error| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("bad cert PEM: {error}"))
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("bad cert PEM: {error}"),
+            )
         })?;
         if certs.is_empty() {
             return Err(std::io::Error::new(
@@ -328,13 +328,14 @@ impl TlsRelayServerAcceptor {
                 format!("relay TLS cert {cert_path} contains no certificates"),
             ));
         }
-        let key = rustls_pemfile::private_key(&mut BufReader::new(
-            File::open(key_path).map_err(|error| {
-                std::io::Error::new(error.kind(), format!("relay TLS key {key_path}: {error}"))
-            })?,
-        ))
+        let key = rustls_pemfile::private_key(&mut BufReader::new(File::open(key_path).map_err(
+            |error| std::io::Error::new(error.kind(), format!("relay TLS key {key_path}: {error}")),
+        )?))
         .map_err(|error| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("bad key PEM: {error}"))
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("bad key PEM: {error}"),
+            )
         })?
         .ok_or_else(|| {
             std::io::Error::new(
@@ -346,7 +347,10 @@ impl TlsRelayServerAcceptor {
             .with_no_client_auth()
             .with_single_cert(certs, key)
             .map_err(|error| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, format!("bad TLS pair: {error}"))
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("bad TLS pair: {error}"),
+                )
             })?;
         Ok(Self {
             config: Arc::new(config),
@@ -444,25 +448,25 @@ impl Write for HandshakeBufferedStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_relay::relay_server::read_frame_shared;
     use crate::session_relay::relay_protocol::write_frame;
+    use crate::session_relay::relay_server::read_frame_shared;
     use crate::session_relay::relay_server::{serve_relay_with, RelayCaps};
     use std::net::TcpListener;
 
     fn self_signed_cert() -> (CertificateDer<'static>, String, String) {
         let certified = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
             .expect("generate test cert");
-        let cert_path = std::env::temp_dir().join(format!(
-            "relay-test-{}-cert.pem",
-            std::process::id()
-        ));
-        let key_path = std::env::temp_dir().join(format!(
-            "relay-test-{}-key.pem",
-            std::process::id()
-        ));
+        let cert_path =
+            std::env::temp_dir().join(format!("relay-test-{}-cert.pem", std::process::id()));
+        let key_path =
+            std::env::temp_dir().join(format!("relay-test-{}-key.pem", std::process::id()));
         std::fs::write(&cert_path, certified.cert.pem()).expect("write cert");
         std::fs::write(&key_path, certified.signing_key.serialize_pem()).expect("write key");
-        (certified.cert.der().clone(), cert_path.display().to_string(), key_path.display().to_string())
+        (
+            certified.cert.der().clone(),
+            cert_path.display().to_string(),
+            key_path.display().to_string(),
+        )
     }
 
     #[test]
@@ -490,12 +494,14 @@ mod tests {
         let acceptor = Arc::new(
             TlsRelayServerAcceptor::from_pem_files(&cert_path, &key_path).expect("acceptor"),
         );
-        let server =
-            serve_relay_with(listener, RelayCaps::default(), acceptor).expect("serve");
+        let server = serve_relay_with(listener, RelayCaps::default(), acceptor).expect("serve");
 
         let host_port = address.rsplit_once(':').expect("host:port").1.to_string();
-        let client = connect_trusting(&format!("tls://localhost:{host_port}"), Some(vec![cert_der]))
-            .expect("client dials TLS relay");
+        let client = connect_trusting(
+            &format!("tls://localhost:{host_port}"),
+            Some(vec![cert_der]),
+        )
+        .expect("client dials TLS relay");
 
         // Claim a host room through the encrypted relay: hello out, the
         // minted ServerFrame::Ok comes back over the same TLS stream.
@@ -513,7 +519,10 @@ mod tests {
         match claim {
             crate::session_relay::relay_protocol::ServerFrame::Ok { room, token } => {
                 assert_eq!(room.len(), crate::session_relay::relay_codes::ROOM_ID_LEN);
-                assert_eq!(token.len(), crate::session_relay::relay_codes::ROOM_TOKEN_LEN);
+                assert_eq!(
+                    token.len(),
+                    crate::session_relay::relay_codes::ROOM_TOKEN_LEN
+                );
             }
             other => panic!("expected a room claim, got {other:?}"),
         }

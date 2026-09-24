@@ -1,7 +1,7 @@
 # thaum-painter/domain/modules/individuals/graphic-picker
 
 ## purpose
-Own painter's graphic picker panel: one painter-facing module for choosing either glyph graphics or sprite graphics into the live left/right hand state.
+Own painter's graphic picker panel: one painter-facing module for choosing glyph, sprite, or sided graphics into the live left/right hand state.
 
 ## owns
 - the `GraphicPickerModule` type
@@ -19,6 +19,7 @@ Own painter's graphic picker panel: one painter-facing module for choosing eithe
 - the renderer's `Module` contract or registry semantics, owned by `thaum-renderer/domain/modules/`
 - generic picker chrome or gizmo behavior, owned by `thaum-renderer/domain/modules/shared/`
 - the live hand state itself, owned by `domain/painter-session/tool-state/`
+- a `sided` category after the sprites section: declaration files under the asset root's `sided/*.json`, parsed once at boot (`load_sided_options`); clicking equips the full `SidedGraphic` into a hand, and the row's preview cell resolves its visible side at render staging like any sided cell
 - sprite atlas decode/render behavior, owned by `thaum-renderer/domain/cell-graphic/` and `domain/atlas-intake/`
 
 ## children-encapsulations

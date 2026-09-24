@@ -46,10 +46,7 @@ use thaum_painter_domain::debug_log;
 const HOST_PUMP_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Shared-stream helper: writes one frame under the connection lock.
-fn write_frame_shared(
-    shared: &SharedStream,
-    frame: &impl serde::Serialize,
-) -> std::io::Result<()> {
+fn write_frame_shared(shared: &SharedStream, frame: &impl serde::Serialize) -> std::io::Result<()> {
     let mut state = shared.lock().expect("relay stream lock");
     write_frame(&mut state.stream, frame, DEFAULT_MAX_FRAME_BYTES)
 }
@@ -61,9 +58,7 @@ fn handshake_exchange(
     link: &RelayClientLink,
     outgoing: &HelloFrame,
 ) -> std::io::Result<ServerFrame> {
-    link.socket
-        .set_read_timeout(Some(HANDSHAKE_TIMEOUT))
-        .ok();
+    link.socket.set_read_timeout(Some(HANDSHAKE_TIMEOUT)).ok();
     write_frame_shared(&link.shared, outgoing)?;
     let frame = {
         let mut state = link.shared.lock().expect("relay stream lock");
@@ -208,10 +203,7 @@ fn relay_host_route_loop(
         // from the host core exactly like a LAN socket EOF (roster shrink,
         // instant user-id freeing for the honest rejoin).
         if let Ok(ServerFrame::MemberLeft { user }) = serde_json::from_str::<ServerFrame>(&frame) {
-            relay_users
-                .lock()
-                .expect("relay users lock")
-                .remove(&user);
+            relay_users.lock().expect("relay users lock").remove(&user);
             let mut host = host.lock().expect("session host lock");
             host.disconnect(&user);
             drain_and_route_relay(&mut host, &shared, &relay_users);
@@ -235,9 +227,13 @@ fn relay_host_route_loop(
                         data.from, user.user_id
                     ),
                 );
-                send_host_frame(&shared, &data.from, &HostMessage::Denied {
-                    reason: "identity-mismatch".to_string(),
-                });
+                send_host_frame(
+                    &shared,
+                    &data.from,
+                    &HostMessage::Denied {
+                        reason: "identity-mismatch".to_string(),
+                    },
+                );
                 break;
             }
         }
@@ -335,10 +331,7 @@ impl RelayClientBridge {
     /// relay routes as (and the host core sees — they must match).
     pub fn start(relay_address: &str, code: &str, user_id: &str) -> std::io::Result<Self> {
         let (room, token) = relay_codes::parse_code(code).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "malformed invite code",
-            )
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "malformed invite code")
         })?;
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let local_address = format!("127.0.0.1:{}", listener.local_addr()?.port());
@@ -349,34 +342,32 @@ impl RelayClientBridge {
         let user_id = user_id.to_string();
         let accept_thread = thread::Builder::new()
             .name("relay-bridge-accept".into())
-            .spawn(move || {
-                loop {
-                    if accept_stop.load(Ordering::SeqCst) {
-                        return;
+            .spawn(move || loop {
+                if accept_stop.load(Ordering::SeqCst) {
+                    return;
+                }
+                match listener.accept() {
+                    Ok((local, _)) => {
+                        let relay_address = relay_address.clone();
+                        let room = room.clone();
+                        let token = token.clone();
+                        let user_id = user_id.clone();
+                        let _ = thread::Builder::new()
+                            .name("relay-bridge-conn".into())
+                            .spawn(move || {
+                                serve_bridge_connection(
+                                    &relay_address,
+                                    &room,
+                                    &token,
+                                    &user_id,
+                                    local,
+                                )
+                            });
                     }
-                    match listener.accept() {
-                        Ok((local, _)) => {
-                            let relay_address = relay_address.clone();
-                            let room = room.clone();
-                            let token = token.clone();
-                            let user_id = user_id.clone();
-                            let _ = thread::Builder::new()
-                                .name("relay-bridge-conn".into())
-                                .spawn(move || {
-                                    serve_bridge_connection(
-                                        &relay_address,
-                                        &room,
-                                        &token,
-                                        &user_id,
-                                        local,
-                                    )
-                                });
-                        }
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            thread::sleep(Duration::from_millis(25));
-                        }
-                        Err(_) => return,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(25));
                     }
+                    Err(_) => return,
                 }
             })?;
         Ok(Self {
@@ -443,7 +434,10 @@ fn serve_bridge_connection(
     }
     debug_log::info(
         "session",
-        &format!("relay bridge up: {} -> {} room {room}", user_id, relay_address),
+        &format!(
+            "relay bridge up: {} -> {} room {room}",
+            user_id, relay_address
+        ),
     );
 
     // Outbound: local NDJSON lines -> relay data frames. When it ends it kills
@@ -554,8 +548,7 @@ mod tests {
             display_name: "u-1".into(),
             presence_color: [1, 2, 3],
         };
-        let result =
-            crate::session_client::SessionClient::connect(bridge.local_address(), user);
+        let result = crate::session_client::SessionClient::connect(bridge.local_address(), user);
         assert!(result.is_err(), "unknown room must not produce a session");
     }
 }

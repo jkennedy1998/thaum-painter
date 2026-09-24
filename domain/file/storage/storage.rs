@@ -9,8 +9,10 @@ use std::{
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use thaum_renderer_domain::{CellGraphic, CellPoint, SpriteGraphic, WorldPoint};
+use thaum_renderer_domain::{CellFacing, CellGraphic, CellPoint, SpriteGraphic, WorldPoint};
 
+use crate::brush::{facing_from_portable_name, facing_portable_name};
+use crate::file_schema::FACING_POS_Z;
 use crate::interp_mode;
 use crate::properties::{breath_in_span, destructive_breath_span, pushed_breath_span};
 use crate::{Canvas, PaintColor, PaintColorSlot, PaintedCell};
@@ -526,8 +528,18 @@ pub enum PersistedSharedPaintColorSlot {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum PersistedSharedGraphic {
     None,
-    Glyph { glyph: char },
-    Sprite { atlas_relative_path: String },
+    Glyph {
+        glyph: char,
+    },
+    Sprite {
+        atlas_relative_path: String,
+    },
+    /// The cell's full sided declaration, serialized inline (portable
+    /// `thaum-sided-declaration` JSON). Self-contained, like sprite payloads
+    /// carry their atlas path; no asset root is needed to replay it.
+    Sided {
+        declaration: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -539,6 +551,14 @@ pub struct PersistedSharedPaintedCell {
     /// always preserve the full ordered portable shader stack.
     #[serde(default)]
     pub shader_stack: Vec<String>,
+    /// Portable facing name (`pos-x` .. `neg-z`). Default keeps old records
+    /// replayable; absent means the identity `pos-z`.
+    #[serde(default = "default_facing")]
+    pub facing: String,
+}
+
+fn default_facing() -> String {
+    FACING_POS_Z.to_owned()
 }
 
 impl PersistedSharedPaintedCell {
@@ -548,6 +568,7 @@ impl PersistedSharedPaintedCell {
             color: PersistedSharedPaintColor::from_runtime(&cell.color),
             weight_index: cell.weight_index,
             shader_stack: cell.shader_stack.clone(),
+            facing: facing_portable_name(cell.facing).to_owned(),
         }
     }
 
@@ -557,6 +578,7 @@ impl PersistedSharedPaintedCell {
             color: self.color.to_runtime(),
             weight_index: self.weight_index,
             shader_stack: self.shader_stack.clone(),
+            facing: facing_from_portable_name(&self.facing).unwrap_or(CellFacing::PosZ),
         }
     }
 }
@@ -3220,6 +3242,11 @@ impl PersistedSharedGraphic {
             CellGraphic::Sprite(sprite) => Self::Sprite {
                 atlas_relative_path: sprite.atlas_relative_path().to_string_lossy().into_owned(),
             },
+            // Sided cells carry their full declaration inline so session
+            // documents replay without an asset root.
+            CellGraphic::Sided(sided) => Self::Sided {
+                declaration: thaum_renderer_domain::sided_declaration_json(sided),
+            },
         }
     }
 
@@ -3230,6 +3257,13 @@ impl PersistedSharedGraphic {
             Self::Sprite {
                 atlas_relative_path,
             } => CellGraphic::Sprite(SpriteGraphic::new(atlas_relative_path)),
+            Self::Sided { declaration } => {
+                thaum_renderer_domain::parse_sided_declaration(declaration)
+                    .map(CellGraphic::Sided)
+                    // A malformed declaration degrades to an empty cell rather than
+                    // failing the whole document load; the text stays in the file.
+                    .unwrap_or(CellGraphic::None)
+            }
         }
     }
 }
@@ -3237,6 +3271,48 @@ impl PersistedSharedGraphic {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use thaum_renderer_domain::{
+        parse_sided_declaration, sided_declaration_json, CellFacing, SideGraphic, SidedGraphic,
+    };
+
+    const STICK_DECLARATION: &str = r#"{
+        "format": "thaum-sided-declaration",
+        "version": 1,
+        "sides": {
+            "pos-z": { "glyph": "\u2503" },
+            "pos-y": { "glyph": "\u25aa" }
+        }
+    }"#;
+
+    #[test]
+    fn sided_cells_round_trip_through_persisted_shape() {
+        let sided = parse_sided_declaration(STICK_DECLARATION).unwrap();
+        let cell = PaintedCell {
+            graphic: thaum_renderer_domain::CellGraphic::Sided(sided),
+            color: crate::PaintColor::flat_rgb(10, 20, 30),
+            weight_index: 1,
+            shader_stack: Vec::new(),
+            facing: CellFacing::PosZ,
+        };
+        let persisted = PersistedSharedPaintedCell::from_runtime(&cell);
+        let json = serde_json::to_string(&persisted).unwrap();
+        let decoded: PersistedSharedPaintedCell = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.to_runtime(), cell);
+        // The declaration stays self-contained in the payload.
+        assert!(json.contains("thaum-sided-declaration"));
+    }
+
+    #[test]
+    fn malformed_persisted_declarations_degrade_to_none() {
+        let persisted = PersistedSharedGraphic::Sided {
+            declaration: "{ not a declaration".to_owned(),
+        };
+        assert_eq!(
+            persisted.to_runtime(),
+            thaum_renderer_domain::CellGraphic::None
+        );
+    }
+
     use crate::legacy_indexed_palette::legacy_indexed_palette;
     use thaum_renderer_domain::CellGraphic;
 
@@ -3246,6 +3322,7 @@ mod tests {
 
     fn cell(glyph: char) -> PaintedCell {
         PaintedCell {
+            facing: CellFacing::PosZ,
             graphic: CellGraphic::Glyph(glyph),
             color: PaintColor::flat_rgb(255, 255, 255),
             weight_index: 1,
@@ -3256,6 +3333,7 @@ mod tests {
     #[test]
     fn persisted_patches_round_trip_full_portable_cell_appearance() {
         let authored = PaintedCell {
+            facing: CellFacing::PosZ,
             graphic: CellGraphic::Sprite(SpriteGraphic::new("cell-sprites/torch.png")),
             color: PaintColor::slots(
                 PaintColor::material_slot("materials/fire.json"),
@@ -3273,6 +3351,22 @@ mod tests {
         let decoded: SharedCellPatch = serde_json::from_str(&json).unwrap();
 
         assert_eq!(decoded.after.unwrap().to_runtime(), authored);
+    }
+
+    #[test]
+    fn persisted_cells_round_trip_authored_facing_and_default_old_records() {
+        let mut authored = cell('x');
+        authored.facing = CellFacing::NegY;
+        let patch = SharedCellPatch::new(point(0, 1), None, Some(&authored));
+        let json = serde_json::to_string(&patch).unwrap();
+        assert!(json.contains("\"facing\":\"neg-y\""), "json: {json}");
+        let decoded: SharedCellPatch = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.after.unwrap().to_runtime().facing, CellFacing::NegY);
+
+        // Old records written before facing existed replay as the identity.
+        let legacy: SharedCellPatch =
+            serde_json::from_str(&json.replace(",\"facing\":\"neg-y\"", "")).unwrap();
+        assert_eq!(legacy.after.unwrap().to_runtime().facing, CellFacing::PosZ);
     }
 
     #[test]
@@ -3588,6 +3682,7 @@ mod tests {
         ));
         let p = |x: i32, y: i32| CellPoint { x, y, z: 0 };
         let cell = |c: char| PaintedCell {
+            facing: CellFacing::PosZ,
             graphic: thaum_renderer_domain::CellGraphic::Glyph(c),
             color: PaintColor::flat_rgb(1, 2, 3),
             weight_index: 0,
@@ -3646,6 +3741,7 @@ mod tests {
             "doc-1", "Doc", "layer-1", "Layer 1",
         ));
         let cell = PaintedCell {
+            facing: CellFacing::PosZ,
             graphic: thaum_renderer_domain::CellGraphic::Glyph('A'),
             color: PaintColor::flat_rgb(1, 1, 1),
             weight_index: 0,
@@ -3684,6 +3780,7 @@ mod tests {
     #[test]
     fn undo_revert_records_replay_to_the_same_state_without_undo_depth_growth() {
         let cell = |c: char| PaintedCell {
+            facing: CellFacing::PosZ,
             graphic: thaum_renderer_domain::CellGraphic::Glyph(c),
             color: PaintColor::flat_rgb(1, 1, 1),
             weight_index: 0,
@@ -3759,6 +3856,7 @@ mod tests {
     #[test]
     fn fold_history_bounds_the_saved_log_and_replay_matches_the_final_state() {
         let cell = |c: char| PaintedCell {
+            facing: CellFacing::PosZ,
             graphic: thaum_renderer_domain::CellGraphic::Glyph(c),
             color: PaintColor::flat_rgb(1, 1, 1),
             weight_index: 0,
@@ -5127,12 +5225,14 @@ mod tests {
         // Keyframe A (0..8): 'A' red, weight 0. Keyframe B (16..24): 'B' blue,
         // weight 8. The middle empty blends between them.
         let keyframe_a = PaintedCell {
+            facing: CellFacing::PosZ,
             graphic: CellGraphic::Glyph('A'),
             color: PaintColor::flat_rgb(255, 0, 0),
             weight_index: 0,
             shader_stack: Vec::new(),
         };
         let keyframe_b = PaintedCell {
+            facing: CellFacing::PosZ,
             graphic: CellGraphic::Glyph('B'),
             color: PaintColor::flat_rgb(0, 0, 255),
             weight_index: 8,
@@ -6183,6 +6283,7 @@ mod tests {
                                 runtime.active_raster_block_id("layer-1", breath)
                             {
                                 let painted = PaintedCell {
+                                    facing: CellFacing::PosZ,
                                     graphic: CellGraphic::Glyph(
                                         ['a', 'b', 'c', '#'][rand.below(4) as usize],
                                     ),

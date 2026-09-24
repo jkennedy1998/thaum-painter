@@ -67,8 +67,8 @@ impl FrameBuffer {
         if self.buf.len() < LENGTH_PREFIX_BYTES {
             return Ok(None);
         }
-        let length = u32::from_be_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]])
-            as usize;
+        let length =
+            u32::from_be_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]) as usize;
         if length == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -226,7 +226,10 @@ pub fn write_frame(
     if json.len() > max_frame_bytes {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("frame of {} bytes exceeds the {max_frame_bytes} byte cap", json.len()),
+            format!(
+                "frame of {} bytes exceeds the {max_frame_bytes} byte cap",
+                json.len()
+            ),
         ));
     }
     writer.write_all(&(json.len() as u32).to_be_bytes())?;
@@ -261,7 +264,9 @@ mod tests {
     fn oversized_frames_are_refused_before_allocation() {
         // Announce a frame far past the cap; the reader must refuse without
         // touching the (nonexistent) body.
-        let mut wire = (5u32 * DEFAULT_MAX_FRAME_BYTES as u32).to_be_bytes().to_vec();
+        let mut wire = (5u32 * DEFAULT_MAX_FRAME_BYTES as u32)
+            .to_be_bytes()
+            .to_vec();
         wire.extend_from_slice(b"never read");
         let mut cursor = std::io::Cursor::new(wire);
         let error = read_frame(&mut cursor, DEFAULT_MAX_FRAME_BYTES).unwrap_err();

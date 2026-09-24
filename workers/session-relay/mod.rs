@@ -23,5 +23,5 @@ pub use relay_protocol::{
 pub use relay_server::{serve_relay, serve_relay_with, RelayCaps, RelayServer};
 pub use relay_tls::{
     connect as relay_connect, connect_trusting as relay_connect_trusting, is_plain_target,
-    RelayClientLink, DEFAULT_RELAY_ADDRESS, TlsRelayServerAcceptor,
+    RelayClientLink, TlsRelayServerAcceptor, DEFAULT_RELAY_ADDRESS,
 };
