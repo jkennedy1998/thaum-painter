@@ -99,12 +99,22 @@ pub const HAND_FIELDS: &[HandFieldDescriptor] = &[
         },
     },
     HandFieldDescriptor {
-        key: "fill_diagonal",
-        label: "fill diagonal",
-        get: |hand| serde_json::to_value(hand.fill_diagonal).unwrap_or(Value::Null),
+        key: "fill_connectivity",
+        label: "fill connectivity",
+        get: |hand| serde_json::to_value(&hand.fill_connectivity).unwrap_or(Value::Null),
         set: |hand, value| {
-            if let Some(fill) = value.as_bool() {
-                hand.fill_diagonal = fill;
+            if let Some(id) = value.as_str() {
+                hand.fill_connectivity = id.to_string();
+            }
+        },
+    },
+    HandFieldDescriptor {
+        key: "fill_3d",
+        label: "fill through depth",
+        get: |hand| serde_json::to_value(hand.fill_3d).unwrap_or(Value::Null),
+        set: |hand, value| {
+            if let Some(depth) = value.as_bool() {
+                hand.fill_3d = depth;
             }
         },
     },

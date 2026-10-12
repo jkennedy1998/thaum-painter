@@ -1,13 +1,14 @@
 use std::{cell::RefCell, path::Path, rc::Rc};
 
 use thaum_renderer_domain::{
-    title_hotspot, Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, CellWeight,
-    GizmoBar, GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module, ModulePointerButton,
-    ModulePointerEvent, ModuleRect, PanelChrome, PersistedModuleUiState, ScrollState, SidedGraphic,
-    SpriteGraphic, UiColorRole, UiPalette, WorldPoint,
+    title_hotspot, vivid_flash_is_lit, Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior,
+    CellPoint, CellWeight, GizmoBar, GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module,
+    ModulePointerButton, ModulePointerEvent, ModuleRect, PanelChrome, PersistedModuleUiState,
+    Scrollbar, ScrollbarSpan, ScrollState, SidedGraphic, SpriteGraphic, UiColorRole, UiPalette,
+    WorldPoint,
 };
 
-use crate::tool_state::{HandState, PaintHand, ToolState};
+use crate::tool_state::{HandState, PaintHand, PaintTarget, ToolState};
 
 const GLYPH_SECTIONS_TEXT: &str = thaum_renderer_domain::MONOTHAUM_ATLAS_V3_SECTIONS_TEXT;
 const SUPPORTED_SPRITE_PATHS: &[&str] = &["proofs/channel-bands.png", "proofs/grass.png"];
@@ -238,12 +239,25 @@ fn preview_color(
         .unwrap_or_else(|| palette.get(assignment_role(tool_state, graphic)))
 }
 
-fn preview_weight(tool_state: &ToolState, graphic: &CellGraphic) -> CellWeight {
-    let left =
-        (tool_state.left_hand.graphic == *graphic).then_some(tool_state.left_hand.weight_index);
-    let right =
-        (tool_state.right_hand.graphic == *graphic).then_some(tool_state.right_hand.weight_index);
-    CellWeight::from_index_clamped(left.into_iter().chain(right).max().unwrap_or(2) as i32)
+/// Picker preview weights per J's tooling-weight rule: the module previews
+/// the weight(s) the hands are actually tooling, never a static default.
+/// - exactly one hand targeted on Image: that hand's weight, static
+/// - both hands on Image, or neither: alternate left→right weights on the
+///   same vivid-flash clock the selection shader blinks with, so a user
+///   sees both candidate weights while the palette is up
+pub fn preview_weights(tool_state: &ToolState) -> (CellWeight, Option<CellWeight>) {
+    let hand_weight = |hand: &HandState| CellWeight::from_index_clamped(hand.weight_index as i32);
+    match (
+        tool_state.left_hand.target == PaintTarget::Image,
+        tool_state.right_hand.target == PaintTarget::Image,
+    ) {
+        (true, false) => (hand_weight(&tool_state.left_hand), None),
+        (false, true) => (hand_weight(&tool_state.right_hand), None),
+        (true, true) | (false, false) => (
+            hand_weight(&tool_state.left_hand),
+            Some(hand_weight(&tool_state.right_hand)),
+        ),
+    }
 }
 
 pub struct GraphicPickerModule {
@@ -262,6 +276,14 @@ pub struct GraphicPickerModule {
     scroll: ScrollState,
     /// Most-recent-first recall list, observed at draw time.
     recent: RefCell<Vec<CellGraphic>>,
+    /// Shared frame-breath clock: the event loop writes the renderer's
+    /// breath each frame so weight alternation blinks in step with the
+    /// selection shader's vivid-flash cadence.
+    breath: Rc<std::cell::Cell<i32>>,
+    /// Vertical scrollbar over the scrolling category rows, overlaid on the
+    /// rightmost content column; drag state lives here, geometry re-synced
+    /// on every pointer/wheel event so panel resizes keep it honest.
+    scrollbar: Scrollbar,
 }
 
 impl GraphicPickerModule {
@@ -270,7 +292,7 @@ impl GraphicPickerModule {
         rect: ModuleRect,
         tool_state: Rc<RefCell<ToolState>>,
     ) -> Self {
-        Self {
+        let mut picker = Self {
             id: id.into(),
             rect,
             tool_state,
@@ -283,6 +305,33 @@ impl GraphicPickerModule {
             hidden: false,
             scroll: ScrollState::new(),
             recent: RefCell::new(Vec::new()),
+            breath: Rc::new(std::cell::Cell::new(0)),
+            scrollbar: Scrollbar::new(ScrollbarSpan::Vertical {
+                x: 0,
+                top: 0,
+                bottom: 0,
+            }),
+        };
+        picker.scrollbar.set_span(picker.scrollbar_span());
+        picker
+    }
+
+    /// Shares the frame-breath clock with this picker. The event loop sets
+    /// the renderer's breath each frame before module draw.
+    pub fn with_breath_clock(mut self, breath: Rc<std::cell::Cell<i32>>) -> Self {
+        self.breath = breath;
+        self
+    }
+
+    /// The weight every preview cell shows this frame: the hands' tooling
+    /// weight (see `preview_weights`), alternating on the vivid-flash phase
+    /// when both candidate weights apply.
+    fn preview_weight(&self, tool_state: &ToolState) -> CellWeight {
+        let (lit_weight, alt_weight) = preview_weights(tool_state);
+        if vivid_flash_is_lit(self.breath.get()) {
+            lit_weight
+        } else {
+            alt_weight.unwrap_or(lit_weight)
         }
     }
 
@@ -300,7 +349,28 @@ impl GraphicPickerModule {
 
     fn build_scroll_rows(&self) -> Vec<ContentRow> {
         let (content_width, _) = PanelChrome::content_size(self.rect);
-        let columns = content_width.max(1) as usize;
+        let mut columns = content_width.max(1) as usize;
+        // J: when the bar is present the rightmost content column belongs
+        // to it, so the character rows wrap one column short — no
+        // character sits under the bar and none becomes unreachable
+        // without resizing the module.
+        if self.scrollbar_visible() && columns > 1 {
+            columns -= 1;
+        }
+        self.build_rows_with_columns(columns)
+    }
+
+    /// Whether the vertical scrollbar shows this frame: the row list built
+    /// at the full content width overflows the viewport. The single
+    /// decision point `build_scroll_rows` and the pinned-block draw share,
+    /// so row wrapping and the recent row always agree with the bar.
+    fn scrollbar_visible(&self) -> bool {
+        let (content_width, _) = PanelChrome::content_size(self.rect);
+        self.build_rows_with_columns(content_width.max(1) as usize).len()
+            > self.available_scroll_rows()
+    }
+
+    fn build_rows_with_columns(&self, columns: usize) -> Vec<ContentRow> {
         let mut rows = vec![
             ContentRow::SectionTitle("character".to_string()),
             ContentRow::Clear,
@@ -344,6 +414,44 @@ impl GraphicPickerModule {
     /// one row of recent graphics. Stays put while the list scrolls under.
     fn recent_block_height(&self) -> i32 {
         2
+    }
+
+    /// Where the vertical scrollbar lives this frame: the rightmost content
+    /// column, spanning the scrollable middle between the pinned RECENT
+    /// block (screen-top, larger y) and the bottom content edge.
+    fn scrollbar_span(&self) -> ScrollbarSpan {
+        let (content_x, content_y) = PanelChrome::content_origin();
+        let (content_width, content_height) = PanelChrome::content_size(self.rect);
+        let top = content_y + content_height - self.recent_block_height() - 1;
+        let bottom = (top - self.available_scroll_rows() as i32 + 1).max(content_y);
+        ScrollbarSpan::Vertical {
+            x: content_x + content_width - 1,
+            top,
+            bottom,
+        }
+    }
+
+    /// Press on the bar: thumb grab or track page-jump. Returns whether the
+    /// bar consumed the press.
+    fn scrollbar_press(&mut self, local_x: i32, local_y: i32) -> bool {
+        let content = self.build_scroll_rows().len();
+        let viewport = self.available_scroll_rows();
+        let max = ScrollState::max_offset(content, viewport);
+        let mut offset = self.scroll.offset();
+        let consumed = self.scrollbar.on_down(local_x, local_y, content, viewport, &mut offset);
+        self.scroll.set_offset(offset, max);
+        consumed
+    }
+
+    /// Pointer move during a live bar drag: re-map the grab point.
+    fn scrollbar_drag(&mut self, local_x: i32, local_y: i32) -> bool {
+        let content = self.build_scroll_rows().len();
+        let viewport = self.available_scroll_rows();
+        let max = ScrollState::max_offset(content, viewport);
+        let mut offset = self.scroll.offset();
+        let moved = self.scrollbar.on_drag(local_x, local_y, content, viewport, &mut offset);
+        self.scroll.set_offset(offset, max);
+        moved
     }
 
     /// Most-recent-first recall list of the last assigned graphics. Fed by
@@ -406,7 +514,7 @@ impl GraphicPickerModule {
                     other => other.clone(),
                 },
                 color: preview_color(&state, graphic, &self.palette),
-                weight: preview_weight(&state, graphic),
+                weight: self.preview_weight(&state),
                 ..Cell::default()
             });
             hits.push(LayoutHit::Recent {
@@ -498,7 +606,7 @@ impl GraphicPickerModule {
                         },
                         graphic: CellGraphic::Glyph('·'),
                         color: preview_color(&state, &graphic, &self.palette),
-                        weight: preview_weight(&state, &graphic),
+                        weight: self.preview_weight(&state),
                         ..Cell::default()
                     });
                     draw_text("CLEAR", content_x + 2, y, role, &mut cells);
@@ -519,7 +627,7 @@ impl GraphicPickerModule {
                             position: CellPoint { x, y, z: 0 },
                             graphic: CellGraphic::Glyph(display_glyph(*glyph)),
                             color: preview_color(&state, &graphic, &self.palette),
-                            weight: preview_weight(&state, &graphic),
+                            weight: self.preview_weight(&state),
                             ..Cell::default()
                         });
                         hits.push(LayoutHit::Glyph { x, y, graphic });
@@ -538,7 +646,7 @@ impl GraphicPickerModule {
                         },
                         graphic: CellGraphic::Glyph(indicator),
                         color: self.palette.get(role),
-                        weight: preview_weight(&state, &graphic),
+                        weight: self.preview_weight(&state),
                         ..Cell::default()
                     });
                     cells.push(Cell {
@@ -549,7 +657,7 @@ impl GraphicPickerModule {
                         },
                         graphic: graphic.clone(),
                         color: preview_color(&state, &graphic, &self.palette),
-                        weight: preview_weight(&state, &graphic),
+                        weight: self.preview_weight(&state),
                         ..Cell::default()
                     });
                     draw_text(&sprite.label, content_x + 4, y, role, &mut cells);
@@ -573,7 +681,7 @@ impl GraphicPickerModule {
                         },
                         graphic: CellGraphic::Glyph(indicator),
                         color: self.palette.get(role),
-                        weight: preview_weight(&state, &graphic),
+                        weight: self.preview_weight(&state),
                         ..Cell::default()
                     });
                     // The preview cell carries the Sided graphic itself: boot
@@ -587,7 +695,7 @@ impl GraphicPickerModule {
                         },
                         graphic: graphic.clone(),
                         color: preview_color(&state, &graphic, &self.palette),
-                        weight: preview_weight(&state, &graphic),
+                        weight: self.preview_weight(&state),
                         ..Cell::default()
                     });
                     draw_text(&option.label, content_x + 4, y, role, &mut cells);
@@ -600,6 +708,21 @@ impl GraphicPickerModule {
                 }
             }
         }
+
+        // Vertical scrollbar over the scrollable middle, drawn last so the
+        // thumb/track overwrite any row cell they sit on. Only renders when
+        // the rows overflow the viewport.
+        let content_rows = rows.len();
+        let available = self.available_scroll_rows();
+        cells.extend(self.scrollbar.cells_with_span(
+            self.scrollbar_span(),
+            content_rows,
+            available,
+            self.scroll.offset(),
+            &self.palette,
+            None,
+            self.scrollbar.is_active(),
+        ));
 
         (cells, hits)
     }
@@ -733,11 +856,15 @@ impl Module for GraphicPickerModule {
     }
 
     fn on_wheel(&mut self, _x: i32, _y: i32, _delta_x: f32, delta_y: f32) -> bool {
+        // Re-sync the bar geometry before any interaction so panel resizes
+        // keep the span honest.
+        self.scrollbar.set_span(self.scrollbar_span());
         self.scroll.wheel(delta_y, self.max_scroll_rows());
         true
     }
 
     fn on_pointer_event(&mut self, event: ModulePointerEvent) {
+        self.scrollbar.set_span(self.scrollbar_span());
         match event {
             ModulePointerEvent::Click { x, y, button } => {
                 if let Some(outcome) = self.gizmo_state.handle_click(&self.gizmos, self.rect, x, y)
@@ -745,6 +872,14 @@ impl Module for GraphicPickerModule {
                     if outcome == GizmoClickOutcome::Gizmo(GizmoKind::Close) {
                         self.hidden = true;
                     }
+                    return;
+                }
+
+                // A left press on the scrollbar is bar interaction (thumb
+                // grab or track page-jump), never a glyph assignment.
+                if button == ModulePointerButton::Left
+                    && self.scrollbar_press(x - self.rect.x0, y - self.rect.y0)
+                {
                     return;
                 }
 
@@ -761,20 +896,33 @@ impl Module for GraphicPickerModule {
                     .set_graphic_for_hand(hand, graphic);
             }
             ModulePointerEvent::Move { x, y } => {
+                self.scrollbar.note_pointer(x - self.rect.x0, y - self.rect.y0);
+                // A live bar drag owns the pointer: follow the thumb, skip
+                // the gizmo drag path entirely.
+                if self.scrollbar.is_dragging() {
+                    self.scrollbar_drag(x - self.rect.x0, y - self.rect.y0);
+                    return;
+                }
                 self.gizmo_state.note_pointer(&self.gizmos, self.rect, x, y);
                 if let Some(next_rect) = self.gizmo_state.drag_rect(x, y) {
                     self.rect = next_rect;
                 }
             }
-            ModulePointerEvent::Up { .. } => self.gizmo_state.end_drag(),
+            ModulePointerEvent::Up { .. } => {
+                self.scrollbar.on_up();
+                self.gizmo_state.end_drag();
+            }
             ModulePointerEvent::Enter => self.gizmo_state.set_hovered(true),
-            ModulePointerEvent::Leave => self.gizmo_state.set_hovered(false),
+            ModulePointerEvent::Leave => {
+                self.scrollbar.clear_pointer();
+                self.gizmo_state.set_hovered(false);
+            }
             ModulePointerEvent::Down { .. } => {}
         }
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.gizmo_state.wants_pointer_capture()
+        self.gizmo_state.wants_pointer_capture() || self.scrollbar.is_dragging()
     }
 
     fn is_hidden(&self) -> bool {
@@ -983,13 +1131,12 @@ mod tests {
     }
 
     #[test]
-    fn assigned_glyph_previews_the_hand_color_and_weight() {
+    fn assigned_glyph_previews_the_hand_color() {
         let state = tool_state();
         {
             let mut state = state.borrow_mut();
             state.left_hand.graphic = CellGraphic::Glyph('A');
             state.left_hand.color = crate::PaintColor::flat_rgb(12, 34, 56);
-            state.left_hand.weight_index = 3;
         }
         let module = GraphicPickerModule::new("graphics", rect(), state);
         let (hit_x, hit_y) = glyph_hit(&module, 'A');
@@ -1012,7 +1159,158 @@ mod tests {
             preview.color,
             thaum_renderer_domain::CellColor::Flat([12.0 / 255.0, 34.0 / 255.0, 56.0 / 255.0, 1.0])
         );
-        assert_eq!(preview.weight, CellWeight::from_index_clamped(3));
+    }
+
+    /// Weight preview cell at a glyph hit, per the module-local clock value.
+    fn glyph_preview_weight(module: &GraphicPickerModule, needle: char) -> CellWeight {
+        let (hit_x, hit_y) = glyph_hit(module, needle);
+        let (cells, _) = module.build_layout();
+        cells
+            .into_iter()
+            .find(|cell| {
+                cell.position
+                    == CellPoint {
+                        x: hit_x - module.rect.x0,
+                        y: hit_y - module.rect.y0,
+                        z: 0,
+                    }
+                    && cell.graphic == CellGraphic::Glyph(display_glyph(needle))
+            })
+            .expect("glyph preview should exist")
+            .weight
+    }
+
+    #[test]
+    fn the_single_image_hand_weights_every_preview() {
+        let state = tool_state();
+        {
+            let mut state = state.borrow_mut();
+            state.left_hand.target = PaintTarget::Image;
+            state.left_hand.weight_index = 3;
+            state.right_hand.target = PaintTarget::Selection;
+            state.right_hand.weight_index = 1;
+        }
+        let module = GraphicPickerModule::new("graphics", rect(), state);
+
+        // Right targets selection: the left hand's weight shows, unblinking.
+        assert_eq!(
+            glyph_preview_weight(&module, 'A'),
+            CellWeight::from_index_clamped(3)
+        );
+    }
+
+    #[test]
+    fn both_image_hands_alternate_weights_on_the_flash_clock() {
+        let state = tool_state();
+        {
+            let mut state = state.borrow_mut();
+            state.left_hand.target = PaintTarget::Image;
+            state.left_hand.weight_index = 3;
+            state.right_hand.target = PaintTarget::Image;
+            state.right_hand.weight_index = 1;
+        }
+        let clock = Rc::new(std::cell::Cell::new(0));
+        let module =
+            GraphicPickerModule::new("graphics", rect(), state).with_breath_clock(clock.clone());
+
+        // Off phase shows the right hand's weight, lit phase the left's.
+        clock.set(0);
+        assert_eq!(
+            glyph_preview_weight(&module, 'A'),
+            CellWeight::from_index_clamped(1)
+        );
+        clock.set(1);
+        assert_eq!(
+            glyph_preview_weight(&module, 'A'),
+            CellWeight::from_index_clamped(3)
+        );
+    }
+
+    #[test]
+    fn neither_image_hand_alternates_weights_too() {
+        let state = tool_state();
+        {
+            let mut state = state.borrow_mut();
+            state.left_hand.target = PaintTarget::Selection;
+            state.left_hand.weight_index = 0;
+            state.right_hand.target = PaintTarget::Selection;
+            state.right_hand.weight_index = 2;
+        }
+        let clock = Rc::new(std::cell::Cell::new(0));
+        let module =
+            GraphicPickerModule::new("graphics", rect(), state).with_breath_clock(clock.clone());
+
+        clock.set(0);
+        assert_eq!(
+            glyph_preview_weight(&module, 'A'),
+            CellWeight::from_index_clamped(2)
+        );
+        clock.set(1);
+        assert_eq!(
+            glyph_preview_weight(&module, 'A'),
+            CellWeight::from_index_clamped(0)
+        );
+    }
+
+    #[test]
+    fn overflowing_rows_draw_a_vertical_scrollbar() {
+        let state = tool_state();
+        let module = GraphicPickerModule::new("graphics", rect(), state);
+        let span = module.scrollbar_span();
+        let (cells, _) = module.build_layout();
+        // The bar draws on its column: thumb at the screen-top end
+        // (offset 0) — the occupied top cap keeps its own glyph, weight
+        // boosted (J), so it reads ┳ weight 2 instead of the filled ┃.
+        assert!(cells.iter().any(|cell| {
+            cell.position.x == span_x(&span)
+                && cell.position.y == span_y_top(&span)
+                && cell.graphic == CellGraphic::Glyph('┳')
+        }));
+        assert!(cells.iter().any(|cell| {
+            cell.position.x == span_x(&span)
+                && cell.position.y == span_y_bottom(&span)
+                && cell.graphic == CellGraphic::Glyph('┻')
+        }));
+    }
+
+    #[test]
+    fn thumb_drag_walks_the_category_rows_to_both_edges() {
+        let state = tool_state();
+        let mut module = GraphicPickerModule::new("graphics", rect(), state);
+        let span = module.scrollbar_span();
+        let max = module.max_scroll_rows();
+        assert!(max > 0, "default picker content overflows its viewport");
+
+        // Press the thumb's top-end edge, drag the pointer to the bar's
+        // bottom end: offset lands at the max.
+        assert!(module.scrollbar_press(span_x(&span), span_y_top(&span)));
+        assert!(module.scrollbar_drag(span_x(&span), span_y_bottom(&span)));
+        assert_eq!(module.scroll.offset(), max);
+
+        // Drag back to the top end: offset returns to the top.
+        assert!(module.scrollbar_drag(span_x(&span), span_y_top(&span)));
+        assert_eq!(module.scroll.offset(), 0);
+    }
+
+    fn span_x(span: &ScrollbarSpan) -> i32 {
+        match span {
+            ScrollbarSpan::Vertical { x, .. } => *x,
+            ScrollbarSpan::Horizontal { .. } => unreachable!(),
+        }
+    }
+
+    fn span_y_top(span: &ScrollbarSpan) -> i32 {
+        match span {
+            ScrollbarSpan::Vertical { top, .. } => *top,
+            ScrollbarSpan::Horizontal { .. } => unreachable!(),
+        }
+    }
+
+    fn span_y_bottom(span: &ScrollbarSpan) -> i32 {
+        match span {
+            ScrollbarSpan::Vertical { bottom, .. } => *bottom,
+            ScrollbarSpan::Horizontal { .. } => unreachable!(),
+        }
     }
 
     #[test]
@@ -1106,11 +1404,40 @@ mod tests {
                 })
                 .expect("glyph row should exist")
         };
-        // narrow: 20-wide rect -> 18 content columns; wide: 60 -> 58. The
-        // ascii section outgrows both, so each first row must fill exactly
-        // its own panel's content width.
-        assert_eq!(first_glyph_row(&narrow), 18);
-        assert_eq!(first_glyph_row(&wide), 58);
+        // narrow: 20-wide rect -> 18 content columns, 17 usable once the
+        // visible bar reserves the rightmost column; wide: 60 -> 58, 57
+        // with the bar. The ascii section outgrows both, so each first row
+        // must fill exactly its own panel's bar-aware content width.
+        assert_eq!(first_glyph_row(&narrow), 17);
+        assert_eq!(first_glyph_row(&wide), 57);
+    }
+
+    #[test]
+    fn no_character_draws_under_the_visible_scrollbar() {
+        let state = tool_state();
+        let module = GraphicPickerModule::new("graphics", rect(), state);
+        let span = module.scrollbar_span();
+        let (cells, hits) = module.build_layout();
+        // The bar is visible, so no glyph cell or glyph hit lands on the
+        // bar's column: every character stays reachable without resizing.
+        let offenders: Vec<String> = cells
+            .iter()
+            .filter(|cell| cell.position.x == span_x(&span)
+                && cell.position.y <= span_y_top(&span)
+                && cell.position.y >= span_y_bottom(&span))
+            .filter(|cell| match cell.graphic {
+                // Bar glyphs win the column; the chrome's blank clears
+                // under the bar are fine — the bar draws over them.
+                CellGraphic::Glyph('━' | '┳' | '┻' | '║' | '┃' | ' ') => false,
+                _ => true,
+            })
+            .map(|cell| format!("{:?} {:?}", cell.position, cell.graphic))
+            .collect();
+        assert!(offenders.is_empty(), "cells under the bar: {offenders:?}");
+        assert!(hits.iter().all(|hit| match hit {
+            LayoutHit::Glyph { x, .. } => *x != span_x(&span),
+            _ => true,
+        }));
     }
 
     #[test]

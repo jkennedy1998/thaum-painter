@@ -39,7 +39,7 @@ use thaum_painter_domain::{
     PersistedPainterUiState, SelectionMode, SessionDiscoveredHost, SessionIdentity,
     SessionPanelAction, SessionPanelState, SessionRosterRow, SharedDocumentPaths,
     SharedDocumentRuntime, TimelineState, ToolPreset, ToolState, UnsupportedFileError,
-    DEFAULT_SELECTION_CHANNEL_ID,
+    DEFAULT_SELECTION_CHANNEL_ID, ColorEntryEdit,
 };
 use thaum_renderer_boot::{
     boot_renderer, cell_clip_size_for_state, run_renderer_window_with_state_frame_provider,
@@ -247,6 +247,7 @@ fn apply_session_panel_action(
     discovery_responder: &mut Option<thaum_painter_workers::DiscoveryResponder>,
     current_breath: u32,
     canvas: &mut Canvas,
+    drawing_space_background: &Rc<RefCell<Option<[u8; 3]>>>,
 ) {
     let mut panel = session_panel_state.borrow_mut();
     match action {
@@ -375,6 +376,7 @@ fn apply_session_panel_action(
                 current_breath,
                 canvas,
                 &mut panel,
+                &drawing_space_background,
             );
         }
         SessionPanelAction::JoinCodeRequested { code } => {
@@ -415,6 +417,7 @@ fn apply_session_panel_action(
                 current_breath,
                 canvas,
                 &mut panel,
+                &drawing_space_background,
             );
         }
         SessionPanelAction::PasteCodeRequested => {
@@ -537,12 +540,20 @@ fn apply_join_result(
     current_breath: u32,
     canvas: &mut Canvas,
     panel: &mut SessionPanelState,
+    drawing_space_background: &Rc<RefCell<Option<[u8; 3]>>>,
 ) {
     match result {
         Ok((net, snapshot, label)) => {
             // Figma's fresh-copy model: the runtime rebuilds from the
             // host's snapshot exactly like the env-boot join path.
             *shared_document = SharedDocumentRuntime::new(snapshot);
+            // The joined snapshot carries the file's background truth: seed
+            // the live handle from it so the widget and the window follow.
+            *drawing_space_background.borrow_mut() = shared_document
+                .document
+                .background
+                .as_ref()
+                .map(|b| b.rgb);
             *shared_document_paths =
                 painter_shared_document_paths(&shared_document.document.document_id);
             *active_layer_id =
@@ -1142,23 +1153,22 @@ fn prompt_save_document_root(file_root: &Path, title: &str) -> Option<PathBuf> {
     .map(|path| save_as_root_from_dialog_path(&path))
 }
 
+/// An unreadable or unparsable user session state is not valuable state
+/// (selected tools, panel layout) — it resets to the default instead of
+/// blocking boot (J 2026-10-11). The stale file is removed best-effort so
+/// the next save writes a clean default rather than re-hitting the same
+/// failure every boot.
 fn load_painter_user_session_state(path: &Path) -> Result<Option<PainterUserSessionState>> {
     if !path.exists() {
         return Ok(None);
     }
-    let text = fs::read_to_string(path).with_context(|| {
-        format!(
-            "failed to read painter user session state at {}",
-            path.display()
-        )
-    })?;
-    let state = serde_json::from_str(&text).with_context(|| {
-        format!(
-            "failed to parse painter user session state JSON at {}",
-            path.display()
-        )
-    })?;
-    Ok(Some(state))
+    let loaded = fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok());
+    if loaded.is_none() {
+        let _ = fs::remove_file(path);
+    }
+    Ok(loaded)
 }
 
 fn save_painter_user_session_state(path: &Path, state: &PainterUserSessionState) -> Result<()> {
@@ -1511,12 +1521,19 @@ fn build_user_session_state(
     }
 }
 
-fn sync_renderer_background_from_ui_palette(state: &mut BootState, ui_palette: &UiPalette) {
-    let [red, green, blue] = ui_palette.get_rgb(UiColorRole::Background);
+/// The window clear color behind the drawing space: the drawing file's
+/// background when it is set (J), the UI palette's background when the file
+/// background is transparent (absent). Synced per frame so the widget's
+/// edits land live.
+fn sync_window_background(state: &mut BootState, ui_palette: &UiPalette) {
+    // The window background stays the app's own UI background (J): the
+    // drawing file's background color renders only as the drawing space's
+    // backdrop box, never as the whole-window clear color.
+    let rgb = ui_palette.get_rgb(UiColorRole::Background);
     state.config.window.clear_color = [
-        red as f64 / 255.0,
-        green as f64 / 255.0,
-        blue as f64 / 255.0,
+        rgb[0] as f64 / 255.0,
+        rgb[1] as f64 / 255.0,
+        rgb[2] as f64 / 255.0,
         1.0,
     ];
 }
@@ -2098,6 +2115,49 @@ fn handle_number_field_edit_key(
     }
 }
 
+/// Feeds one translated key into an open palette color entry: characters
+/// build the active field's buffer (the linked hex/rgb fields mirror each
+/// other), Backspace/Delete erase, Enter commits the parsed color
+/// into the live file palette (incomplete entries refuse), Escape cancels.
+/// Every other key is consumed silently — the edit owns the surface while
+/// it is open. Caller guards on an open edit.
+fn handle_palette_color_entry_key(
+    entry_key: TextEntryKey,
+    palette_color_entry: &Rc<RefCell<Option<ColorEntryEdit>>>,
+    tool_state: &Rc<RefCell<ToolState>>,
+) {
+    match entry_key {
+        TextEntryKey::Enter => {
+            if let Some(edit) = palette_color_entry.borrow_mut().take() {
+                if let Some(rgb) = edit.commit() {
+                    tool_state.borrow_mut().add_file_palette_color(rgb);
+                }
+            }
+        }
+        TextEntryKey::Escape => {
+            palette_color_entry.borrow_mut().take();
+        }
+        TextEntryKey::Backspace | TextEntryKey::Delete => {
+            if let Some(edit) = palette_color_entry.borrow_mut().as_mut() {
+                edit.backspace();
+            }
+        }
+        TextEntryKey::Char(ch) => {
+            if let Some(edit) = palette_color_entry.borrow_mut().as_mut() {
+                edit.push(ch);
+            }
+        }
+        // The rgb field's channel separator: the space bar routes as its own
+        // entry key, not a char.
+        TextEntryKey::Space => {
+            if let Some(edit) = palette_color_entry.borrow_mut().as_mut() {
+                edit.push(' ');
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Inputs that stay live while a typing session owns the input surface: the
 /// current bindings of the camera swing/roll/focus-depth actions, so a
 /// remap moves the reserved set with it (the old text-mode allowlist was
@@ -2589,6 +2649,23 @@ fn main() -> Result<()> {
         &controls_profile.borrow(),
     )));
     let tool_state = Rc::new(RefCell::new(ToolState::default()));
+    // File-truth palette: the open document's index palette seeds the live
+    // tool state; the palette module edits it and saves write it back.
+    tool_state
+        .borrow_mut()
+        .set_file_palette(shared_document.document.palette.colors.clone());
+    // File-truth drawing-space background (J): the widget edits the live
+    // handle; every frame mirrors it onto the document so any save path
+    // persists it, and the window clear color follows — a set color fills
+    // the drawing space, transparent falls back to the app background.
+    let drawing_space_background: Rc<RefCell<Option<[u8; 3]>>> = Rc::new(RefCell::new(
+        shared_document.document.background.as_ref().map(|b| b.rgb),
+    ));
+    // In-place color entry for the palette module's linked hex/rgb edit
+    // fields (the number-field edit pattern): opened by a strip click, keys
+    // route here, Enter or the module's `+` commits the color into the
+    // live file palette.
+    let palette_color_entry: Rc<RefCell<Option<ColorEntryEdit>>> = Rc::new(RefCell::new(None));
     // Saved tool presets (J 2026-09-24): loaded from the user session (or
     // the starter presets on first boot), then shared by the presets
     // module's clicks and the number-key dispatch below. Edits flow straight
@@ -2618,10 +2695,15 @@ fn main() -> Result<()> {
     let number_edit: Rc<RefCell<Option<NumberFieldEdit>>> = Rc::new(RefCell::new(None));
     let layers_panel_state = Rc::new(RefCell::new(LayersPanelState::default()));
     let session_panel_state = Rc::new(RefCell::new(SessionPanelState::default()));
+    // Frame-breath clock for the graphic picker's weight alternation: the
+    // frame loop writes the renderer's breath so the preview blinks in step
+    // with the selection shader's vivid-flash cadence.
+    let picker_breath: Rc<std::cell::Cell<i32>> = Rc::new(std::cell::Cell::new(0));
     let mut modules = painter_modules::build_painter_modules(
         &tool_state,
         &selection,
         &number_edit,
+        &palette_color_entry,
         &layers_panel_state,
         &paint_canvas_viewport,
         &drawing_space_wheel_mode,
@@ -2638,13 +2720,15 @@ fn main() -> Result<()> {
         &session_panel_state,
         &asset_root,
         &tool_presets,
+        &picker_breath,
+        &drawing_space_background,
     );
 
     if let Some(session) = &persisted_session {
         session.renderer.palette.apply_to_runtime(&ui_palette);
         modules.apply_persisted_ui_state(&session.renderer.modules);
     }
-    sync_renderer_background_from_ui_palette(&mut state, &ui_palette);
+    sync_window_background(&mut state, &ui_palette);
 
     let mut left_pointer_was_down = false;
     let mut right_pointer_was_down = false;
@@ -2724,6 +2808,11 @@ fn main() -> Result<()> {
     const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(400);
     let mut cursor_blink_on = true;
     let mut cursor_blink_at = Instant::now();
+    // Graphic-picker weight alternation frame driver: while the picker blinks
+    // between two hand weights, a frame must rebuild every breath tick so the
+    // alternation stays live while the pointer is idle. Interval matches the
+    // renderer's fallback-breath tick the picker alternation is keyed on.
+    let mut picker_blink_at = Instant::now();
     // Tooltip dwell state (shared tooltip seam): hotspot cards for gizmos
     // and other interactive pieces. The clock measures irregular frame gaps
     // for the 400ms dwell; needs_frame keeps a demand-driven loop ticking
@@ -2745,6 +2834,27 @@ fn main() -> Result<()> {
     let mut composition_revision: u64 = 0;
 
     run_renderer_window_with_state_frame_provider(state, move |state, frame| {
+        // File-truth palette write-through: the palette module edits the live
+        // tool-state palette; every frame mirrors it onto the document so any
+        // save path (autosave, file:save, save-as, session force-save)
+        // persists it with no per-site wiring.
+        {
+            let colors = tool_state.borrow().file_palette.clone();
+            if shared_document.document.palette.colors != colors {
+                shared_document.document.palette.colors = colors;
+            }
+        }
+        // File-truth background write-through (J): the drawing-space widget
+        // edits the live handle; every frame mirrors it onto the document so
+        // any save path persists it with no per-site wiring.
+        {
+            let background = drawing_space_background.borrow().clone();
+            let as_section =
+                background.map(|rgb| thaum_painter_domain::SharedDocumentBackground { rgb });
+            if shared_document.document.background != as_section {
+                shared_document.document.background = as_section;
+            }
+        }
         // Demand-driven frame gate: input, animation timers, or a pending
         // session save make the frame dirty; otherwise the last composition
         // stays in place and nothing rebuilds.
@@ -2762,6 +2872,11 @@ fn main() -> Result<()> {
             playback_playing && last_playback_step.elapsed() >= PLAYBACK_BREATH_INTERVAL;
         let blink_due =
             typing_mode.is_active() && cursor_blink_at.elapsed() >= CURSOR_BLINK_INTERVAL;
+        let picker_blink_due = {
+            let (lit_weight, alt_weight) = thaum_painter_domain::preview_weights(&tool_state.borrow());
+            alt_weight.is_some_and(|alt| alt != lit_weight)
+                && picker_blink_at.elapsed() >= thaum_renderer_breath_fallback_clock::FALLBACK_BREATH_TICK_DURATION
+        };
         // Multiplayer frame seam: publish this frame's new local records
         // (strokes, undo/redo, selections — everything that appended to the
         // runtime's action log), then pull foreign ones in host order. Runs
@@ -2867,6 +2982,7 @@ fn main() -> Result<()> {
             && !playback_playing
             && !playback_due
             && !blink_due
+            && !picker_blink_due
             && !session_dirty
             && !tooltip_needs_frame
             && !release_status_changed
@@ -2895,7 +3011,7 @@ fn main() -> Result<()> {
         last_pointer_down = frame.input.pointer_down;
         last_right_pointer_down = frame.input.right_pointer_down;
 
-        sync_renderer_background_from_ui_palette(state, &ui_palette);
+        sync_window_background(state, &ui_palette);
 
         // Which pan WASD should drive this frame: hovering the drawing
         // surface routes to 3D pan (the file's contents, under a
@@ -2963,9 +3079,33 @@ fn main() -> Result<()> {
                             continue;
                         };
                         eprintln!("[input-debug]   {key:?} -> owned {entry_key:?}");
-                        // An open number-field edit consumes the keys first.
+                        // An open palette color entry or number-field edit
+                        // consumes the keys first.
+                        if palette_color_entry.borrow().is_some() {
+                            handle_palette_color_entry_key(
+                                entry_key,
+                                &palette_color_entry,
+                                &tool_state,
+                            );
+                            // Enter/Escape can close the edit mid-session;
+                            // typing mode must end with it or the next owned
+                            // key would find no surface to route into.
+                            if palette_color_entry.borrow().is_none()
+                                && number_edit.borrow().is_none()
+                                && text_entry.is_none()
+                            {
+                                typing_mode.end();
+                            }
+                            continue;
+                        }
                         if number_edit.borrow().is_some() {
                             handle_number_field_edit_key(entry_key, &number_edit, &tool_state);
+                            if number_edit.borrow().is_none()
+                                && palette_color_entry.borrow().is_none()
+                                && text_entry.is_none()
+                            {
+                                typing_mode.end();
+                            }
                             continue;
                         }
                         match text_entry
@@ -3424,12 +3564,26 @@ fn main() -> Result<()> {
                 &mut discovery_responder,
                 timeline_state.borrow().current_breath,
                 &mut canvas,
+                &drawing_space_background,
             );
             session_dirty = true;
         }
         command_bar.update_layout(cell_clip_size, state.camera.hud_pan_offset);
         let command_bar_hover = frame.input.cursor_position.map(to_screen);
         command_bar.set_pointer_position(command_bar_hover.map(|screen| (screen.x, screen.y)));
+        // Scrollbar thumb drag session: while a drag is live the bar follows
+        // the pointer every frame and the pointer's release ends it.
+        if command_bar.is_scrollbar_dragging() {
+            if let Some(screen) = command_bar_hover {
+                if frame.input.pointer_down {
+                    command_bar.drag_scrollbar(screen.x, screen.y);
+                } else {
+                    command_bar.end_scrollbar_drag();
+                }
+            } else {
+                command_bar.end_scrollbar_drag();
+            }
+        }
         let paint_viewport = *paint_canvas_viewport.borrow();
         let paint_surface = PaintCanvasBoundsModule::content_rect(paint_viewport);
 
@@ -3439,10 +3593,40 @@ fn main() -> Result<()> {
         // they want out of typing, so it ends the session (committing the
         // pending stroke, like Escape) and is otherwise swallowed.
         if typing_mode.is_active() {
-            if frame.input.just_clicked.is_some() {
-                if number_edit.borrow().is_some() {
+            if let Some(click) = frame.input.just_clicked {
+                if palette_color_entry.borrow().is_some() {
+                    // A color entry stages nothing on a stray click, but a
+                    // click on the palette module itself is delivered: the
+                    // module's `+` commits the entry color, its entry fields
+                    // switch typing focus, and any other click inside it
+                    // closes the entry. Anything else just closes it.
+                    let screen = to_screen(click);
+                    let hits_palette = modules
+                        .hit_test(screen.x, screen.y)
+                        .map(|hit_module| hit_module.id() == "painter_color_picker")
+                        .unwrap_or(false);
+                    if hits_palette {
+                        modules.dispatch_pointer_event_at(
+                            screen.x,
+                            screen.y,
+                            ModulePointerEvent::Click {
+                                x: screen.x,
+                                y: screen.y,
+                                button: ModulePointerButton::Left,
+                            },
+                        );
+                    } else {
+                        palette_color_entry.borrow_mut().take();
+                    }
+                    // Once the entry is closed (committed, cancelled by a
+                    // click elsewhere), typing mode ends with it.
+                    if palette_color_entry.borrow().is_none() {
+                        typing_mode.end();
+                    }
+                } else if number_edit.borrow().is_some() {
                     // A number edit stages nothing; a click just closes it.
                     number_edit.borrow_mut().take();
+                    typing_mode.end();
                 } else if let Err(err) = commit_staged_paint_stroke(
                     &mut shared_document,
                     &shared_document_paths,
@@ -3518,6 +3702,15 @@ fn main() -> Result<()> {
                 Some(_) => true,
                 None => false,
             };
+            // A palette-entry or number-field click just began an in-place
+            // edit; typing mode owns the keyboard until a click or Escape
+            // ends the session. Same seam as the right-click path below —
+            // without it the entry opens but keys never route into it.
+            if !typing_mode.is_active()
+                && (number_edit.borrow().is_some() || palette_color_entry.borrow().is_some())
+            {
+                typing_mode.begin(typing_reserved_inputs(&effective_painter_bindings.borrow()));
+            }
             drain_layers_panel_action(
                 &layers_panel_state,
                 &mut shared_document,
@@ -3629,7 +3822,9 @@ fn main() -> Result<()> {
             }
             // A number-field click just began an in-place edit; typing mode
             // owns the keyboard until a click or Escape ends the session.
-            if !typing_mode.is_active() && number_edit.borrow().is_some() {
+            if !typing_mode.is_active()
+                && (number_edit.borrow().is_some() || palette_color_entry.borrow().is_some())
+            {
                 typing_mode.begin(typing_reserved_inputs(&effective_painter_bindings.borrow()));
             }
         } else if frame.input.pointer_down || frame.input.right_pointer_down {
@@ -3992,7 +4187,8 @@ fn main() -> Result<()> {
         } else {
             0.0
         };
-        let mut groups = build_document_layer_cell_groups(
+        let mut groups = modules.backdrop_groups();
+        groups.extend(build_document_layer_cell_groups(
             &shared_document,
             timeline_state.borrow().current_breath,
             breath_fraction,
@@ -4000,7 +4196,12 @@ fn main() -> Result<()> {
                 .as_ref()
                 .map(|(layer_id, delta)| (layer_id.as_str(), *delta)),
             shape_fade.as_ref(),
-        );
+        ));
+        // The graphic picker previews the hands' tooling weights and blinks
+        // between them on the same vivid-flash breath the selection shader
+        // uses, so feed it the renderer's breath before module draw.
+        picker_breath.set(state.data_lanes.breath().unwrap_or(0));
+        picker_blink_at = Instant::now();
         groups.extend(modules.iter().map(|module| module.draw()));
         // In-progress stroke overlays live on the seam: plane selection
         // preview, and any open lasso bound with its live interior preview.

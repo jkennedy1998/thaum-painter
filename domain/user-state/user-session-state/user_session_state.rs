@@ -5,8 +5,9 @@ use thaum_renderer_domain::{
 };
 
 use crate::{
-    tool_presets::ToolPreset, tool_state::ChannelMask, DrawingSpaceWheelMode, HandState,
-    PaintColor, PaintColorSlot, PaintHand, PaintTarget, PaintTool, SelectionMode, ToolState,
+    fill::FillConnectivity, tool_presets::ToolPreset, tool_state::ChannelMask,
+    DrawingSpaceWheelMode, HandState, PaintColor, PaintColorSlot, PaintHand, PaintTarget,
+    PaintTool, SelectionMode, ToolState,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -71,7 +72,10 @@ pub struct PersistedHandState {
     pub color: PersistedPaintColor,
     pub weight_index: i64,
     pub brush_size: i32,
-    pub fill_diagonal: bool,
+    #[serde(default)]
+    pub fill_connectivity: String,
+    #[serde(default)]
+    pub fill_3d: bool,
     #[serde(default)]
     pub pick_opposite_hand: bool,
     pub edit_channels: PersistedChannelMask,
@@ -206,7 +210,8 @@ impl PersistedHandState {
             color: PersistedPaintColor::from_runtime(&hand.color),
             weight_index: hand.weight_index,
             brush_size: hand.brush_size,
-            fill_diagonal: hand.fill_diagonal,
+            fill_connectivity: hand.fill_connectivity.id().to_string(),
+            fill_3d: hand.fill_3d,
             pick_opposite_hand: hand.pick_opposite_hand,
             edit_channels: PersistedChannelMask::from_mask(hand.edit_channels),
             select_channels: PersistedChannelMask::from_mask(hand.select_channels),
@@ -219,7 +224,9 @@ impl PersistedHandState {
         hand.color = self.color.to_runtime();
         hand.weight_index = self.weight_index.clamp(0, 3);
         hand.brush_size = self.brush_size.clamp(1, 5);
-        hand.fill_diagonal = self.fill_diagonal;
+        hand.fill_connectivity = FillConnectivity::from_id(&self.fill_connectivity)
+            .unwrap_or_default();
+        hand.fill_3d = self.fill_3d;
         hand.pick_opposite_hand = self.pick_opposite_hand;
         hand.edit_channels = self.edit_channels.to_mask();
         hand.select_channels = self.select_channels.to_mask();
@@ -424,23 +431,19 @@ pub fn painter_session_state_path(artifacts_root: &Path, user_id: &str) -> PathB
         .join(format!("{user_id}.json"))
 }
 
+/// Same reset-to-default rule as the boot loader: an unreadable or
+/// unparsable session state file is discarded, not an error (J 2026-10-11).
 pub fn load_painter_user_session_state(path: &Path) -> Result<Option<PainterUserSessionState>> {
     if !path.exists() {
         return Ok(None);
     }
-    let text = fs::read_to_string(path).with_context(|| {
-        format!(
-            "failed to read painter user session state at {}",
-            path.display()
-        )
-    })?;
-    let state = serde_json::from_str(&text).with_context(|| {
-        format!(
-            "failed to parse painter user session state JSON at {}",
-            path.display()
-        )
-    })?;
-    Ok(Some(state))
+    let loaded = fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok());
+    if loaded.is_none() {
+        let _ = fs::remove_file(path);
+    }
+    Ok(loaded)
 }
 
 pub fn save_painter_user_session_state(path: &Path, state: &PainterUserSessionState) -> Result<()> {
@@ -581,5 +584,25 @@ mod tests {
         let text = serde_json::to_string(&state).expect("serialize");
         let restored: PersistedPainterUiState = serde_json::from_str(&text).expect("deserialize");
         assert_eq!(restored.tool_presets, state.tool_presets);
+    }
+
+    #[test]
+    fn an_unparsable_session_state_resets_to_the_default() {
+        let unique = format!(
+            "thaum-painter-user-session-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(format!("{unique}.json"));
+        fs::write(&path, "{ not valid json").unwrap();
+
+        // The load succeeds with no state instead of erroring, and the
+        // stale file is removed so the next save writes a clean default.
+        assert!(load_painter_user_session_state(&path).unwrap().is_none());
+        assert!(!path.exists(), "stale file is removed");
+
+        let _ = fs::remove_file(&path);
     }
 }

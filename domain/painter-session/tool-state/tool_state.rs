@@ -6,7 +6,7 @@ use thaum_renderer_domain::{
 use crate::{
     brush::{self, effective_cell, Canvas, PaintedCell},
     clipboard::WorldCopyData,
-    fill::{self, CanvasBounds, FillConnectivity},
+    fill::{self, CanvasBounds, FillConnectivity, FillDepthMode},
     interp_raster::{blend_cell_run, fade_cell_toward_clear},
     paint_color::PaintColor,
     painter_tools::shared::{drag_behavior, DragBehavior},
@@ -176,7 +176,15 @@ pub struct HandState {
     pub color: PaintColor,
     pub weight_index: i64,
     pub brush_size: i32,
-    pub fill_diagonal: bool,
+    /// Fill tool connectivity (J 2026-10-10): adjacent (cardinal), diagonal
+    /// (every in-plane neighbor), or `all` (non-continuous — every matching
+    /// cell in the region, no contiguous path required).
+    pub fill_connectivity: FillConnectivity,
+    /// Fill/lasso depth toggle (J 2026-10-10): when on, the fill's flood and
+    /// the lasso's region act across every 3d depth layer relative to the
+    /// viewer's viewing angle. Both tools share the one property per hand;
+    /// brush adopts it later.
+    pub fill_3d: bool,
     /// Picker property: whether this hand's picker click hands its sampled
     /// channels to the opposite hand instead of itself. Per-hand toggle,
     /// independent per J.
@@ -193,7 +201,8 @@ impl Default for HandState {
             color: PaintColor::default(),
             weight_index: 2,
             brush_size: 1,
-            fill_diagonal: false,
+            fill_connectivity: FillConnectivity::Adjacent,
+            fill_3d: false,
             pick_opposite_hand: false,
             edit_channels: EditChannels::all(),
             select_channels: SelectChannels::all(),
@@ -216,6 +225,12 @@ pub struct ToolState {
     pub text_options: TextLayoutOptions,
     /// Whether Space during typing clears the cell under the cursor.
     pub text_space_replace: bool,
+    /// The open document's live index palette (file truth, J 2026-10-10):
+    /// loaded from the file at boot, edited only through the palette module,
+    /// written back to the document on save. Cells never store indices —
+    /// this list drives swatches, color-block banding, and nearest-color
+    /// interpolation only.
+    pub file_palette: Vec<[u8; 3]>,
 }
 
 impl Default for ToolState {
@@ -234,6 +249,7 @@ impl Default for ToolState {
             },
             text_options: DEFAULT_TEXT_LAYOUT_OPTIONS,
             text_space_replace: true,
+            file_palette: crate::legacy_indexed_palette::default_file_palette(),
         }
     }
 }
@@ -241,6 +257,40 @@ impl Default for ToolState {
 impl ToolState {
     pub fn current_tool(&self) -> PaintTool {
         self.tool_for_hand(self.active_hand)
+    }
+
+    /// The live file palette read view.
+    pub fn file_palette(&self) -> &[[u8; 3]] {
+        &self.file_palette
+    }
+
+    /// Replaces the live file palette wholesale (document load path). No
+    /// cell is rewritten: palette membership is bookkeeping only. An empty
+    /// list means the file carries no palette — the shipped default applies.
+    pub fn set_file_palette(&mut self, palette: Vec<[u8; 3]>) {
+        self.file_palette = if palette.is_empty() {
+            crate::legacy_indexed_palette::default_file_palette()
+        } else {
+            palette
+        };
+    }
+
+    /// Adds one color to the file palette (palette module `+` path);
+    /// duplicates are ignored. Returns whether the palette changed.
+    pub fn add_file_palette_color(&mut self, rgb: [u8; 3]) -> bool {
+        crate::legacy_indexed_palette::palette_push_color(&mut self.file_palette, rgb)
+    }
+
+    /// Removes one color from the file palette (palette module `−` path).
+    /// Painted cells keep their raw RGB. The palette never empties: the
+    /// last remaining color is refused, so nearest-indexed resolution and
+    /// the saved file's palette section always hold at least one color.
+    /// Returns whether the palette changed.
+    pub fn remove_file_palette_color(&mut self, rgb: [u8; 3]) -> bool {
+        if self.file_palette.len() <= 1 {
+            return false;
+        }
+        crate::legacy_indexed_palette::palette_remove_color(&mut self.file_palette, rgb)
     }
 
     pub fn tool_for_hand(&self, hand: PaintHand) -> PaintTool {
@@ -311,8 +361,13 @@ impl ToolState {
         self.active_hand = hand;
     }
 
-    pub fn set_fill_diagonal_for_hand(&mut self, hand: PaintHand, fill_diagonal: bool) {
-        self.hand_state_mut(hand).fill_diagonal = fill_diagonal;
+    pub fn set_fill_connectivity_for_hand(&mut self, hand: PaintHand, connectivity: FillConnectivity) {
+        self.hand_state_mut(hand).fill_connectivity = connectivity;
+        self.active_hand = hand;
+    }
+
+    pub fn set_fill_3d_for_hand(&mut self, hand: PaintHand, fill_3d: bool) {
+        self.hand_state_mut(hand).fill_3d = fill_3d;
         self.active_hand = hand;
     }
 
@@ -392,7 +447,7 @@ impl ToolState {
         let folded = if content.len() == 1 {
             content.first().expect("one sampled cell").clone()
         } else {
-            blend_cell_run(&content, graphic_fade)
+            blend_cell_run(&content, graphic_fade, &self.file_palette)
         };
         let footprint_total = content.len() + clear_count;
         let sampled_cell = fade_cell_toward_clear(
@@ -512,11 +567,29 @@ impl ToolState {
     }
 
     fn fill_connectivity_for_hand(&self, hand: PaintHand) -> FillConnectivity {
-        if self.hand_state(hand).fill_diagonal {
-            FillConnectivity::CardinalAndDiagonal
+        self.hand_state(hand).fill_connectivity
+    }
+
+    /// The hand's depth reach: plane-only, or through the camera's depth
+    /// axis when the shared fill/lasso 3d toggle is on.
+    fn fill_depth_mode_for_hand(&self, hand: PaintHand) -> FillDepthMode {
+        if self.hand_state(hand).fill_3d {
+            FillDepthMode::ThroughDepth
         } else {
-            FillConnectivity::Cardinal
+            FillDepthMode::Plane
         }
+    }
+
+    /// Whether this hand's tool edits or selects THROUGH DEPTH right now:
+    /// only the fill's flood (both its image and selection halves) and the
+    /// lasso's region reach across depth layers; brush strokes stay on the
+    /// interaction plane (J 2026-10-10 — brush adopts depth later).
+    fn acts_through_depth_for_hand(&self, hand: PaintHand) -> bool {
+        self.hand_state(hand).fill_3d
+            && matches!(
+                self.tool_for_hand(hand),
+                PaintTool::Fill | PaintTool::Lasso
+            )
     }
 
     fn brush_points_for_hand(
@@ -547,8 +620,10 @@ impl ToolState {
             PaintTool::Fill => {
                 // Region sensing follows the hand's Select row: unlocked
                 // channels are ignored when matching neighbors (J 2026-09-10).
+                // Reach follows the hand's connectivity (adjacent/diagonal/
+                // all) and depth toggle (J 2026-10-10).
                 let select = self.hand_state(hand).select_channels;
-                fill::flood_fill_points_with_connectivity(
+                fill::flood_fill_points_with(
                     canvas,
                     position,
                     bounds,
@@ -558,6 +633,7 @@ impl ToolState {
                         color: select.color,
                         weight: select.weight,
                     },
+                    self.fill_depth_mode_for_hand(hand),
                 )
             }
             _ => Vec::new(),
@@ -579,13 +655,21 @@ impl ToolState {
             return;
         }
         let hand_state = self.hand_state(hand);
-        let points = selection.filter_plane_edit_points(self.edit_points_for_hand(
+        let edit_points = self.edit_points_for_hand(
             canvas,
             position,
             hand,
             bounds,
             orientation,
-        ));
+        );
+        // Through-depth tools edit cells on other depth layers too, so the
+        // edit set skips the interaction-plane gate and keeps only the
+        // selection-cell gate.
+        let points = if self.acts_through_depth_for_hand(hand) {
+            selection.filter_edit_points_through_depth(edit_points)
+        } else {
+            selection.filter_plane_edit_points(edit_points)
+        };
         match self.tool_for_hand(hand) {
             PaintTool::Brush => {
                 if !hand_state.edit_channels.any_enabled() {
@@ -635,8 +719,16 @@ impl ToolState {
                 // The Select row is the comparison truth for fill, both when
                 // sensing paint regions and when flood selecting (J
                 // 2026-09-10). With every channel unlocked the hand matches
-                // only cells equal on all channels.
-                flood_select_points(canvas, position, bounds, hand_state.select_channels)
+                // only cells equal on all channels. The flood follows the
+                // hand's connectivity and depth toggle (J 2026-10-10).
+                flood_select_points(
+                    canvas,
+                    position,
+                    bounds,
+                    hand_state.select_channels,
+                    self.fill_connectivity_for_hand(hand),
+                    self.fill_depth_mode_for_hand(hand),
+                )
             }
             _ => Vec::new(),
         }
@@ -654,7 +746,11 @@ impl ToolState {
         let points = self.selection_points_for_hand(canvas, position, hand, bounds, orientation);
         let mode = crate::painter_tools::shared::selection_behavior(self.tool_for_hand(hand).id())
             .resolve(selection.mode(), SelectionMode::Subtract);
-        selection.apply_plane_points_with_mode(points, mode);
+        if self.acts_through_depth_for_hand(hand) {
+            selection.apply_plane_points_through_depth_with_mode(points, mode);
+        } else {
+            selection.apply_plane_points_with_mode(points, mode);
+        }
     }
 
     /// Rasterizes the hand's lasso bound and fills every enclosed cell with
@@ -671,7 +767,7 @@ impl ToolState {
         hand: PaintHand,
         orientation: CameraViewOrientation,
     ) {
-        let points = self.lasso_edit_points(selection, path, hand, orientation);
+        let points = self.lasso_edit_points(canvas, selection, path, hand, orientation);
         for point in points {
             let painted = self.resolved_painted_cell(canvas.get(&point), hand);
             brush::write_cell(canvas, point, painted);
@@ -682,9 +778,12 @@ impl ToolState {
     /// will paint for the hand's bound — the enclosed region rasterized through
     /// the pure lasso operation, filtered by the current selection, and gated by
     /// the hand's edit channels. The in-progress preview consumes this same seam
-    /// so the flashing area is exactly what release will edit.
+    /// so the flashing area is exactly what release will edit. With the hand's
+    /// 3d toggle on, the region repeats on every depth layer of the canvas's
+    /// content span (J 2026-10-10).
     pub fn lasso_edit_points(
         &self,
+        canvas: &Canvas,
         selection: &PainterSelection,
         path: &[CellPoint],
         hand: PaintHand,
@@ -693,7 +792,40 @@ impl ToolState {
         if !self.hand_state(hand).edit_channels.any_enabled() {
             return Vec::new();
         }
-        selection.filter_plane_edit_points(crate::lasso::lasso_points(path, orientation))
+        let points = self.lasso_region_points(canvas, path, hand, orientation);
+        if self.acts_through_depth_for_hand(hand) {
+            selection.filter_edit_points_through_depth(points)
+        } else {
+            selection.filter_plane_edit_points(points)
+        }
+    }
+
+    /// The hand's lasso rasterization: the plain view-plane polygon, or the
+    /// same polygon repeated across the canvas's content depth span when the
+    /// 3d toggle is on (J 2026-10-10: "the lasso tool action but for every
+    /// depth layer relative to the viewer's viewing angle").
+    fn lasso_region_points(
+        &self,
+        canvas: &Canvas,
+        path: &[CellPoint],
+        hand: PaintHand,
+        orientation: CameraViewOrientation,
+    ) -> Vec<CellPoint> {
+        if !self.hand_state(hand).fill_3d {
+            return crate::lasso::lasso_points(path, orientation);
+        }
+        let depth_axis = match orientation.depth.axis() {
+            thaum_renderer_domain::WorldAxis::X => fill::CanvasPlaneAxis::X,
+            thaum_renderer_domain::WorldAxis::Y => fill::CanvasPlaneAxis::Y,
+            thaum_renderer_domain::WorldAxis::Z => fill::CanvasPlaneAxis::Z,
+        };
+        let anchor = path.first().copied().unwrap_or(CellPoint {
+            x: 0,
+            y: 0,
+            z: 0,
+        });
+        let span = fill::depth_span_for_canvas(canvas, depth_axis, anchor);
+        crate::lasso::lasso_points_through_depth(path, orientation, span)
     }
 
     /// Per-cell preview data for the in-progress lasso: the exact points
@@ -709,7 +841,7 @@ impl ToolState {
         hand: PaintHand,
         orientation: CameraViewOrientation,
     ) -> Vec<crate::lasso_stroke::LassoPreviewCell> {
-        self.lasso_edit_points(selection, path, hand, orientation)
+        self.lasso_edit_points(canvas, selection, path, hand, orientation)
             .into_iter()
             .map(|point| crate::lasso_stroke::LassoPreviewCell {
                 point,
@@ -721,9 +853,11 @@ impl ToolState {
 
     /// The selection-surface half of the lasso: the enclosed cells of the
     /// hand's bound, gated by that hand's select-channel enable state. The
-    /// caller applies them through the hand's resolved selection mode.
+    /// caller applies them through the hand's resolved selection mode. With
+    /// the 3d toggle on, the bound repeats across the content depth span.
     pub fn lasso_selection_points(
         &self,
+        canvas: &Canvas,
         path: &[CellPoint],
         hand: PaintHand,
         orientation: CameraViewOrientation,
@@ -731,7 +865,29 @@ impl ToolState {
         if !self.hand_state(hand).select_channels.any_enabled() {
             return Vec::new();
         }
-        crate::lasso::lasso_points(path, orientation)
+        self.lasso_region_points(canvas, path, hand, orientation)
+    }
+
+    /// Applies the hand's lasso selection surface through the hand's resolved
+    /// mode, choosing the plane-bounded or through-depth application by the
+    /// hand's 3d toggle. One seam so the canvas-pointer release path never
+    /// re-decides selection mode or depth behavior.
+    pub fn apply_lasso_selection_for_hand(
+        &self,
+        canvas: &Canvas,
+        selection: &mut PainterSelection,
+        path: &[CellPoint],
+        hand: PaintHand,
+        orientation: CameraViewOrientation,
+    ) {
+        let mode = crate::painter_tools::shared::selection_behavior(self.tool_for_hand(hand).id())
+            .resolve(selection.mode(), SelectionMode::Subtract);
+        let points = self.lasso_selection_points(canvas, path, hand, orientation);
+        if self.acts_through_depth_for_hand(hand) {
+            selection.apply_plane_points_through_depth_with_mode(points, mode);
+        } else {
+            selection.apply_plane_points_with_mode(points, mode);
+        }
     }
 
     /// Selection-target lasso preview: the drawing will not change on
@@ -745,7 +901,7 @@ impl ToolState {
         hand: PaintHand,
         orientation: CameraViewOrientation,
     ) -> Vec<crate::lasso_stroke::LassoPreviewCell> {
-        self.lasso_selection_points(path, hand, orientation)
+        self.lasso_selection_points(canvas, path, hand, orientation)
             .into_iter()
             .map(|point| {
                 let current = canvas.get(&point).cloned();
@@ -944,7 +1100,7 @@ mod tests {
         assert_eq!(tool_state.left_hand.graphic, CellGraphic::Glyph('#'));
         assert_eq!(tool_state.right_hand.graphic, CellGraphic::Glyph(' '));
         assert_eq!(tool_state.left_hand.brush_size, 1);
-        assert!(!tool_state.left_hand.fill_diagonal);
+        assert!(!tool_state.left_hand.fill_3d);
         assert_eq!(tool_state.left_hand.target, PaintTarget::Image);
     }
 
@@ -960,7 +1116,7 @@ mod tests {
     #[test]
     fn each_tool_declares_its_own_property_rows() {
         assert_eq!(PaintTool::Brush.property_row_ids(), &["brush_size"]);
-        assert_eq!(PaintTool::Fill.property_row_ids(), &["fill_diagonal"]);
+        assert_eq!(PaintTool::Fill.property_row_ids(), &["fill_connectivity", "fill_3d"]);
         assert_eq!(
             PaintTool::Text.property_row_ids(),
             &["text_char_step", "text_enter_step"]
@@ -1624,7 +1780,7 @@ mod tests {
     fn fill_diagonal_can_cross_corner_neighbors() {
         let mut tool_state = ToolState::default();
         tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Fill);
-        tool_state.set_fill_diagonal_for_hand(PaintHand::Left, true);
+        tool_state.set_fill_connectivity_for_hand(PaintHand::Left, FillConnectivity::Diagonal);
         tool_state.set_graphic_for_hand(PaintHand::Left, CellGraphic::Glyph('.'));
         let mut canvas = Canvas::new();
         let mut selection = selection();
@@ -2019,9 +2175,16 @@ mod tests {
         let mut tool_state = ToolState::default();
         tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Lasso);
         let selection = selection();
+        let mut canvas = Canvas::new();
         let path = [point(0, 0), point(2, 0), point(2, 2), point(0, 2)];
 
-        let points = tool_state.lasso_edit_points(&selection, &path, PaintHand::Left, flat_view());
+        let points = tool_state.lasso_edit_points(
+            &canvas,
+            &selection,
+            &path,
+            PaintHand::Left,
+            flat_view(),
+        );
         assert_eq!(points.len(), 9);
         assert!(points.contains(&point(1, 1)));
 
@@ -2031,7 +2194,13 @@ mod tests {
             weight: false,
         };
         assert!(tool_state
-            .lasso_edit_points(&selection, &path, PaintHand::Left, flat_view())
+            .lasso_edit_points(
+                &canvas,
+                &selection,
+                &path,
+                PaintHand::Left,
+                flat_view()
+            )
             .is_empty());
     }
 
@@ -2219,9 +2388,15 @@ mod tests {
     fn lasso_selection_points_return_the_enclosed_region_gated_by_select_channels() {
         let mut tool_state = ToolState::default();
         tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Lasso);
+        let canvas = Canvas::new();
         let path = [point(0, 0), point(2, 0), point(2, 2), point(0, 2)];
 
-        let points = tool_state.lasso_selection_points(&path, PaintHand::Left, flat_view());
+        let points = tool_state.lasso_selection_points(
+            &canvas,
+            &path,
+            PaintHand::Left,
+            flat_view(),
+        );
         assert!(points.contains(&point(1, 1)));
         assert_eq!(points.len(), 9);
 
@@ -2231,7 +2406,7 @@ mod tests {
             weight: false,
         };
         assert!(tool_state
-            .lasso_selection_points(&path, PaintHand::Left, flat_view())
+            .lasso_selection_points(&canvas, &path, PaintHand::Left, flat_view())
             .is_empty());
     }
 
@@ -2438,5 +2613,54 @@ mod tests {
             CellGraphic::Glyph('a')
         );
         assert_eq!(previews[0].upcoming.graphic, CellGraphic::Glyph('a'));
+    }
+
+    #[test]
+    fn file_palette_state_round_trips_add_and_remove() {
+        let mut tool_state = ToolState::default();
+        let default_len = tool_state.file_palette().len();
+        let magenta = [255u8, 0, 255];
+
+        // Add appends unless duplicate; remove drops without touching
+        // anything else.
+        assert!(tool_state.add_file_palette_color(magenta));
+        assert_eq!(tool_state.file_palette().len(), default_len + 1);
+        assert!(!tool_state.add_file_palette_color(magenta));
+        assert!(tool_state.remove_file_palette_color(magenta));
+        assert_eq!(tool_state.file_palette().len(), default_len);
+        assert!(!tool_state.remove_file_palette_color(magenta));
+
+        // A loaded-from-file palette seeds wholesale; an empty list falls
+        // back to the shipped default so the palette is never empty.
+        tool_state.set_file_palette(vec![magenta, [1, 2, 3]]);
+        assert_eq!(tool_state.file_palette(), &[[255u8, 0, 255], [1, 2, 3]]);
+        tool_state.set_file_palette(Vec::new());
+        assert_eq!(tool_state.file_palette().len(), default_len);
+    }
+
+    #[test]
+    fn the_file_palette_never_empties_the_last_color_is_refused() {
+        let mut tool_state = ToolState::default();
+        tool_state.set_file_palette(vec![[9u8, 9, 9]]);
+
+        assert!(!tool_state.remove_file_palette_color([9, 9, 9]));
+        assert_eq!(tool_state.file_palette(), &[[9u8, 9, 9]]);
+    }
+
+    #[test]
+    fn palette_edits_never_touch_hand_colors() {
+        let mut tool_state = ToolState::default();
+        let magenta = [255u8, 0, 255];
+        tool_state.set_color_for_hand(PaintHand::Left, PaintColor::flat_rgb(255, 0, 255));
+
+        tool_state.add_file_palette_color(magenta);
+        tool_state.remove_file_palette_color(magenta);
+
+        // Palette membership is bookkeeping: hand colors are raw RGB and
+        // survive palette edits untouched.
+        assert_eq!(
+            tool_state.left_hand.color,
+            PaintColor::flat_rgb(255, 0, 255)
+        );
     }
 }

@@ -10,6 +10,7 @@ Own persistence surfaces for saving, loading, autosaving, and locating thaum-pai
 - painter saved-file root resolution (`document_locations.rs` — "where files go" is storage policy)
 - the load-time schema gate: kind + version checked before the body is trusted, typed `UnsupportedFileError` with an explicit version-difference message, so old/new-schema files reject cleanly instead of crashing or half-loading
 - stored non-document session carryover that truly belongs to persistence
+- the document's file-truth index palette: an optional `SharedDocumentPalette` section on the runtime document (absent while the list is empty or still the shipped default), seeded into live session state on load and written back on save; painted cells keep raw RGB and are never remapped when the palette changes
 
 ## does not own
 - canonical file schema shape (owned by `../file-schema/`)
@@ -52,12 +53,13 @@ via: `load_or_create_shared_document`, `save_shared_document_snapshot`, `SharedD
 
 ## tests
 - `storage.rs` inline `#[cfg(test)]` module
-  - snapshot save/load round trips, revision conflict refusal, concurrent-append (log divergence) refusal, `reload_from_disk` adoption + local-history discard, undo/redo replay, history folding, block timing/split/blank/swap, binary re-tiling, selection channels, large-record append atomicity (`large_record_appends_stay_whole_records`).
+  - snapshot save/load round trips, revision conflict refusal, concurrent-append (log divergence) refusal, `reload_from_disk` adoption + local-history discard, undo/redo replay, history folding, block timing/split/blank/swap, binary re-tiling, selection channels, large-record append atomicity (`large_record_appends_stay_whole_records`), document palette save/load round trip (edited palettes persist, default palettes stay absent, cells keep raw RGB)
 
 ## data
 - none
 
 ## notes
+- File-truth palette (2026-10-10): the document's index palette rides the runtime document schema (`SharedDocumentPalette`, serde default + skip-while-default), so schema v3 stays untouched — the same optional-section precedent as `facing`, persisted through `document.json` rather than the canonical file-schema gate. Cells store raw RGB, never indices, so a palette edit never rewrites painted content (J 2026-10-10 file truth vs user truth).
 - Rename + root absorption (2026-09-07, file-boundary cleanup plan): `document_locations.rs` root resolution moved here from a stray top-level file in `domain/file/` — "where files go" is storage policy. `migrate_legacy_painter_file_root` was deleted (both legacy roots are empty on this machine; J fixes friend files case-by-case, no long-term migration support).
 - Load-time schema gate (2026-09-07): `load_document_file` checks `file_kind` + `schema_version` via `ensure_supported_file_schema` (from `file-schema/`) BEFORE deserializing the body. Rejection is a typed `UnsupportedFileError` (`KindMismatch | VersionMismatch`, path, found vs supported) with an explicit message ("file is schema v1, this app reads v2") — the schema version only changes when the shape breaks, so the number alone describes the mismatch. The open flow (`orchestration/build-commands` `file:open`) maps only this error class to a soft rejection: file does not open, no partial state, session keeps running.
 - Dropped idea, recorded on purpose (2026-09-07): extracting the atomic-write helper into `tools/` was evaluated and REJECTED — a web/OPFS backend would not consume it and there is no second real consumer. Do not revisit until one exists.

@@ -27,6 +27,8 @@ pub mod graphic_picker_module;
 pub mod hand_settings_module;
 #[path = "painter-document/properties/interp_mode.rs"]
 pub mod interp_mode;
+#[path = "painter-session/paint-color/color_entry.rs"]
+pub mod color_entry;
 #[path = "painter-document/properties/interp_move.rs"]
 pub mod interp_move;
 #[path = "painter-document/properties/interp_raster.rs"]
@@ -104,14 +106,22 @@ pub use file_schema::{
     PropertyBlock, RasterSegment, Rgb, SavedCameraDefaults, TimeAssets, Voxel,
 };
 pub use fill::{
-    flood_fill, flood_fill_with_connectivity, CanvasBounds, CanvasPlaneAxis, FillConnectivity,
+    depth_span_for_canvas, flood_fill, flood_fill_points, flood_fill_points_with, flood_fill_with,
+    CanvasBounds, CanvasPlaneAxis, FillConnectivity, FillDepthMode,
 };
-pub use graphic_picker_module::{load_sided_options, GraphicPickerModule, SidedOption};
+pub use graphic_picker_module::{
+    load_sided_options, preview_weights, GraphicPickerModule, SidedOption,
+};
 pub use hand_settings_module::HandSettingsModule;
 pub use identity::{SessionIdentity, PRESENCE_CANDIDATE_COLORS};
 pub use layers_panel_module::{
     LayerPropertyKind, LayerRow, LayersPanelAction, LayersPanelModule, LayersPanelState,
     PropertyTrackBlock, PropertyTrackRow,
+};
+pub use color_entry::{ColorEntryEdit, ColorEntryField};
+pub use legacy_indexed_palette::{
+    default_file_palette, hex_color_string, is_default_file_palette, nearest_indexed_rgb,
+    parse_hex_color, parse_rgb_color, palette_push_color, palette_remove_color, rgb_color_string,
 };
 pub use legacy_indexed_palette::legacy_indexed_palette;
 pub use material_picker_module::MaterialPickerModule;
@@ -134,12 +144,12 @@ pub use storage::{
     append_action_record, force_save_shared_document_snapshot, load_or_create_shared_document,
     save_shared_document_snapshot, write_action_records_atomic, PersistedCellPoint,
     PersistedSharedGraphic, PersistedSharedPaintColor, PersistedSharedPaintedCell, SharedCellPatch,
-    SharedDocumentAction, SharedDocumentActionRecord, SharedDocumentFile, SharedDocumentLayer,
-    SharedDocumentPaths, SharedDocumentPropertyBlock, SharedDocumentPropertyTrack,
-    SharedDocumentRuntime, SharedDocumentSelection, SharedDocumentSelectionChannel,
-    SharedSelectionWriteMode, UnsupportedFileError, UnsupportedFileReason,
-    DEFAULT_SELECTION_CHANNEL_ID, SHARED_DOCUMENT_KIND, SHARED_DOCUMENT_SCHEMA_VERSION,
-    UNDO_HISTORY_DEPTH,
+    SharedDocumentAction, SharedDocumentActionRecord, SharedDocumentBackground, SharedDocumentFile,
+    SharedDocumentLayer, SharedDocumentPaths, SharedDocumentPropertyBlock,
+    SharedDocumentPropertyTrack, SharedDocumentRuntime, SharedDocumentSelection,
+    SharedDocumentSelectionChannel, SharedSelectionWriteMode, UnsupportedFileError,
+    UnsupportedFileReason, DEFAULT_SELECTION_CHANNEL_ID, SHARED_DOCUMENT_KIND,
+    SHARED_DOCUMENT_SCHEMA_VERSION, UNDO_HISTORY_DEPTH,
 };
 pub use timeline_state::TimelineState;
 pub use tool_state::{

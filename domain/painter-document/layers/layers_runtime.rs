@@ -511,6 +511,8 @@ mod tests {
             revision: 0,
             selection: SharedDocumentSelection::default(),
             document_window: DocumentWindow::default(),
+            palette: crate::storage::SharedDocumentPalette::default(),
+            background: None,
         }
     }
 

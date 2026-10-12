@@ -56,6 +56,7 @@ pub fn resolve_raster_canvas(
     breath: u32,
     canvas_of: impl Fn(&SharedDocumentPropertyBlock) -> Option<Canvas>,
     graphic_fade: Option<&ShapeFade>,
+    palette: &[[u8; 3]],
 ) -> Option<Canvas> {
     let index = blocks
         .iter()
@@ -69,7 +70,7 @@ pub fn resolve_raster_canvas(
                 .filter(|block| block.is_blank)
                 .map(|_| blocks.len() - 1)
         })?;
-    resolve_block(blocks, index, breath, canvas_of, graphic_fade)
+    resolve_block(blocks, index, breath, canvas_of, graphic_fade, palette)
 }
 
 /// Resolves one block at `breath` (the breath is always inside the block's span
@@ -80,18 +81,19 @@ fn resolve_block(
     breath: u32,
     canvas_of: impl Fn(&SharedDocumentPropertyBlock) -> Option<Canvas>,
     graphic_fade: Option<&ShapeFade>,
+    palette: &[[u8; 3]],
 ) -> Option<Canvas> {
     let block = &blocks[index];
     if !block.is_blank {
         return canvas_of(block);
     }
     match crate::interp_mode::resolve_mode(block.interpretation.as_deref()) {
-        "loop_out" => resolve_loop(blocks, index, breath, false, canvas_of, graphic_fade),
-        "loop_in" => resolve_loop(blocks, index, breath, true, canvas_of, graphic_fade),
+        "loop_out" => resolve_loop(blocks, index, breath, false, canvas_of, graphic_fade, palette),
+        "loop_in" => resolve_loop(blocks, index, breath, true, canvas_of, graphic_fade, palette),
         "hold" => solid_canvas_before(blocks, index, &canvas_of)
             .or_else(|| solid_canvas_after(blocks, index, &canvas_of)),
-        "smear" => resolve_smear(blocks, index, breath, canvas_of, graphic_fade),
-        _ => resolve_interpolate(blocks, index, breath, canvas_of, graphic_fade),
+        "smear" => resolve_smear(blocks, index, breath, canvas_of, graphic_fade, palette),
+        _ => resolve_interpolate(blocks, index, breath, canvas_of, graphic_fade, palette),
     }
 }
 
@@ -131,13 +133,14 @@ fn resolve_interpolate(
     breath: u32,
     canvas_of: impl Fn(&SharedDocumentPropertyBlock) -> Option<Canvas>,
     graphic_fade: Option<&ShapeFade>,
+    palette: &[[u8; 3]],
 ) -> Option<Canvas> {
     let previous = solid_canvas_before(blocks, index, &canvas_of);
     let next = solid_canvas_after(blocks, index, &canvas_of);
     match (previous, next) {
         (Some(from), Some(to)) => {
             let progress = interp_move::empty_progress(&blocks[index], breath);
-            Some(blend_canvases(&from, &to, progress, graphic_fade))
+            Some(blend_canvases(&from, &to, progress, graphic_fade, palette))
         }
         (only, None) => only,
         (None, only) => only,
@@ -153,6 +156,7 @@ fn resolve_smear(
     breath: u32,
     canvas_of: impl Fn(&SharedDocumentPropertyBlock) -> Option<Canvas>,
     graphic_fade: Option<&ShapeFade>,
+    palette: &[[u8; 3]],
 ) -> Option<Canvas> {
     let previous = solid_canvas_before(blocks, index, &canvas_of);
     let next = solid_canvas_after(blocks, index, &canvas_of);
@@ -164,6 +168,7 @@ fn resolve_smear(
                 &to,
                 progress,
                 graphic_fade,
+                palette,
             ))
         }
         (only, None) => only,
@@ -181,6 +186,7 @@ fn resolve_loop(
     mirror: bool,
     canvas_of: impl Fn(&SharedDocumentPropertyBlock) -> Option<Canvas>,
     graphic_fade: Option<&ShapeFade>,
+    palette: &[[u8; 3]],
 ) -> Option<Canvas> {
     let blank = &blocks[index];
     let first_solid = blocks.iter().position(|block| !block.is_blank)?;
@@ -202,7 +208,7 @@ fn resolve_loop(
     let mapped_index = blocks.iter().position(|block| {
         crate::properties::breath_in_span(mapped, block.start_breath, block.length_breaths)
     })?;
-    resolve_block(blocks, mapped_index, mapped, canvas_of, graphic_fade)
+    resolve_block(blocks, mapped_index, mapped, canvas_of, graphic_fade, palette)
 }
 
 /// Blends two keyframe canvases at `progress` (0 = fully `from`, 1 = fully
@@ -216,6 +222,7 @@ pub fn blend_canvases(
     to: &Canvas,
     progress: f32,
     graphic_fade: Option<&ShapeFade>,
+    palette: &[[u8; 3]],
 ) -> Canvas {
     let progress = progress.clamp(0.0, 1.0);
     let from_active = progress < 0.5;
@@ -228,7 +235,7 @@ pub fn blend_canvases(
             (Some(a), Some(b)) => {
                 blended.insert(
                     *position,
-                    blend_cells(a, b, progress, from_active, graphic_fade),
+                    blend_cells(a, b, progress, from_active, graphic_fade, palette),
                 );
             }
             (Some(a), None) if from_active => {
@@ -255,8 +262,9 @@ fn blend_cells(
     progress: f32,
     from_active: bool,
     graphic_fade: Option<&ShapeFade>,
+    palette: &[[u8; 3]],
 ) -> PaintedCell {
-    blend_cells_with_weight_scale(from, to, progress, from_active, 1.0, graphic_fade)
+    blend_cells_with_weight_scale(from, to, progress, from_active, 1.0, graphic_fade, palette)
 }
 
 /// Folds a non-empty run of cells into one blended representative at the
@@ -266,14 +274,18 @@ fn blend_cells(
 /// an injected shape-fade resolver each pair falls back to the discrete
 /// halfway cutoff. The caller owns the run's order (canvas iteration order
 /// keeps it deterministic).
-pub fn blend_cell_run(cells: &[PaintedCell], graphic_fade: Option<&ShapeFade>) -> PaintedCell {
+pub fn blend_cell_run(
+    cells: &[PaintedCell],
+    graphic_fade: Option<&ShapeFade>,
+    palette: &[[u8; 3]],
+) -> PaintedCell {
     let mut iter = cells.iter();
     let mut acc = iter
         .next()
         .expect("blend_cell_run requires a non-empty run")
         .clone();
     for next in iter {
-        acc = blend_cells(&acc, next, 0.5, false, graphic_fade);
+        acc = blend_cells(&acc, next, 0.5, false, graphic_fade, palette);
     }
     acc
 }
@@ -310,6 +322,7 @@ pub(crate) fn blend_cells_with_weight_scale(
     from_active: bool,
     weight_scale: f32,
     graphic_fade: Option<&ShapeFade>,
+    palette: &[[u8; 3]],
 ) -> PaintedCell {
     let interpolated_weight = lerp_weight(from.weight_index, to.weight_index, progress);
     let weight_index = scale_weight(interpolated_weight, weight_scale);
@@ -329,7 +342,7 @@ pub(crate) fn blend_cells_with_weight_scale(
             renderer_weight(weight_index),
             graphic_fade,
         ),
-        color: blend_colors(&from.color, &to.color, progress, from_active),
+        color: blend_colors(&from.color, &to.color, progress, from_active, palette),
         weight_index,
         // Shader stacks are ordered discrete appearance: choose the same
         // endpoint as the hard-cutoff graphic/material channels, never merge
@@ -451,23 +464,27 @@ fn resolve_graphic(
     }
 }
 
-/// Flat RGB lerps channel-by-channel, then snaps to the indexed palette so
-/// interpolated raster content never creates a color outside that system.
-/// Anything else (material colors) is discrete and rides the graphic's halfway
-/// cutoff.
+/// Flat RGB lerps channel-by-channel, then snaps to the file's indexed
+/// palette so interpolated raster content never creates a color outside
+/// that system. Anything else (material colors) is discrete and rides the
+/// graphic's halfway cutoff.
 fn blend_colors(
     from: &PaintColor,
     to: &PaintColor,
     progress: f32,
     from_active: bool,
+    palette: &[[u8; 3]],
 ) -> PaintColor {
     match (from, to) {
         (PaintColor::FlatRgb(r1, g1, b1), PaintColor::FlatRgb(r2, g2, b2)) => {
-            let [red, green, blue] = nearest_indexed_rgb([
-                lerp_channel(*r1, *r2, progress),
-                lerp_channel(*g1, *g2, progress),
-                lerp_channel(*b1, *b2, progress),
-            ]);
+            let [red, green, blue] = nearest_indexed_rgb(
+                [
+                    lerp_channel(*r1, *r2, progress),
+                    lerp_channel(*g1, *g2, progress),
+                    lerp_channel(*b1, *b2, progress),
+                ],
+                palette,
+            );
             PaintColor::FlatRgb(red, green, blue)
         }
         (from, to) => {
@@ -498,6 +515,37 @@ fn lerp_weight(from: i64, to: i64, progress: f32) -> i64 {
 mod tests {
     use super::*;
     use crate::brush::write_cell;
+
+    /// Test-local wrappers over the palette-threaded blend seams, resolving
+    /// against the shipped default palette; a dedicated non-default-palette
+    /// test supplies its own list explicitly.
+    fn test_palette() -> Vec<[u8; 3]> {
+        crate::legacy_indexed_palette::default_file_palette()
+    }
+
+    fn blend_canvases(
+        from: &Canvas,
+        to: &Canvas,
+        progress: f32,
+        graphic_fade: Option<&ShapeFade>,
+    ) -> Canvas {
+        crate::interp_raster::blend_canvases(from, to, progress, graphic_fade, &test_palette())
+    }
+
+    fn resolve_raster_canvas(
+        blocks: &[SharedDocumentPropertyBlock],
+        breath: u32,
+        canvas_of: impl Fn(&SharedDocumentPropertyBlock) -> Option<Canvas>,
+        graphic_fade: Option<&ShapeFade>,
+    ) -> Option<Canvas> {
+        crate::interp_raster::resolve_raster_canvas(
+            blocks,
+            breath,
+            canvas_of,
+            graphic_fade,
+            &test_palette(),
+        )
+    }
     use crate::legacy_indexed_palette::legacy_indexed_palette;
     use crate::paint_color::PaintColor;
     use serde_json::json;
@@ -597,6 +645,38 @@ mod tests {
         // Palette endpoints still resolve exactly.
         assert_eq!(blend_canvases(&from, &to, 0.0, None), from);
         assert_eq!(blend_canvases(&from, &to, 1.0, None), to);
+    }
+
+    #[test]
+    fn blend_resolves_against_a_supplied_non_default_palette() {
+        // A two-entry non-default palette: mid-gray blends must snap to the
+        // supplied list, never to the legacy 37's nearest gray.
+        let palette = vec![[10u8, 10, 10], [200, 200, 200]];
+        let from = canvas_with(&[(point(1, 1), cell('a', PaintColor::flat_rgb(0, 0, 0), 2))]);
+        let to = canvas_with(&[(point(1, 1), cell('b', PaintColor::flat_rgb(255, 255, 255), 2))]);
+
+        let mid = crate::interp_raster::blend_canvases(&from, &to, 0.5, None, &palette);
+        assert_eq!(
+            mid.get(&point(1, 1)).unwrap().color,
+            PaintColor::FlatRgb(200, 200, 200),
+            "the mid blend snaps to the supplied palette, not the legacy 37"
+        );
+
+        // Off-palette endpoints still snap to the supplied list.
+        assert_eq!(
+            crate::interp_raster::blend_canvases(&from, &to, 0.0, None, &palette)
+                .get(&point(1, 1))
+                .unwrap()
+                .color,
+            PaintColor::FlatRgb(10, 10, 10)
+        );
+        assert_eq!(
+            crate::interp_raster::blend_canvases(&from, &to, 1.0, None, &palette)
+                .get(&point(1, 1))
+                .unwrap()
+                .color,
+            PaintColor::FlatRgb(200, 200, 200)
+        );
     }
 
     #[test]

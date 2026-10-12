@@ -947,15 +947,14 @@ impl CanvasPointerStrokes {
             } else {
                 {
                     let mut selection_state = ctx.selection.borrow_mut();
-                    let mode =
-                        selection_behavior(ctx.tool_state.borrow().tool_for_hand(stroke.hand).id())
-                            .resolve(selection_state.mode(), SelectionMode::Subtract);
-                    let points = ctx.tool_state.borrow().lasso_selection_points(
+                    let tool_state = ctx.tool_state.borrow();
+                    tool_state.apply_lasso_selection_for_hand(
+                        ctx.canvas,
+                        &mut selection_state,
                         &stroke.path,
                         stroke.hand,
                         orientation,
                     );
-                    selection_state.apply_plane_points_with_mode(points, mode);
                 }
                 let points: Vec<CellPoint> = ctx.selection.borrow().plane().iter().collect();
                 commit_selection_channel(

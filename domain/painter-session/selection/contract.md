@@ -22,7 +22,7 @@ Own live selection state for plane and world-oriented authoring flows.
 - `contract.md`
   - selection contract
 - `selection_state.rs`
-  - live plane/world selection state, selection mode, plane helper ops, exact unfiltered 3D set replacement (`replace_plane_points_exact` for the move commit), edit gating, flood-select traversal, and live plane-bounds retargeting
+  - live plane/world selection state, selection mode, plane helper ops, exact unfiltered 3D set replacement (`replace_plane_points_exact` for the move commit), edit gating, flood-select traversal (delegating to the fill core so one BFS truth serves fill and flood select), through-depth filtering/application helpers for the tools' 3d toggle, and live plane-bounds retargeting
 - `selection_actions.rs`
   - one dispatch seam for the registry's selection actions (mode set, clear, invert, all); shape actions re-commit their plane points to the shared selection channel here
 

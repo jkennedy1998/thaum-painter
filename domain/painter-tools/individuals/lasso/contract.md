@@ -4,7 +4,7 @@
 Own the lasso tool's registration truth as one tool encapsulation.
 
 ## owns
-- the `LassoTool` registration type resolving lasso's `ToolDescriptor` (id "lasso", label, icon, no property rows yet, lasso hotkey action)
+- the `LassoTool` registration type resolving lasso's `ToolDescriptor` (id "lasso", label, icon, `fill_3d` property row, lasso hotkey action)
 - lasso's future session behavior home (drag-path accumulation lives in `painter-session/tool-state/lasso_stroke`, application in `painter-session/tool-state` match seams)
 
 ## does not own

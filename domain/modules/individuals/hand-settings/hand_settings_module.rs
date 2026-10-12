@@ -2,14 +2,14 @@ use std::{cell::RefCell, rc::Rc};
 
 use thaum_renderer_domain::{
     title_hotspot, Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, CellWeight,
-    GizmoBar, GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module, ModulePointerEvent,
-    ModuleRect, NumberFieldEdit, PanelChrome, PersistedModuleUiState, PropertyHit,
-    PropertyMatrixColumn, PropertyMatrixSide, PropertyRow, PropertyRows, ScrollState, UiPalette,
-    WorldPoint,
+    GizmoBar, GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module, ModulePointerButton,
+    ModulePointerEvent, ModuleRect, NumberFieldEdit, PanelChrome, PersistedModuleUiState,
+    PropertyHit, PropertyMatrixColumn, PropertyMatrixSide, PropertyRow, PropertyRows, Scrollbar,
+    ScrollbarSpan, ScrollState, UiPalette, WorldPoint,
 };
 
 use crate::{
-    selection_state::{PainterSelection, SelectionMode},
+    fill::FillConnectivity, selection_state::{PainterSelection, SelectionMode},
     tool_state::{PaintChannel, PaintHand, PaintTarget, PaintTool, ToolState},
 };
 
@@ -40,6 +40,10 @@ pub struct HandSettingsModule {
     /// Row scroll over the property rows; the panel crops rows that do not
     /// fit, so scrolling is how tucked-away tool rows become reachable.
     scroll: ScrollState,
+    /// Vertical scrollbar over the property rows, overlaid on the rightmost
+    /// content column; drag state lives here, geometry re-synced on every
+    /// pointer/wheel event so panel resizes keep it honest.
+    scrollbar: Scrollbar,
     hidden: bool,
 }
 
@@ -51,7 +55,7 @@ impl HandSettingsModule {
         selection: Rc<RefCell<PainterSelection>>,
         number_edit: Rc<RefCell<Option<NumberFieldEdit>>>,
     ) -> Self {
-        Self {
+        let mut panel = Self {
             id: id.into(),
             rect,
             tool_state,
@@ -61,8 +65,15 @@ impl HandSettingsModule {
             gizmos: GizmoBar::standard(),
             gizmo_state: GizmoState::new(),
             scroll: ScrollState::new(),
+            scrollbar: Scrollbar::new(ScrollbarSpan::Vertical {
+                x: 0,
+                top: 0,
+                bottom: 0,
+            }),
             hidden: false,
-        }
+        };
+        panel.scrollbar.set_span(panel.scrollbar_span());
+        panel
     }
 
     pub fn with_palette(mut self, palette: UiPalette) -> Self {
@@ -150,15 +161,30 @@ impl HandSettingsModule {
             brush_size_columns.push(column);
         }
 
-        let mut fill_diag_columns = Vec::new();
-        for (id, label, value) in [("off", "orth", false), ("on", "diag", true)] {
+        let mut fill_connectivity_columns = Vec::new();
+        for (id, label, value) in [
+            ("adj", "adj", FillConnectivity::Adjacent),
+            ("diag", "diag", FillConnectivity::Diagonal),
+            ("all", "all", FillConnectivity::All),
+        ] {
             let mut column = PropertyMatrixColumn::new(id, label);
-            column.left_value = left.fill_diagonal == value;
-            column.right_value = right.fill_diagonal == value;
-            column.left_enabled = Self::hand_declares_row(&state, PaintHand::Left, "fill_diagonal");
+            column.left_value = left.fill_connectivity == value;
+            column.right_value = right.fill_connectivity == value;
+            column.left_enabled =
+                Self::hand_declares_row(&state, PaintHand::Left, "fill_connectivity");
             column.right_enabled =
-                Self::hand_declares_row(&state, PaintHand::Right, "fill_diagonal");
-            fill_diag_columns.push(column);
+                Self::hand_declares_row(&state, PaintHand::Right, "fill_connectivity");
+            fill_connectivity_columns.push(column);
+        }
+
+        let mut fill_3d_columns = Vec::new();
+        for (id, label, value) in [("off", "off", false), ("on", "on", true)] {
+            let mut column = PropertyMatrixColumn::new(id, label);
+            column.left_value = left.fill_3d == value;
+            column.right_value = right.fill_3d == value;
+            column.left_enabled = Self::hand_declares_row(&state, PaintHand::Left, "fill_3d");
+            column.right_enabled = Self::hand_declares_row(&state, PaintHand::Right, "fill_3d");
+            fill_3d_columns.push(column);
         }
 
         let mut picker_opp_columns = Vec::new();
@@ -221,11 +247,21 @@ impl HandSettingsModule {
                 token_width: 2,
             });
         }
-        if Self::tool_row_used(&state, "fill_diagonal") {
+        if Self::tool_row_used(&state, "fill_connectivity") {
             rows.push(PropertyRow::Matrix {
-                id: "fill_diagonal".into(),
+                id: "fill_connectivity".into(),
                 label: "fill".into(),
-                columns: fill_diag_columns,
+                columns: fill_connectivity_columns,
+                token_width: 4,
+            });
+        }
+        // The 3d toggle rides every depth-capable tool: fill picks through
+        // depth layers, lasso repeats its region per depth layer (J 2026-10-10).
+        if Self::tool_row_used(&state, "fill_3d") {
+            rows.push(PropertyRow::Matrix {
+                id: "fill_3d".into(),
+                label: "3d".into(),
+                columns: fill_3d_columns,
                 token_width: 4,
             });
         }
@@ -285,6 +321,46 @@ impl HandSettingsModule {
             .skip(scroll)
             .take(self.visible_row_count())
             .collect()
+    }
+
+    /// Where the vertical scrollbar lives this frame: the rightmost content
+    /// column, spanning the property-row viewport (below the hand-preview
+    /// block rows at the screen-top end).
+    fn scrollbar_span(&self) -> ScrollbarSpan {
+        let (content_x, content_width) = {
+            let (x, _) = PanelChrome::content_origin();
+            let (w, _) = PanelChrome::content_size(self.rect);
+            (x, w)
+        };
+        ScrollbarSpan::Vertical {
+            x: content_x + content_width - 1,
+            top: (PropertyRows::top_row_y(self.rect) - HAND_BLOCK_ROWS)
+                .max(PanelChrome::content_inset()),
+            bottom: PanelChrome::content_inset(),
+        }
+    }
+
+    /// Press on the bar: thumb grab or track page-jump. Returns whether the
+    /// bar consumed the press.
+    fn scrollbar_press(&mut self, local_x: i32, local_y: i32) -> bool {
+        let content = self.build_rows().len();
+        let viewport = self.visible_row_count();
+        let max = ScrollState::max_offset(content, viewport);
+        let mut offset = self.scroll.offset();
+        let consumed = self.scrollbar.on_down(local_x, local_y, content, viewport, &mut offset);
+        self.scroll.set_offset(offset, max);
+        consumed
+    }
+
+    /// Pointer move during a live bar drag: re-map the grab point.
+    fn scrollbar_drag(&mut self, local_x: i32, local_y: i32) -> bool {
+        let content = self.build_rows().len();
+        let viewport = self.visible_row_count();
+        let max = ScrollState::max_offset(content, viewport);
+        let mut offset = self.scroll.offset();
+        let moved = self.scrollbar.on_drag(local_x, local_y, content, viewport, &mut offset);
+        self.scroll.set_offset(offset, max);
+        moved
     }
 
     fn tool_row_used(state: &ToolState, row_id: &str) -> bool {
@@ -392,13 +468,22 @@ impl HandSettingsModule {
                     state.set_brush_size_for_hand(hand, size);
                 }
             }
-            "fill_diagonal" => {
-                let fill_diagonal = match column_id.as_str() {
+            "fill_connectivity" => {
+                let connectivity = match column_id.as_str() {
+                    "adj" => FillConnectivity::Adjacent,
+                    "diag" => FillConnectivity::Diagonal,
+                    "all" => FillConnectivity::All,
+                    _ => return,
+                };
+                state.set_fill_connectivity_for_hand(hand, connectivity);
+            }
+            "fill_3d" => {
+                let fill_3d = match column_id.as_str() {
                     "off" => false,
                     "on" => true,
                     _ => return,
                 };
-                state.set_fill_diagonal_for_hand(hand, fill_diagonal);
+                state.set_fill_3d_for_hand(hand, fill_3d);
             }
             "picker_opposite_hand" => {
                 let pick_opposite_hand = match column_id.as_str() {
@@ -512,6 +597,18 @@ impl Module for HandSettingsModule {
             &self.palette,
             HAND_BLOCK_ROWS,
         ));
+        // Vertical scrollbar over the property rows, drawn after them so the
+        // thumb/track overwrite any row cell they sit on. Only renders when
+        // the rows overflow the viewport.
+        cells.extend(self.scrollbar.cells_with_span(
+            self.scrollbar_span(),
+            self.build_rows().len(),
+            self.visible_row_count(),
+            self.scroll.offset(),
+            &self.palette,
+            None,
+            self.scrollbar.is_active(),
+        ));
 
         let state = self.tool_state.borrow();
         let (content_x, _) = PanelChrome::content_origin();
@@ -568,6 +665,7 @@ impl Module for HandSettingsModule {
     }
 
     fn on_pointer_event(&mut self, event: ModulePointerEvent) {
+        self.scrollbar.set_span(self.scrollbar_span());
         match event {
             ModulePointerEvent::Click { x, y, button } => {
                 if let Some(outcome) = self.gizmo_state.handle_click(&self.gizmos, self.rect, x, y)
@@ -575,6 +673,13 @@ impl Module for HandSettingsModule {
                     if outcome == GizmoClickOutcome::Gizmo(GizmoKind::Close) {
                         self.hidden = true;
                     }
+                    return;
+                }
+                // A left press on the scrollbar is bar interaction (thumb
+                // grab or track page-jump), never a property hit.
+                if button == ModulePointerButton::Left
+                    && self.scrollbar_press(x - self.rect.x0, y - self.rect.y0)
+                {
                     return;
                 }
                 let rows = self.visible_rows();
@@ -585,14 +690,27 @@ impl Module for HandSettingsModule {
                 }
             }
             ModulePointerEvent::Move { x, y } => {
+                self.scrollbar.note_pointer(x - self.rect.x0, y - self.rect.y0);
+                // A live bar drag owns the pointer: follow the thumb, skip
+                // the gizmo drag path entirely.
+                if self.scrollbar.is_dragging() {
+                    self.scrollbar_drag(x - self.rect.x0, y - self.rect.y0);
+                    return;
+                }
                 self.gizmo_state.note_pointer(&self.gizmos, self.rect, x, y);
                 if let Some(next_rect) = self.gizmo_state.drag_rect(x, y) {
                     self.rect = next_rect;
                 }
             }
-            ModulePointerEvent::Up { .. } => self.gizmo_state.end_drag(),
+            ModulePointerEvent::Up { .. } => {
+                self.scrollbar.on_up();
+                self.gizmo_state.end_drag();
+            }
             ModulePointerEvent::Enter => self.gizmo_state.set_hovered(true),
-            ModulePointerEvent::Leave => self.gizmo_state.set_hovered(false),
+            ModulePointerEvent::Leave => {
+                self.scrollbar.clear_pointer();
+                self.gizmo_state.set_hovered(false);
+            }
             ModulePointerEvent::Down { .. } => {}
         }
     }
@@ -601,6 +719,7 @@ impl Module for HandSettingsModule {
     /// −1), clamped to the row's range. Anywhere else, the wheel scrolls the
     /// panel's row list so cropped tool rows stay reachable.
     fn on_wheel(&mut self, x: i32, y: i32, _delta_x: f32, delta_y: f32) -> bool {
+        self.scrollbar.set_span(self.scrollbar_span());
         if self.number_edit.borrow().is_some() {
             // A typing session owns the keyboard; ignore wheel while editing.
             return true;
@@ -637,7 +756,7 @@ impl Module for HandSettingsModule {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.gizmo_state.wants_pointer_capture()
+        self.gizmo_state.wants_pointer_capture() || self.scrollbar.is_dragging()
     }
 
     fn is_hidden(&self) -> bool {
@@ -797,7 +916,7 @@ mod tests {
     }
 
     #[test]
-    fn clicking_fill_diag_tokens_updates_only_the_matching_hand() {
+    fn clicking_fill_tokens_updates_only_the_matching_hand() {
         let state = tool_state();
         state
             .borrow_mut()
@@ -806,13 +925,28 @@ mod tests {
             HandSettingsModule::new("hands", rect(), state.clone(), selection(), number_edit());
 
         module.apply_property_hit(PropertyHit::Matrix {
-            row_id: "fill_diagonal".into(),
+            row_id: "fill_connectivity".into(),
+            side: PropertyMatrixSide::Right,
+            column_id: "all".into(),
+        });
+
+        assert_eq!(
+            state.borrow().right_hand.fill_connectivity,
+            FillConnectivity::All
+        );
+        assert_eq!(
+            state.borrow().left_hand.fill_connectivity,
+            FillConnectivity::Adjacent
+        );
+
+        module.apply_property_hit(PropertyHit::Matrix {
+            row_id: "fill_3d".into(),
             side: PropertyMatrixSide::Right,
             column_id: "on".into(),
         });
 
-        assert!(state.borrow().right_hand.fill_diagonal);
-        assert!(!state.borrow().left_hand.fill_diagonal);
+        assert!(state.borrow().right_hand.fill_3d);
+        assert!(!state.borrow().left_hand.fill_3d);
     }
 
     #[test]
@@ -835,14 +969,15 @@ mod tests {
         // Default hands: brush on both hands, with right holding CLEAR — brush size shows, fill hides.
         let default_ids = row_ids(&module);
         assert!(default_ids.contains(&"brush_size".to_string()));
-        assert!(!default_ids.contains(&"fill_diagonal".to_string()));
+        assert!(!default_ids.contains(&"fill_connectivity".to_string()));
 
         state
             .borrow_mut()
             .set_tool_for_hand(PaintHand::Right, PaintTool::Fill);
         let mixed_ids = row_ids(&module);
         assert!(mixed_ids.contains(&"brush_size".to_string()));
-        assert!(mixed_ids.contains(&"fill_diagonal".to_string()));
+        assert!(mixed_ids.contains(&"fill_connectivity".to_string()));
+        assert!(mixed_ids.contains(&"fill_3d".to_string()));
         assert!(!mixed_ids.contains(&"fill_match".to_string()));
 
         // Standard rows stay put regardless of the equipped tools.
@@ -1090,5 +1225,47 @@ mod tests {
         });
 
         assert!(module.wants_pointer_capture());
+    }
+
+    #[test]
+    fn overflowing_property_rows_draw_a_draggable_vertical_scrollbar() {
+        let state = tool_state();
+        state
+            .borrow_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Text);
+        let mut module =
+            HandSettingsModule::new("hands", scroll_rect(), state, selection(), number_edit());
+        let span = module.scrollbar_span();
+        assert!(module.build_rows().len() > module.visible_row_count());
+
+        // The bar draws on its column: thumb at the screen-top end — the
+        // occupied top cap keeps its own glyph, weight boosted (J).
+        let group = module.draw();
+        let (bar_x, bar_top, bar_bottom) = match span {
+            ScrollbarSpan::Vertical { x, top, bottom } => (x, top, bottom),
+            ScrollbarSpan::Horizontal { .. } => unreachable!(),
+        };
+        assert_eq!(
+            group
+                .cells
+                .get(&CellPoint {
+                    x: bar_x,
+                    y: bar_top,
+                    z: 0
+                })
+                .map(|cell| cell.graphic.clone()),
+            Some(CellGraphic::Glyph('┳'))
+        );
+
+        // Press the thumb's top-end edge, drag to the bar's bottom end: the
+        // offset lands at the max and the wheel gate stays consistent.
+        let max = ScrollState::max_offset(module.build_rows().len(), module.visible_row_count());
+        assert!(max > 0);
+        // Span coordinates are module-local; press/drag take local coords.
+        assert!(module.scrollbar_press(bar_x, bar_top));
+        assert!(module.scrollbar_drag(bar_x, bar_bottom));
+        assert_eq!(module.scroll.offset(), max);
+        assert!(module.scrollbar_drag(bar_x, bar_top));
+        assert_eq!(module.scroll.offset(), 0);
     }
 }

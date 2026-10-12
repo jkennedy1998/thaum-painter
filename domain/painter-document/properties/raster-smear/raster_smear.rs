@@ -46,6 +46,7 @@ pub fn smear_canvases(
     to: &Canvas,
     progress: f32,
     graphic_fade: Option<&ShapeFade>,
+    palette: &[[u8; 3]],
 ) -> Canvas {
     let progress = progress.clamp(0.0, 1.0);
     // Keyframe breaths must preserve every authored cell exactly, including a
@@ -68,7 +69,7 @@ pub fn smear_canvases(
         unmatched_to.remove(&pair.target);
     }
     let mut splats: BTreeMap<CellPoint, Splat> =
-        blend_canvases(&unmatched_from, &unmatched_to, progress, graphic_fade)
+        blend_canvases(&unmatched_from, &unmatched_to, progress, graphic_fade, palette)
             .into_iter()
             .map(|(position, cell)| {
                 (
@@ -111,6 +112,7 @@ pub fn smear_canvases(
                 local_progress < 0.5,
                 weight_scale,
                 graphic_fade,
+                palette,
             );
             insert_splat(
                 &mut splats,
@@ -278,6 +280,51 @@ fn insert_splat(output: &mut BTreeMap<CellPoint, Splat>, position: CellPoint, ca
 mod tests {
     use super::*;
     use crate::brush::write_cell;
+
+    /// Test-local wrappers over the palette-threaded blend seams, resolving
+    /// against the shipped default palette.
+    fn test_palette() -> Vec<[u8; 3]> {
+        crate::legacy_indexed_palette::default_file_palette()
+    }
+
+    /// Test-local wrapper over the palette-threaded smear seam, resolving
+    /// against the shipped default palette.
+    fn smear_canvases(
+        from: &Canvas,
+        to: &Canvas,
+        progress: f32,
+        graphic_fade: Option<&ShapeFade>,
+    ) -> Canvas {
+        crate::raster_smear::smear_canvases(from, to, progress, graphic_fade, &test_palette())
+    }
+
+    fn blend_canvases(
+        from: &Canvas,
+        to: &Canvas,
+        progress: f32,
+        graphic_fade: Option<&ShapeFade>,
+    ) -> Canvas {
+        crate::interp_raster::blend_canvases(from, to, progress, graphic_fade, &test_palette())
+    }
+
+    fn blend_cells_with_weight_scale(
+        from: &PaintedCell,
+        to: &PaintedCell,
+        progress: f32,
+        from_active: bool,
+        weight_scale: f32,
+        graphic_fade: Option<&ShapeFade>,
+    ) -> PaintedCell {
+        crate::interp_raster::blend_cells_with_weight_scale(
+            from,
+            to,
+            progress,
+            from_active,
+            weight_scale,
+            graphic_fade,
+            &test_palette(),
+        )
+    }
     use crate::paint_color::PaintColor;
 
     fn point(x: i32, y: i32) -> CellPoint {

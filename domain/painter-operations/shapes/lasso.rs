@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 
 use thaum_renderer_domain::{
     project_world_relative_to_view, unproject_view_relative_to_world, CameraViewOrientation,
-    CellPoint, ViewRelativePoint, WorldPoint,
+    CellPoint, ViewRelativePoint, WorldAxis, WorldPoint,
 };
 
 /// Rasterizes one closed lasso path into the cells it encloses (interior
@@ -21,9 +21,78 @@ use thaum_renderer_domain::{
 pub fn lasso_points(path: &[CellPoint], orientation: CameraViewOrientation) -> Vec<CellPoint> {
     let mut vertices: Vec<CellPoint> = path.to_vec();
     vertices.dedup();
+    // A degenerate path (fewer than two distinct points) encloses just its
+    // own cells, so a lasso click acts on exactly one cell.
     if vertices.len() < 2 {
         return vertices;
     }
+    let (right_up_cells, anchor_world) = lasso_view_cells(&vertices, orientation);
+    right_up_cells
+        .into_iter()
+        .map(|(right, up)| view_cell_to_world(orientation, &anchor_world, right, up, 0))
+        .collect()
+}
+
+/// [`lasso_points`] repeated across every depth layer of an inclusive world
+/// depth span `(min, max)` along the camera's view axis (J 2026-10-10). The
+/// polygon rasterizes once in view space; each span depth unprojects the
+/// same (right, up) cells, so every depth layer receives an identical
+/// region relative to the viewing angle. The span must be finite — callers
+/// derive it from the canvas's content extent (`fill::depth_span_for_canvas`).
+pub fn lasso_points_through_depth(
+    path: &[CellPoint],
+    orientation: CameraViewOrientation,
+    depth_span: (i32, i32),
+) -> Vec<CellPoint> {
+    let mut vertices: Vec<CellPoint> = path.to_vec();
+    vertices.dedup();
+    // A degenerate path acts on exactly its own cell, on every span depth.
+    if vertices.len() < 2 {
+        let mut points = Vec::new();
+        for depth in depth_span.0..=depth_span.1 {
+            for vertex in &vertices {
+                let mut point = *vertex;
+                match orientation.depth.axis() {
+                    WorldAxis::X => point.x = depth,
+                    WorldAxis::Y => point.y = depth,
+                    WorldAxis::Z => point.z = depth,
+                }
+                points.push(point);
+            }
+        }
+        return points;
+    }
+    let (right_up_cells, anchor_world) = lasso_view_cells(&vertices, orientation);
+    let anchor_depth = depth_coordinate_for_axis(orientation.depth.axis(), anchor_world);
+    (depth_span.0..=depth_span.1)
+        .flat_map(|depth| {
+            let relative_depth = depth - anchor_depth;
+            right_up_cells
+                .iter()
+                .map(|&(right, up)| {
+                    view_cell_to_world(orientation, &anchor_world, right, up, relative_depth)
+                })
+                .collect::<Vec<CellPoint>>()
+        })
+        .collect()
+}
+
+fn depth_coordinate_for_axis(axis: WorldAxis, point: WorldPoint) -> i32 {
+    match axis {
+        WorldAxis::X => point.x,
+        WorldAxis::Y => point.y,
+        WorldAxis::Z => point.z,
+    }
+}
+
+/// Rasterizes the closed path once in view space and returns the enclosed
+/// (right, up) cells plus the anchor world point every unprojection shares.
+/// Callers resolve degenerate paths (fewer than two distinct points)
+/// themselves — this helper assumes a real polygon.
+fn lasso_view_cells(
+    vertices: &[CellPoint],
+    orientation: CameraViewOrientation,
+) -> (Vec<(i32, i32)>, WorldPoint) {
     let anchor = vertices[0];
     let anchor_world = WorldPoint {
         x: anchor.x,
@@ -52,25 +121,31 @@ pub fn lasso_points(path: &[CellPoint], orientation: CameraViewOrientation) -> V
         })
         .collect();
 
-    rasterize_closed_polygon(&view_vertices)
-        .into_iter()
-        .map(|(right, up)| {
-            let world = unproject_view_relative_to_world(
-                orientation,
-                anchor_world,
-                ViewRelativePoint {
-                    right,
-                    up,
-                    depth: 0,
-                },
-            );
-            CellPoint {
-                x: world.x,
-                y: world.y,
-                z: world.z,
-            }
-        })
-        .collect()
+    (
+        rasterize_closed_polygon(&view_vertices)
+            .into_iter()
+            .collect(),
+        anchor_world,
+    )
+}
+
+fn view_cell_to_world(
+    orientation: CameraViewOrientation,
+    anchor_world: &WorldPoint,
+    right: i32,
+    up: i32,
+    depth: i32,
+) -> CellPoint {
+    let world = unproject_view_relative_to_world(
+        orientation,
+        *anchor_world,
+        ViewRelativePoint { right, up, depth },
+    );
+    CellPoint {
+        x: world.x,
+        y: world.y,
+        z: world.z,
+    }
 }
 
 /// Even-odd-free rasterization of one implicitly closed polygon in (right,
@@ -345,5 +420,44 @@ mod tests {
         assert_eq!(flat.len(), side.len());
         assert!(flat.iter().all(|p| p.z == 0));
         assert!(side.iter().all(|p| p.x == 0));
+    }
+
+    #[test]
+    fn through_depth_repeats_the_region_on_every_span_layer() {
+        // J 2026-10-10: the lasso acts on every depth layer relative to the
+        // viewer's viewing angle — one square, z span -1..=1, three copies.
+        let path = [point(0, 0), point(2, 0), point(2, 2), point(0, 2)];
+        let points = lasso_points_through_depth(&path, flat_view(), (-1, 1));
+
+        assert_eq!(points.len(), 9 * 3);
+        for depth in [-1, 0, 1] {
+            for y in 0..=2 {
+                for x in 0..=2 {
+                    assert!(points.contains(&CellPoint { x, y, z: depth }));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn through_depth_spans_outside_the_anchor_still_cover_the_anchor() {
+        // The anchor sits at z=5; the span -1..=1 is absolute world depth,
+        // so the copies land on those layers — never re-anchored to 5.
+        let path = [CellPoint { x: 0, y: 0, z: 5 }, CellPoint { x: 2, y: 2, z: 5 }];
+        let points = lasso_points_through_depth(&path, flat_view(), (-1, 1));
+        assert!(points.iter().all(|p| p.z == -1 || p.z == 0 || p.z == 1));
+    }
+
+    #[test]
+    fn a_single_point_lasso_through_depth_stamps_that_cell_per_layer() {
+        let path = [CellPoint { x: 4, y: 7, z: 3 }];
+        assert_eq!(
+            lasso_points_through_depth(&path, flat_view(), (2, 4)),
+            vec![
+                CellPoint { x: 4, y: 7, z: 2 },
+                CellPoint { x: 4, y: 7, z: 3 },
+                CellPoint { x: 4, y: 7, z: 4 },
+            ]
+        );
     }
 }

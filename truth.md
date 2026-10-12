@@ -38,6 +38,10 @@
 - j-quote: "yes lets exclude those. we should allow for specific shaders to be painted on. for instance, we will havce a shader in the game for things that are on fire in different increments. the different levels of fire shader will be able to painted on once they are made."
 - interpretation: Painter exposes only asset-authorable shaders selected by the game; editor-only shaders stay unavailable. Distinct fire-intensity shaders become separately paintable once defined.
 
+### 2026-09-12T07-48-05Z-clear-character-tools
+- j-quote: "Lasso erase is just lasso with the clear cell / erase cell selected. Lets shift this around. We should allow the user to select clear or erase in any tool. It should be under character specifically. Then he user can brush, lasso, fill, ect. All with clear. Then it extents to new tools later too. Eraser is this but manual for brush."
+- interpretation: Clear is a visible character-picker choice that equips the blank glyph; ordinary paint tools remove cells through their shared write seam, and the standalone Erase tool is retired.
+
 ### 2026-09-12T11-43-15Z-general-exporter-presets-and-filenames
 - j-quote: "I think it should save the preset that the asset exporter uses. We talked about asset exporter as a third thing. Not renderer or painter."
 - j-quote: "I'm thinking we need an exporter that is general. Not a thaumworld export, but more like a single-layer export so we know what kind of file it is. They won't have IDs quite yet, just filenames. IDs will happen in the game layer where we store these exports."
@@ -50,10 +54,6 @@
 ### 2026-09-12T12-11-49Z-flat-preserves-interpolation
 - j-quote: "flat preserves interpolation."
 - interpretation: The `flat` export representation retains document interpolation semantics rather than baking only discrete sampled frames.
-
-### 2026-09-12T07-48-05Z-clear-character-tools
-- j-quote: "Lasso erase is just lasso with the clear cell / erase cell selected. Lets shift this around. We should allow the user to select clear or erase in any tool. It should be under character specifically. Then he user can brush, lasso, fill, ect. All with clear. Then it extents to new tools later too. Eraser is this but manual for brush."
-- interpretation: Clear is a visible character-picker choice that equips the blank glyph; ordinary paint tools remove cells through their shared write seam, and the standalone Erase tool is retired.
 
 ### 2026-09-12T13-25-00Z-facing-as-quantized-rotation
 - j-quote: "lets look at, and think about facing. we used to have this in the game. its an important concept. later on i could see doing things like custom cells that shade differently based on viewing angle. i think rotations could be smooth if we did some raster intertpolation (we already have that) instead of aliasing. then we could do slight rotations and such. facing on layers would allow us to do some crazy things, like track rotations. that would lead into the rotation property row nicely."
@@ -70,3 +70,51 @@
 ### 2026-09-12T14-05-00Z-universal-cell-facing
 - j-quote: "if it was single source of truth like all cells had a facing, would we blow up the system file sizes much? maybe we could store it as something small. ideally everything that uses facing uses all facing bc all levels of facing matter. camera effects a cells relative facing additively so things actually look 3d in each relative view"
 - interpretation: DECIDED over the asset-keying opt-in design: facing is a universal per-cell field (default PosZ, serde skip-if-default so default cells cost zero bytes), joining weight/texture/warble as an always-present cell axis — the ASCII medium's normal vector. Relative facing composes additively through the cube rotation group (24 elements, integer-only): camera-inverse composed with layer facing composed with cell facing. This dissolves the object-vs-viewer keying declaration entirely — chest-latch and two-sided-sign behavior are the same lookup rule under different compositions. Variant sprite assets remain the carrier of per-facing cell sets (same_as fallbacks), keyed by composed relative facing. Build order: compose algebra in renderer domain first (exhaustively tested), then cell/layer/schema fields, then variant assets, rotation track, painter UI, view-angle shading.
+
+### 2026-10-10T19-40-14Z-file-truth-vs-user-truth-color-split
+- j-quote: "I think calling them dynamic versus static is actually probably not a good idea. Because we don't really need to have dynamic colors within drawings like we could just save the RGB of what the color is and that would give us more in-depth fill information later on like tolerance. That would be nice to have I don't think we need to call it dynamic for systematic I think file Truth versus user truth is just fine."
+- interpretation: The color split is named file truth (saved with the file) vs user truth (per-user UI, stable RGB). Cells always store raw RGB, never palette indices, so depth like tolerance fill stays open.
+
+### 2026-10-10T19-40-14Z-palette-module-single-interface
+- j-quote: "then they also need a new feature on the color palette module where a user can hit like there needs to be a section where they can input probably either an RGB value or a hex value and then hit plus and it would add that color to the palette. Then the user can select the color from the palette and work from there. The color block should automatically add and subtract colors when it the user is changing the those colors through the color palette module the color palette module should really be the way users are in like we should build it as one interface to change those index colors just what's simple for now. It will change the file oriented colors."
+- interpretation: The palette module is the single interface for editing the file's index colors: hex/RGB input + plus adds to the file palette, minus removes without rewriting cells, and the color block's banding auto add/subtracts as the palette changes.
+
+### 2026-10-10T19-40-14Z-default-palette-legacy-37
+- j-quote: "A default palette can be used for the current one we have. User is also going to need to be able to switch out pallets later on so if we keep them as like lists of colors on that palette I think that would be clean and we don't have to build the switching of pallets later but we could have a default palette which is the hard coded list that we had before and then that could be everyone's like starting point when they download the program which I think is fine. We could add later additional presets"
+- interpretation: Palettes are plain ordered color lists; the shipped default is the hardcoded legacy 37 as every user's starting point. Palette switching and extra presets are later work, not built now.
+
+### 2026-10-11T00-00-00Z-palette-typed-entry-linked-hex-rgb
+- j-quote: "i cant rely on the user having the color already, we need to allow the user to type in either an rgb value or a hex code for a color. ... maybe we have an entry space for hex, and an entry space for rgb values. changing one >< changes the other. when i press + it adds the colros on either of those entries (bc we keep them linked) into the indexed color palette."
+- interpretation: The palette module's entry takes a hex value or an rgb value; the two fields are two views of one linked color, and `+` commits that color into the indexed palette. The entry no longer depends on the hand already holding the color.
+
+### 2026-10-11T00-00-00Z-palette-buttons-inside-module
+- j-quote: "also the ui is weirtd for the color pallette. the buttons for adding and subtracting colors are below the color pallette module. ... also the buttons have to move inside this moduele."
+- interpretation: The `−`/`+` buttons and the entry fields live inside the COLORS panel's own bounds as its lower strip rows — nothing floats below the module.
+
+### 2026-10-11T00-00-00Z-palette-no-click-reordering
+- j-quote: "also the reorderiong of colros in the pallette module actualyl makes it really annoying to use. lets have that reordering not hjappen. just a list. mayhbe derrive the order from the color itself like value + hue sort to keep it simple and reactive with module size."
+- interpretation: Swatch clicks only select; the list order is derived from the colors themselves (value descending, hue ascending) and reflows with the module's size — no most-recently-used reordering.
+
+### 2026-10-11T00-00-00Z-color-block-clamp-widget-free-pick-flow
+- j-quote: "The widget would toggle on and off the index color clamping on the color block. When the color block is not clamped the user could press a color that's outside of the pallet in order to select it. This would be incredibly helpful because then from there they could press plus to add a custom color and this forgive users a lot of control. This would even allow users to paint with colors not on a pallet they could paint a little more like naturally. And it also means that we could also run it through the color block module which is a module that we put some ux Polish into and will continue to further polish."
+- interpretation: The color block's clamp widget turns off index clamping so any pick carries raw to the hand — painting off-palette works naturally, and `+` in the palette module adds the custom color. Free picking lives on the color block, the module getting ongoing UX polish.
+
+### 2026-10-11T00-00-00Z-fill-3way-connectivity
+- j-quote: "So fill goes from adjacent and diagonal toggle to a 3 way toggle of adjacent, diagonal, and all. It also has an additional toggle that allows for selecting with depth. Depth should be responsive to adjacent diagonal and all (non continuous) for when 3d is toggled on."
+- interpretation: Fill connectivity is a 3-way choice (adjacent/diagonal/all), and `all` means non-continuous — every matching cell in the region. The depth toggle gates the fill's reach across 3d layers and works under every connectivity.
+
+### 2026-10-11T00-00-00Z-fill-lasso-shared-3d-toggle
+- j-quote: "We need a toggle for effecting 3d layers. That would allow users to use the flood fill tool to fill multiple 3D layers relative to their viewing depth and angle. Lasso will also get a 3d toggle it will simply do the lasso tool action but for every depth layer relative to the viewers viewing angle. They can share the same property for 3d toggle. Ill have this on brush later as well."
+- interpretation: Fill and lasso share one per-hand 3d property (`fill_3d`); depth is always relative to the viewer's viewing angle, and brush is the later adopter of the same property.
+
+### 2026-10-11T00-00-00Z-picker-rows-wrap-short-of-the-scrollbar
+- j-quote: "on the character pallette module the scrollbar goes overthe last character on the rol. the character ordering needs to be aware of the scroll bar so it can resize depending on if its there or not and not make characters impossible to access without resizing the module."
+- interpretation: when the vertical scrollbar is visible the graphic picker's character rows wrap one column short so the bar's column stays bar-only — every character stays reachable without resizing the module.
+
+### 2026-10-11T00-00-00Z-toolbox-scrolls-its-tool-rows
+- j-quote: "controlls needs to get a better scrollbar,. its broken there in the saemw ayt that the perspectivcve module was. make sure tools alsop has a scrollbar if it needs one / is too short to display all toolsl. we will be adding another tool shortly and its going to expand as well."
+- interpretation: the controls panel gets the same span-math fix the perspective module got, and the toolbox scrolls its tool rows through the shared scrollbar seam whenever the panel is too short — built for the tool list to keep growing.
+
+### 2026-10-11T00-00-00Z-user-session-state-resets-on-unreadable
+- j-quote: "It would be better if user state just reset to the default if it couldn't be saved. Things like selected tools are not really valuable saves"
+- interpretation: An unreadable or unparsable user session state file is discarded and boots as the default (best-effort removal so the next save rewrites it) — session-state parse failures must never block boot or require legacy field compat like fill_diagonal.

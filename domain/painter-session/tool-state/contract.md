@@ -6,7 +6,9 @@ Own live tool settings and active authoring-hand state for the painter session.
 ## owns
 - active tool selections
 - left/right hand brush state, including the clear character (`' '`) that makes any standard paint tool clear cells
-- per-hand color, glyph, weight, brush-size, and fill-connectivity source-of-truth state
+- per-hand color, glyph, weight, brush-size, fill-connectivity (adjacent/diagonal/all), and fill-through-depth source-of-truth state
+- the hand's 3d toggle as the shared depth property: with `fill_3d` on, fill's flood reaches through the camera's depth axis over the canvas's content span, and lasso repeats its enclosed region on every depth layer of that span; with it off both stay plane-bounded. Connectivity (adjacent/diagonal/all) governs the flood in every depth mode
+- the live file palette in session state: loaded from the open document, edited through the palette module seam (`set_file_palette` / `add_file_palette_color` / `remove_file_palette_color` / `file_palette()`), and written back on save; hand colors stay raw RGB and palette edits never rewrite painted cells; the palette never empties — the last remaining color is refused
 - the rule that hand color can be either direct RGB or a material-backed choice
 - edit-channel masks
 - per-hand image-versus-selection target state
@@ -53,6 +55,7 @@ Own live tool settings and active authoring-hand state for the painter session.
 - inline `#[cfg(test)]` in `tool_state.rs`
   - light
   - validates per-hand tool selection, shared brush properties and clear-character behavior, selection-gated image editing, fill masking, lasso enclosed-region fill/selection, fill's Select-row channel matching, and the per-tool property-row manifest
+  - validates live file-palette state: load-from-file seeding, add dedupe, remove round trips, empty-list fallback to the shipped default, and palette survival through session continuity
 - inline `#[cfg(test)]` in `lasso_stroke.rs`
   - light
   - validates lasso stroke accumulation

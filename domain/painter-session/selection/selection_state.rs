@@ -1,11 +1,11 @@
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeSet};
 
 use thaum_renderer_domain::CellFacing;
 use thaum_renderer_domain::CellPoint;
 
 use crate::{
-    brush::{effective_cell, Canvas, PaintedCell},
-    fill::CanvasBounds,
+    brush::Canvas,
+    fill::{self, CanvasBounds, FillConnectivity, FillDepthMode},
     tool_state::ChannelMask,
 };
 
@@ -156,6 +156,34 @@ impl PlaneSelection {
         self.cells.extend(points);
     }
 
+    /// Removes points without plane filtering. The subtract half of the
+    /// through-depth selection application (J 2026-10-10), whose incoming
+    /// cells legitimately sit outside the active interaction plane.
+    pub fn remove_points<I>(&mut self, points: I)
+    where
+        I: IntoIterator<Item = CellPoint>,
+    {
+        for point in points {
+            self.cells.remove(&point);
+        }
+    }
+
+    /// Keeps only the cells also present in `points`, without plane
+    /// filtering. The intersect half of the through-depth selection
+    /// application; with no bounds to preserve cells outside, the result is
+    /// exactly the intersection.
+    pub fn intersect_points<I>(&mut self, points: I)
+    where
+        I: IntoIterator<Item = CellPoint>,
+    {
+        let incoming: BTreeSet<CellPoint> = points.into_iter().collect();
+        self.cells = self
+            .cells
+            .intersection(&incoming)
+            .copied()
+            .collect();
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = CellPoint> + '_ {
         self.cells.iter().copied()
     }
@@ -292,6 +320,29 @@ impl PainterSelection {
         self.plane.apply_points(points, mode);
     }
 
+    /// Through-depth selection application (J 2026-10-10): no interaction-plane
+    /// gate. Replace swaps the whole selection for the incoming 3D region —
+    /// the through-depth analog of a plane Replace, which also swaps the whole
+    /// plane selection and preserves only out-of-bounds cells.
+    pub fn apply_plane_points_through_depth_with_mode<I>(
+        &mut self,
+        points: I,
+        mode: SelectionMode,
+    ) where
+        I: IntoIterator<Item = CellPoint>,
+    {
+        let incoming: BTreeSet<CellPoint> = points.into_iter().collect();
+        match mode {
+            SelectionMode::Replace => {
+                self.plane.clear();
+                self.plane.restore_points(incoming);
+            }
+            SelectionMode::Additive => self.plane.restore_points(incoming),
+            SelectionMode::Subtract => self.plane.remove_points(incoming),
+            SelectionMode::Intersect => self.plane.intersect_points(incoming),
+        }
+    }
+
     /// Exact 3D replacement of the plane cell set without plane filtering.
     /// Used by the move commit, which re-anchors a known-full 3D point set
     /// that may legitimately span depths after a mid-drag view rotation.
@@ -321,6 +372,20 @@ impl PainterSelection {
         I: IntoIterator<Item = CellPoint>,
     {
         self.plane.filter_edit_points(points)
+    }
+
+    /// The through-depth edit filter (J 2026-10-10): the selection-cell gate
+    /// survives, the interaction-plane gate does not — a fill or lasso acting
+    /// across depth layers legitimately touches cells outside the visible
+    /// plane, and the plane cell set already holds exact 3D points.
+    pub fn filter_edit_points_through_depth<I>(&self, points: I) -> Vec<CellPoint>
+    where
+        I: IntoIterator<Item = CellPoint>,
+    {
+        points
+            .into_iter()
+            .filter(|point| self.plane.allows_edit(*point))
+            .collect()
     }
 
     pub fn apply_world_points<I>(&mut self, points: I)
@@ -368,62 +433,37 @@ fn plane_neighbors(bounds: CanvasBounds, point: CellPoint) -> Vec<CellPoint> {
     ]
 }
 
-fn cells_match_on_mask(
-    left: Option<PaintedCell>,
-    right: Option<PaintedCell>,
-    channels: ChannelMask,
-) -> bool {
-    match (left, right) {
-        (None, None) => true,
-        (Some(left), Some(right)) => {
-            (!channels.graphic || left.graphic == right.graphic)
-                && (!channels.color || left.color == right.color)
-                && (!channels.weight || left.weight_index == right.weight_index)
-        }
-        _ => false,
-    }
-}
-
+/// Flood-select region sensing for the fill tool's selection half. The
+/// traversal rules are one truth with the paint half: the same connectivity
+/// (adjacent/diagonal/all) and depth reach (J 2026-10-10), the same channel
+/// mask, and the same unified empty-cell rule — delegated to the pure fill
+/// core instead of a second BFS copy.
 pub fn flood_select_points(
     canvas: &Canvas,
     start: CellPoint,
     bounds: CanvasBounds,
     channels: ChannelMask,
+    connectivity: FillConnectivity,
+    depth: FillDepthMode,
 ) -> Vec<CellPoint> {
-    if !bounds.contains(start) || !channels.any_enabled() {
-        return Vec::new();
-    }
-
-    // Unified empty-cell rule: authored blanks count as `None` on both
-    // sides, so a blank cell never blocks a flood through empty space.
-    let target = effective_cell(canvas.get(&start)).cloned();
-    let mut queue = VecDeque::from([start]);
-    let mut seen = BTreeSet::new();
-    let mut points = Vec::new();
-
-    while let Some(point) = queue.pop_front() {
-        if !seen.insert(point) || !bounds.contains(point) {
-            continue;
-        }
-        if !cells_match_on_mask(
-            effective_cell(canvas.get(&point)).cloned(),
-            target.clone(),
-            channels,
-        ) {
-            continue;
-        }
-
-        points.push(point);
-        queue.extend(plane_neighbors(bounds, point));
-    }
-
-    points
+    fill::flood_fill_points_with(
+        canvas,
+        start,
+        bounds,
+        connectivity,
+        fill::FillChannelMask {
+            graphic: channels.graphic,
+            color: channels.color,
+            weight: channels.weight,
+        },
+        depth,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::brush::apply_brush;
+    use crate::brush::{apply_brush, PaintedCell};
 
     fn point(x: i32, y: i32) -> CellPoint {
         CellPoint { x, y, z: 0 }
@@ -666,6 +706,8 @@ mod tests {
                 color: false,
                 weight: false,
             },
+            crate::fill::FillConnectivity::Adjacent,
+            crate::fill::FillDepthMode::Plane,
         );
         let glyph_and_color = flood_select_points(
             &canvas,
@@ -676,6 +718,8 @@ mod tests {
                 color: true,
                 weight: false,
             },
+            crate::fill::FillConnectivity::Adjacent,
+            crate::fill::FillDepthMode::Plane,
         );
 
         assert_eq!(glyph_only, vec![point(1, 0), point(2, 0)]);
@@ -708,6 +752,8 @@ mod tests {
                 color: true,
                 weight: true,
             },
+            crate::fill::FillConnectivity::Adjacent,
+            crate::fill::FillDepthMode::Plane,
         );
 
         assert!(points.contains(&point(1, 0)));

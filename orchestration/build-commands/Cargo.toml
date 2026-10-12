@@ -15,6 +15,7 @@ webbrowser.workspace = true
 thaum-painter-domain = { path = "../../domain" }
 thaum-painter-workers = { path = "../../workers" }
 thaum-renderer-boot = { path = "../../../thaum-renderer/orchestration/boot" }
+thaum-renderer-breath-fallback-clock = { path = "../../../thaum-renderer/workers/breath-fallback-clock" }
 thaum-renderer-domain = { path = "../../../thaum-renderer/domain" }
 rfd = "0.15"
 arboard = "3"

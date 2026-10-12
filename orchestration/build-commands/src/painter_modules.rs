@@ -27,6 +27,7 @@ pub(crate) fn build_painter_modules(
     tool_state: &Rc<RefCell<ToolState>>,
     selection: &Rc<RefCell<PainterSelection>>,
     number_edit: &Rc<RefCell<Option<NumberFieldEdit>>>,
+    palette_color_entry: &Rc<RefCell<Option<thaum_painter_domain::ColorEntryEdit>>>,
     layers_panel_state: &Rc<RefCell<LayersPanelState>>,
     paint_canvas_viewport: &Rc<RefCell<ModuleRect>>,
     drawing_space_wheel_mode: &Rc<RefCell<thaum_painter_domain::DrawingSpaceWheelMode>>,
@@ -43,6 +44,8 @@ pub(crate) fn build_painter_modules(
     session_panel_state: &Rc<RefCell<SessionPanelState>>,
     asset_root: &std::path::Path,
     tool_presets: &Rc<RefCell<Vec<ToolPreset>>>,
+    picker_breath: &Rc<std::cell::Cell<i32>>,
+    drawing_space_background: &Rc<RefCell<Option<[u8; 3]>>>,
 ) -> ModuleRegistry {
     let mut modules = ModuleRegistry::new();
     modules.register(Box::new(
@@ -95,6 +98,7 @@ pub(crate) fn build_painter_modules(
         },
         tool_state.clone(),
         ui_palette.clone(),
+        palette_color_entry.clone(),
     )));
     modules.register(Box::new(PaintColorBlockModule::new(
         "painter_color_block",
@@ -132,7 +136,8 @@ pub(crate) fn build_painter_modules(
             tool_state.clone(),
         )
         .with_palette(ui_palette.clone())
-        .with_sided_options(thaum_painter_domain::load_sided_options(asset_root)),
+        .with_sided_options(thaum_painter_domain::load_sided_options(asset_root))
+        .with_breath_clock(picker_breath.clone()),
     ));
     modules.register(Box::new(
         HandSettingsModule::new(
@@ -151,12 +156,17 @@ pub(crate) fn build_painter_modules(
         )
         .with_palette(ui_palette.clone()),
     ));
-    modules.register(Box::new(PaintCanvasBoundsModule::new(
-        "paint_canvas_bounds",
-        paint_canvas_viewport.clone(),
-        drawing_space_wheel_mode.clone(),
-        ui_palette.clone(),
-    )));
+    modules.register(
+        Box::new(
+            PaintCanvasBoundsModule::new(
+                "paint_canvas_bounds",
+                paint_canvas_viewport.clone(),
+                drawing_space_wheel_mode.clone(),
+                ui_palette.clone(),
+            )
+            .with_background(drawing_space_background.clone(), tool_state.clone()),
+        ),
+    );
     modules.register(Box::new(
         LayersPanelModule::new(
             "painter_layers_panel",

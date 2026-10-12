@@ -10,6 +10,7 @@ Own painter's compact hand-settings panel: the left/right paint-state editor for
 - direct edits into shared live painter `tool-state`
 - direct edits into shared live painter `selection`
 - row scrolling over the property rows via the shared renderer `ScrollState`, with the top three content rows reserved for the 3x3 hand-preview blocks (J 2026-09-10: tools/graphic/color text rows and the bottom left/right hand-color blocks were replaced by two 3x3 blocks — the ring is the hand's graphic in the hand's weight and color, the center is the hand letter in weight two and the hand's color)
+- the vertical scrollbar over the property rows (shared `thaum-renderer/domain/modules/shared/scrollbar/` seam): overlaid on the rightmost content column below the hand-preview blocks, thumb drag + track page-jump, drawn only when the rows overflow; a left press on the bar never hits a property row
 
 ## does not own
 - actual paint operation semantics, owned by `domain/painter-session/tool-state/` and `domain/painter-operations/`
@@ -41,8 +42,9 @@ Own painter's compact hand-settings panel: the left/right paint-state editor for
 ## tests
 - inline `#[cfg(test)]` in `hand_settings_module.rs`
   - light
-  - validates weight, select/edit masks, target, selection mode, brush/fill property toggles, plus tool-row hiding driven by the equipped tools (the fill match row was removed 2026-09-10 — the Select row is fill's comparison truth)
+  - validates weight, select/edit masks, target, selection mode, brush/fill property toggles (fill connectivity adj/diag/all + the fill 3d depth toggle), plus tool-row hiding driven by the equipped tools (the fill match row was removed 2026-09-10 — the Select row is fill's comparison truth)
   - validates wheel behavior: over a number field it nudges that value by one; anywhere else it scrolls the row list so cropped tool rows stay reachable
+  - validates the vertical scrollbar: bar cells on overflow, thumb drag walking the property rows to both edges
 
 ## data
 - none

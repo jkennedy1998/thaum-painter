@@ -369,6 +369,43 @@ pub struct SharedDocumentFile {
     /// at the 24-breath default span.
     #[serde(default)]
     pub document_window: DocumentWindow,
+    /// The document's index palette (file truth, J 2026-10-10): an ordered
+    /// RGB color list the file's own drawing system resolves against —
+    /// swatches, color-block banding, and nearest-color interpolation. Cells
+    /// never store indices. An absent or empty section means the shipped
+    /// default palette applies, and the section is skipped on save while the
+    /// palette still matches that default.
+    #[serde(default, skip_serializing_if = "shared_document_palette_is_absent")]
+    pub palette: SharedDocumentPalette,
+    /// The drawing file's drawing-space background (file truth, J
+    /// 2026-10-11): an optional flat RGB the drawing space renders as its
+    /// backdrop box behind every layer — never the window clear color,
+    /// which stays the app's UI background. Edited only through the
+    /// drawing-space background widget. Absent means transparent — no
+    /// backdrop box draws — and the section is skipped on save while it
+    /// stays unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<SharedDocumentBackground>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SharedDocumentPalette {
+    #[serde(default)]
+    pub colors: Vec<[u8; 3]>,
+}
+
+/// One drawing-file background: a flat RGB triple. Transparency is the
+/// section's absence, not a color value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedDocumentBackground {
+    pub rgb: [u8; 3],
+}
+
+/// The save-side skip rule: no palette section while the list is empty
+/// (default applies on load) or identical to the shipped default.
+fn shared_document_palette_is_absent(palette: &SharedDocumentPalette) -> bool {
+    palette.colors.is_empty()
+        || crate::legacy_indexed_palette::is_default_file_palette(&palette.colors)
 }
 
 impl SharedDocumentFile {
@@ -399,6 +436,8 @@ impl SharedDocumentFile {
             }],
             selection: SharedDocumentSelection::default(),
             document_window: DocumentWindow::default(),
+            palette: SharedDocumentPalette::default(),
+            background: None,
         }
     }
 
@@ -1100,6 +1139,7 @@ impl SharedDocumentRuntime {
             .iter()
             .find(|track| track.property_id == "raster")?;
         let canvases = &self.block_canvases;
+        let palette = self.file_palette();
         crate::interp_raster::resolve_raster_canvas(
             &track.blocks,
             current_breath,
@@ -1109,7 +1149,19 @@ impl SharedDocumentRuntime {
                     .cloned()
             },
             graphic_fade,
+            &palette,
         )
+    }
+
+    /// The file palette in effect for interpolation: the document's own
+    /// palette when it carries one, otherwise the shipped default. Cells
+    /// never store indices — this only feeds nearest-color resolution.
+    pub fn file_palette(&self) -> Vec<[u8; 3]> {
+        if self.document.palette.colors.is_empty() {
+            crate::legacy_indexed_palette::default_file_palette()
+        } else {
+            self.document.palette.colors.clone()
+        }
     }
 
     /// The first breath the layer's raster track covers, preferring the earliest
@@ -3446,6 +3498,8 @@ mod tests {
             revision: 0,
             selection: SharedDocumentSelection::default(),
             document_window: DocumentWindow::default(),
+            palette: crate::storage::SharedDocumentPalette::default(),
+            background: None,
         };
         let mut runtime = SharedDocumentRuntime::new(document);
         runtime.apply_action_record(SharedDocumentActionRecord::cell_patch_set(
@@ -3568,6 +3622,90 @@ mod tests {
         assert!(paths.actions_file_path.exists());
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_edited_palette_round_trips_and_the_default_is_not_written() {
+        let unique = format!(
+            "thaum-painter-palette-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let paths = SharedDocumentPaths::new(root.clone());
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+
+        // Default palette: the save omits the section entirely.
+        runtime.document.palette.colors =
+            crate::legacy_indexed_palette::default_file_palette();
+        save_shared_document_snapshot(&paths, &mut runtime).unwrap();
+        let text = fs::read_to_string(&paths.document_file_path).unwrap();
+        assert!(!text.contains("\"palette\""), "default palette must not be written");
+
+        // An edited palette round-trips verbatim.
+        let edited = vec![[1, 2, 3], [250, 100, 5]];
+        runtime.document.palette.colors = edited.clone();
+        save_shared_document_snapshot(&paths, &mut runtime).unwrap();
+        let reloaded = load_document_file(&paths.document_file_path).unwrap();
+        assert_eq!(reloaded.palette.colors, edited);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_set_background_round_trips_and_transparent_is_not_written() {
+        let unique = format!(
+            "thaum-painter-background-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let paths = SharedDocumentPaths::new(root.clone());
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+
+        // Transparent (absent) background: the save omits the section.
+        save_shared_document_snapshot(&paths, &mut runtime).unwrap();
+        let text = fs::read_to_string(&paths.document_file_path).unwrap();
+        assert!(!text.contains("\"background\""), "transparent background must not be written");
+        let reloaded = load_document_file(&paths.document_file_path).unwrap();
+        assert_eq!(reloaded.background, None);
+
+        // A set background round-trips verbatim.
+        runtime.document.background = Some(crate::storage::SharedDocumentBackground {
+            rgb: [12, 34, 56],
+        });
+        save_shared_document_snapshot(&paths, &mut runtime).unwrap();
+        let reloaded = load_document_file(&paths.document_file_path).unwrap();
+        assert_eq!(reloaded.background.map(|b| b.rgb), Some([12, 34, 56]));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_absent_palette_section_loads_as_the_default() {
+        let document: serde_json::Value = serde_json::json!({
+            "file_kind": SHARED_DOCUMENT_KIND,
+            "schema_version": SHARED_DOCUMENT_SCHEMA_VERSION,
+            "document_id": "doc-1",
+            "title": "Doc",
+            "layers": []
+        });
+        let file: SharedDocumentFile = serde_json::from_value(document).unwrap();
+        assert!(file.palette.colors.is_empty());
+        // The runtime read seam resolves the default for interpolation.
+        let runtime = SharedDocumentRuntime::new(file);
+        assert_eq!(
+            runtime.file_palette(),
+            crate::legacy_indexed_palette::default_file_palette()
+        );
     }
 
     #[test]

@@ -32,7 +32,7 @@ Own editing-facing property-block views over painter file state.
   - the move channel's real resolver: hold / interpolate (with ease-bent lerped offset) / edge-locked loops, plus the shared `empty_progress` ease model the raster channel reuses
   - settled truth (J 2026-09-09): a valueless solid (the born-tiled placeholder, or a split remainder of it) IS the identity keyframe — it renders unshifted at every breath it covers, so an interpolating empty beside it lerps from the unmoved position. It never counts as "no keyframe": the old hold-next degradation beside a placeholder was the broken move-interpolate J reported
 - `interp_raster.rs`
-  - the raster channel's real resolver: hold / interpolate / interior-only smear / edge-locked loops over keyframe canvases. Ordinary blending matches cells by grid position; flat RGB lerps then resolves to the nearest indexed palette color; shape-faded glyphs score their source and target at their authored render weights and select intermediates at the current output weight; material and slot colors hard-cut at halfway; ordered shader stacks use that same discrete endpoint cutoff; one-sided cells fade their weight and walk toward/from the dot `.` clear-transition glyph (the old system's fade-into-clear character, J 2026-09-12). `blend_cell_run` folds a run of sampled cells at the halfway crossing (the picker's size-N pick), and `fade_cell_toward_clear` fades that folded representative toward the dot by a clear fraction through the identical one-sided fade — the picker's footprint straddling clear interpolates between content and clear with the same curve raster interpolation uses (J 2026-09-12)
+  - the raster channel's real resolver: hold / interpolate / interior-only smear / edge-locked loops over keyframe canvases. Ordinary blending matches cells by grid position; flat RGB lerps then resolves to the nearest color of the caller-supplied file palette (the document's live palette, never a hidden global); shape-faded glyphs score their source and target at their authored render weights and select intermediates at the current output weight; material and slot colors hard-cut at halfway; ordered shader stacks use that same discrete endpoint cutoff; one-sided cells fade their weight and walk toward/from the dot `.` clear-transition glyph (the old system's fade-into-clear character, J 2026-09-12). `blend_cell_run` folds a run of sampled cells at the halfway crossing (the picker's size-N pick), and `fade_cell_toward_clear` fades that folded representative toward the dot by a clear fraction through the identical one-sided fade — the picker's footprint straddling clear interpolates between content and clear with the same curve raster interpolation uses (J 2026-09-12)
 - `raster-smear/`
   - raster-only first-pass correspondence and discrete transported cell trails; owns bounded one-to-one matching, trail envelope/path rasterization, and head/trail collision selection while consuming `interp_raster`'s shared weight-aware cell appearance resolver
 - `pieces/`
@@ -72,7 +72,10 @@ via: `span_end_breath`, `breath_in_span`, `pushed_breath_span`, `destructive_bre
   - validates mode/ease cycling, edge locking, glyphs, and the move resolver's hold/interpolate/loop behavior over authored tracks
 - inline `#[cfg(test)]` in `interp_raster.rs` and `raster-smear/raster_smear.rs`
   - light
-  - validates ordinary canvas blending, smear trail/head resolution, endpoint identity, unmatched fallback, collision priority, the per-mode resolution over authored tracks, and loop replay
+  - validates ordinary canvas blending, smear trail/head resolution, endpoint identity, unmatched fallback, collision priority, the per-mode resolution over authored tracks, loop replay, palette-snapped color blending against the supplied file palette, and blending under a non-default palette
 
 ## data
 - none
+
+## notes
+- interp color blending is palette-parameterized (2026-10-10): flat RGB lerps resolve through `paint-color/`'s `nearest_indexed_rgb(rgb, palette)` against the caller-supplied live file palette — the document's own list when it carries one, else the shipped default. No hidden global palette.
