@@ -66,15 +66,24 @@ mod run_log;
 /// Asset root: `THAUM_RENDERER_ASSET_ROOT` env override, else a
 /// `renderer-assets/` folder next to the running exe (deployed portable
 /// layout), else the compiled repo path for in-repo dev runs.
-/// Apply an explicitly requested boot display profile. The saved-file profile
-/// will use the same `BootConfig` fields once file-open owns that handoff; the
-/// env seam makes installed external typefaces runnable today.
-fn apply_glyph_profile_env(config: &mut BootConfig) -> Result<()> {
+/// Apply an explicitly requested boot display profile, returning whether any
+/// override env var was actually set. The live display-profile module now
+/// owns the ordinary per-file case (its write-through applies `state.config`
+/// every frame, after this one-shot call) — this env seam only remains to
+/// force a specific typeface/spriteset/size for a single run regardless of
+/// the open document, e.g. testing an installed external typeface. The
+/// caller seeds the document's live profile handle from the overridden
+/// config when this returns `true`, so the override is not immediately
+/// clobbered by the first frame's write-through.
+fn apply_glyph_profile_env(config: &mut BootConfig) -> Result<bool> {
+    let mut overridden = false;
     if let Ok(typeface_id) = env::var("THAUM_GLYPH_TYPEFACE_ID") {
         config.glyph_typeface_id = typeface_id;
+        overridden = true;
     }
     if let Ok(spriteset_id) = env::var("THAUM_GLYPH_SPRITESET_ID") {
         config.glyph_spriteset_id = spriteset_id;
+        overridden = true;
     }
     let width = env::var("THAUM_GLYPH_CELL_WIDTH")
         .ok()
@@ -90,8 +99,9 @@ fn apply_glyph_profile_env(config: &mut BootConfig) -> Result<()> {
             height.unwrap_or(config.glyph_cell_profile.height()),
         )
         .map_err(anyhow::Error::msg)?;
+        overridden = true;
     }
-    Ok(())
+    Ok(overridden)
 }
 
 fn resolve_asset_root() -> PathBuf {
@@ -2113,11 +2123,24 @@ fn handle_number_field_edit_key(
     entry_key: TextEntryKey,
     number_edit: &Rc<RefCell<Option<NumberFieldEdit>>>,
     tool_state: &RefCell<ToolState>,
+    display_profile: &RefCell<thaum_painter_domain::SharedDocumentDisplayProfile>,
 ) {
     match entry_key {
         TextEntryKey::Enter => {
             if let Some(edit) = number_edit.borrow_mut().take() {
-                if let Some(value) = edit.commit(-9, 9) {
+                if edit.row_id == "cell_size" {
+                    if let Some(value) = edit.commit(
+                        thaum_painter_domain::MIN_CELL_DIMENSION,
+                        thaum_painter_domain::MAX_CELL_DIMENSION,
+                    ) {
+                        let mut profile = display_profile.borrow_mut();
+                        if edit.field == 0 {
+                            profile.cell_width = value as u32;
+                        } else {
+                            profile.cell_height = value as u32;
+                        }
+                    }
+                } else if let Some(value) = edit.commit(-9, 9) {
                     let mut tool_state = tool_state.borrow_mut();
                     if edit.row_id == "text_enter_step" {
                         tool_state.set_text_enter_step_axis(edit.field.min(2), value);
@@ -2422,7 +2445,7 @@ fn main() -> Result<()> {
     let mut config = BootConfig::default();
     let asset_root = resolve_asset_root();
     config.asset_root = asset_root.clone();
-    apply_glyph_profile_env(&mut config)?;
+    let glyph_profile_env_overridden = apply_glyph_profile_env(&mut config)?;
     config.window.title = "thaum-painter".to_string();
     config.window.performance_log_path = run_log_dir.as_ref().map(|dir| dir.join("perf.jsonl"));
 
@@ -2691,6 +2714,24 @@ fn main() -> Result<()> {
     let drawing_space_background: Rc<RefCell<Option<[u8; 3]>>> = Rc::new(RefCell::new(
         shared_document.document.background.as_ref().map(|b| b.rgb),
     ));
+    // File-truth display profile (project 04n3fq3e, J): the display-profile
+    // module edits this live handle; every frame mirrors it onto the
+    // document (so saves persist it) and onto the boot config (so the
+    // renderer actually picks up the chosen cell size/typeface/spriteset).
+    // A `THAUM_GLYPH_*` env override seeds this instead of the document, so
+    // a forced single-run test typeface is not immediately clobbered by the
+    // first frame's write-through.
+    let display_profile: Rc<RefCell<thaum_painter_domain::SharedDocumentDisplayProfile>> =
+        Rc::new(RefCell::new(if glyph_profile_env_overridden {
+            thaum_painter_domain::SharedDocumentDisplayProfile {
+                cell_width: state.config.glyph_cell_profile.width() as u32,
+                cell_height: state.config.glyph_cell_profile.height() as u32,
+                typeface_id: state.config.glyph_typeface_id.clone(),
+                spriteset_id: state.config.glyph_spriteset_id.clone(),
+            }
+        } else {
+            shared_document.document.display_profile.clone()
+        }));
     // In-place color entry for the palette module's linked hex/rgb edit
     // fields (the number-field edit pattern): opened by a strip click, keys
     // route here, Enter or the module's `+` commits the color into the
@@ -2752,6 +2793,7 @@ fn main() -> Result<()> {
         &tool_presets,
         &picker_breath,
         &drawing_space_background,
+        &display_profile,
     );
 
     if let Some(session) = &persisted_session {
@@ -2884,6 +2926,28 @@ fn main() -> Result<()> {
             if shared_document.document.background != as_section {
                 shared_document.document.background = as_section;
             }
+        }
+        // File-truth display-profile write-through plus live boot wiring
+        // (project 04n3fq3e, J): the display-profile module edits the live
+        // handle; every frame mirrors it onto the document (so saves
+        // persist it) and onto the boot config (so the renderer actually
+        // renders at the chosen cell size/typeface/spriteset). Boot's own
+        // asset cache (see `thaum_renderer_boot`) distinguishes a
+        // cell-size-only change (cheap in-memory refit) from a typeface or
+        // spriteset change (full reload) — this seam only has to publish
+        // the current choice, never decide how expensive applying it is.
+        {
+            let profile = display_profile.borrow().clone();
+            if shared_document.document.display_profile != profile {
+                shared_document.document.display_profile = profile.clone();
+            }
+            if let Ok(cell_profile) =
+                GlyphCellProfile::new(profile.cell_width as usize, profile.cell_height as usize)
+            {
+                state.config.glyph_cell_profile = cell_profile;
+            }
+            state.config.glyph_typeface_id = profile.typeface_id;
+            state.config.glyph_spriteset_id = profile.spriteset_id;
         }
         // Demand-driven frame gate: input, animation timers, or a pending
         // session save make the frame dirty; otherwise the last composition
@@ -3129,7 +3193,12 @@ fn main() -> Result<()> {
                             continue;
                         }
                         if number_edit.borrow().is_some() {
-                            handle_number_field_edit_key(entry_key, &number_edit, &tool_state);
+                            handle_number_field_edit_key(
+                                entry_key,
+                                &number_edit,
+                                &tool_state,
+                                &display_profile,
+                            );
                             if number_edit.borrow().is_none()
                                 && palette_color_entry.borrow().is_none()
                                 && text_entry.is_none()

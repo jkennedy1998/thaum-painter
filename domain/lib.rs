@@ -17,6 +17,8 @@ pub use thaum_renderer_domain::debug_log;
 pub mod document_locations;
 #[path = "painter-document/display_profile.rs"]
 pub mod document_display_profile;
+#[path = "modules/individuals/display-profile/display_profile_module.rs"]
+pub mod display_profile_module;
 #[path = "painter-session/sync/document_sync.rs"]
 pub mod document_sync;
 #[path = "file/file-schema/file_schema.rs"]
@@ -100,6 +102,7 @@ pub mod user_session_state;
 
 pub use brush::{apply_brush, brush_points, Canvas, PaintedCell};
 pub use document_display_profile::{document_display_profile, DocumentDisplayProfile};
+pub use display_profile_module::{DisplayProfileModule, MAX_CELL_DIMENSION, MIN_CELL_DIMENSION};
 pub use camera_actions::{apply_painter_camera_action, apply_painter_pan_action};
 pub use file_schema::{
     parse_file_schema, parse_file_schema_from_str, BreathWindow, CellAppearance,
@@ -148,7 +151,8 @@ pub use storage::{
     append_action_record, force_save_shared_document_snapshot, load_or_create_shared_document,
     save_shared_document_snapshot, write_action_records_atomic, PersistedCellPoint,
     PersistedSharedGraphic, PersistedSharedPaintColor, PersistedSharedPaintedCell, SharedCellPatch,
-    SharedDocumentAction, SharedDocumentActionRecord, SharedDocumentBackground, SharedDocumentFile,
+    SharedDocumentAction, SharedDocumentActionRecord, SharedDocumentBackground,
+    SharedDocumentDisplayProfile, SharedDocumentFile,
     SharedDocumentLayer, SharedDocumentPaths, SharedDocumentPropertyBlock,
     SharedDocumentPropertyTrack, SharedDocumentRuntime, SharedDocumentSelection,
     SharedDocumentSelectionChannel, SharedSelectionWriteMode, UnsupportedFileError,

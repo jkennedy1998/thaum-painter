@@ -6,17 +6,17 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use thaum_painter_domain::{
-    GraphicPickerModule, HandSettingsModule, LayersPanelModule, LayersPanelState,
-    MaterialPickerModule, PaintCanvasBoundsModule, PaintColorBlockModule, PaintColorPickerModule,
-    PaintTool, PainterSelection, SessionPanelModule, SessionPanelState, ToolDef, ToolPreset,
-    ToolState, ToolboxModule, ToolPresetsModule,
+    DisplayProfileModule, GraphicPickerModule, HandSettingsModule, LayersPanelModule,
+    LayersPanelState, MaterialPickerModule, PaintCanvasBoundsModule, PaintColorBlockModule,
+    PaintColorPickerModule, PaintTool, PainterSelection, SessionPanelModule, SessionPanelState,
+    SharedDocumentDisplayProfile, ToolDef, ToolPreset, ToolState, ToolboxModule, ToolPresetsModule,
 };
 use thaum_renderer_domain::{
-    conflicting_actions, effective_bindings, format_raw_input, ActionBindingMap, CameraDepthLink,
-    CameraLayersLink, CameraPerspectiveModule, CameraZoomLink, ControlsPanelModule,
-    ControlsProfile, ModuleRect, ModuleRegistry, NumberFieldEdit, ParallaxProfile,
-    PersistedModuleUiState, PerspectiveProfile, RenderQualityProfile, UiCustomizationModule,
-    UiPalette,
+    conflicting_actions, effective_bindings, format_raw_input, list_available_glyph_spriteset_ids,
+    list_available_typeface_ids, ActionBindingMap, CameraDepthLink, CameraLayersLink,
+    CameraPerspectiveModule, CameraZoomLink, ControlsPanelModule, ControlsProfile, ModuleRect,
+    ModuleRegistry, NumberFieldEdit, ParallaxProfile, PersistedModuleUiState, PerspectiveProfile,
+    RenderQualityProfile, UiCustomizationModule, UiPalette,
 };
 
 /// Registers every painter module and returns the registry. Shared handles
@@ -46,6 +46,7 @@ pub(crate) fn build_painter_modules(
     tool_presets: &Rc<RefCell<Vec<ToolPreset>>>,
     picker_breath: &Rc<std::cell::Cell<i32>>,
     drawing_space_background: &Rc<RefCell<Option<[u8; 3]>>>,
+    display_profile: &Rc<RefCell<SharedDocumentDisplayProfile>>,
 ) -> ModuleRegistry {
     let mut modules = ModuleRegistry::new();
     modules.register(Box::new(
@@ -242,6 +243,22 @@ pub(crate) fn build_painter_modules(
             }
         },
     )));
+    modules.register(Box::new(
+        DisplayProfileModule::new(
+            "painter_display_profile",
+            ModuleRect {
+                x0: 63,
+                y0: -6,
+                x1: 80,
+                y1: 2,
+            },
+            display_profile.clone(),
+            list_available_typeface_ids(asset_root),
+            list_available_glyph_spriteset_ids(asset_root),
+            number_edit.clone(),
+        )
+        .with_palette(ui_palette.clone()),
+    ));
     modules.register(Box::new(ControlsPanelModule::new(
         "painter_controls_panel",
         ModuleRect {
@@ -332,6 +349,7 @@ pub(crate) fn default_module_layout() -> Vec<PersistedModuleUiState> {
         at("painter_layers_panel", -80, -25, -42, -5, false),
         at("painter_camera_perspective", 8, -25, 36, -11, false),
         at("painter_ui_customization", 37, 6, 62, 19, false),
+        at("painter_display_profile", 63, -6, 80, 2, false),
         at("painter_controls_panel", 8, 14, 36, 34, true),
     ]
 }
