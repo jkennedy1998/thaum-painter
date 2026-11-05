@@ -4524,6 +4524,51 @@ mod tests {
     }
 
     #[test]
+    fn documents_saved_without_a_display_profile_load_with_the_legacy_default() {
+        // Simulate an older document.json predating project 04n3fq3e: serde's
+        // default must materialize the legacy ThaumMono 12x16 profile.
+        let legacy_json = r#"{
+            "file_kind": "thaum-painter-shared-document",
+            "schema_version": 1,
+            "document_id": "doc-1",
+            "title": "Doc",
+            "layers": []
+        }"#;
+        let document: SharedDocumentFile = serde_json::from_str(legacy_json).unwrap();
+
+        assert_eq!(document.display_profile, SharedDocumentDisplayProfile::default());
+    }
+
+    #[test]
+    fn a_customized_display_profile_round_trips_through_save_reload() {
+        let unique = format!(
+            "thaum-painter-display-profile-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let paths = SharedDocumentPaths::new(root.clone());
+        let mut runtime = SharedDocumentRuntime::new(SharedDocumentFile::single_layer(
+            "doc-1", "Doc", "layer-1", "Layer 1",
+        ));
+
+        let customized = SharedDocumentDisplayProfile {
+            cell_width: 20,
+            cell_height: 24,
+            typeface_id: "jetbrains-mono".to_owned(),
+            spriteset_id: "none".to_owned(),
+        };
+        runtime.document.display_profile = customized.clone();
+        save_shared_document_snapshot(&paths, &mut runtime).unwrap();
+        let reloaded = load_document_file(&paths.document_file_path).unwrap();
+        assert_eq!(reloaded.display_profile, customized);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn load_rejects_a_newer_schema_version_with_an_explicit_message() {
         let unique = format!(
             "thaum-painter-storage-test-{}",
