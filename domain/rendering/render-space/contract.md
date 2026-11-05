@@ -42,7 +42,7 @@ Own the render-space handoff that converts thaum-painter file or live state into
 ## exposed interfaces
 ### build_render_space — assemble the render-space handoff for one manifest at one active breath
 send: `&Manifest, active_breath: u32, camera: thaum_renderer_domain::Camera`
-returns: `anyhow::Result<RenderSpace>` (`{ camera, composition: thaum_renderer_domain::Composition, data_lanes: thaum_renderer_domain::DataLanes }`)
+returns: `anyhow::Result<RenderSpace>` (`{ camera, display_profile: file_schema::DisplayProfile, composition: thaum_renderer_domain::Composition, data_lanes: thaum_renderer_domain::DataLanes }`)
 effects: none
 via: rust fn
 
@@ -57,7 +57,7 @@ send: `&SharedDocumentRuntime, current_breath: u32, pending_move_offset: Option<
 returns: `Vec<thaum_renderer_domain::CellGroup>`
 effects: none
 via: rust fn
-notes: each layer's cells shift by the layer's active `move` property block offset (`move_offset_for_layer`) plus the pending delta of an in-flight vector move drag on `pending_layer` — the offset changes where the layer renders, never the raster data. The handoff carries its stored ordered shader filenames through the current built-in resolver; unsupported names remain losslessly stored and await the renderer asset registry. Each cell's authored portable facing name maps onto the renderer `Cell.facing` (unknown names reject on the file path, default `pos-z` on the live path). No move track/block/value renders the layer unshifted.
+notes: `RenderSpace.display_profile` carries the saved independent cell width/height, typeface id, and spriteset id directly to the renderer boot consumer; it does not infer or substitute selections from ratio. Each layer's cells shift by the layer's active `move` property block offset (`move_offset_for_layer`) plus the pending delta of an in-flight vector move drag on `pending_layer` — the offset changes where the layer renders, never the raster data. The handoff carries its stored ordered shader filenames through the current built-in resolver; unsupported names remain losslessly stored and await the renderer asset registry. Each cell's authored portable facing name maps onto the renderer `Cell.facing` (unknown names reject on the file path, default `pos-z` on the live path). No move track/block/value renders the layer unshifted.
 
 ## interface consumers
 - future painter app boot flow

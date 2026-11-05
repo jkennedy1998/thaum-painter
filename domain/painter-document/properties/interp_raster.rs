@@ -397,11 +397,11 @@ fn fade_one_sided_cell(
             if fading_out {
                 renderer_weight(cell.weight_index)
             } else {
-                CellWeight::Zero
+                CellWeight::ZERO
             },
             to,
             if fading_out {
-                CellWeight::Zero
+                CellWeight::ZERO
             } else {
                 renderer_weight(cell.weight_index)
             },
@@ -729,7 +729,7 @@ mod tests {
             let mut solid = GlyphTileRaster {
                 width: GLYPH_TILE_WIDTH,
                 height: GLYPH_TILE_HEIGHT,
-                alpha: [255; 12 * 16],
+                alpha: vec![255; 12 * 16],
             };
             let mut clear = solid.clone();
             clear.alpha.fill(0);

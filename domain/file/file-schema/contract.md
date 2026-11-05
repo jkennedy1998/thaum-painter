@@ -11,6 +11,7 @@ Own the canonical top-level saved file schema and versioned shape for thaum-pain
 - the stable saved split between document content, time assets, authoring metadata, saved camera defaults, and other painter-only sections
 - the v3 graphic payload vocabulary: glyph, sprite, and sided (one inline `thaum-sided-declaration` JSON document per sided cell)
 - canonical group identity, group order, and group-level (global-board) placement
+- the optional v3 per-file display profile: cell width, cell height, explicitly selected typeface id, and explicitly selected spriteset id; absent profiles default to legacy ThaumMono 12×16 and its spriteset
 
 ## does not own
 - persistence transports
@@ -77,7 +78,7 @@ via: rust fn
 
 ## tests
 - inline `#[cfg(test)]` in `file_schema.rs`
-  - v3 fixture parses glyph/sprite/material/slot/shader values, fixed origins, and flat exports; v2 rejects as unsupported; malformed references reject
+  - v3 fixture parses glyph/sprite/material/slot/shader values, fixed origins, flat exports, and display-profile selection; profile defaults preserve older v3 documents; v2 rejects as unsupported; malformed references reject
 
 ## data
 - none
@@ -87,5 +88,6 @@ via: rust fn
 - schema version bumped 1 -> 2 (2026-09-07, binary-bars redesign): the break is binary tiling — property tracks tile the full layer span with empty/solid bars, no voids. The interchange shape is unchanged; v1 files are not imported or migrated, they reject cleanly at load (`storage/`'s typed gate). Cross-reference: `plans/project-thaum-painter-binary-bars-plan.md`.
 - schema version bumped 2 -> 3 (2026-09-12): every stored voxel now carries a portable glyph-or-sprite appearance, flat/material/slot color, weight, and ordered filename shader stack; layers gain fixed origins and documents gain the optional declarative `flat` export preset. V2 is not migrated.
 - v3 appearance later gained the optional `facing` name (2026-09-12, J-approved persistence pass): authored cell orientation persists per voxel so re-rendering per side and the future rotate tool survive save/load. Optional on load, defaulted to `pos-z`, so the shape did not break and the version stayed 3. Unknown facing names reject cleanly.
+- v3 later gained the optional document `display_profile`: `cell_width`, `cell_height`, `typeface_id`, and `spriteset_id` remain independent axes. Absence defaults to legacy ThaumMono (12×16 + `thaum-mono` + `monothaum-atlas-v3`) so existing v3 files remain valid; named four-axis presets are deliberately deferred.
 - the schema version changes ONLY when the shape breaks. No importer, no migration pass — old files are recognized as unsupported and rejected cleanly at load, never a crash. J fixes friend files case-by-case.
 - load-time gate ownership: `parse_file_schema` provides kind/version validation; `storage/`'s `load_document_file` wires it into the actual load seam so rejection happens before any body deserialization.

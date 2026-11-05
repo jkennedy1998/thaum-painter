@@ -10,6 +10,7 @@
       "type": "object",
       "required": ["bounds", "group_order", "groups", "playback", "exports"],
       "properties": {
+        "display_profile": { "$ref": "#/$defs/displayProfile" },
         "groups": { "type": "array", "items": { "$ref": "#/$defs/group" } },
         "exports": {
           "type": "object",
@@ -76,6 +77,16 @@
       }
     },
     "point": { "type": "object", "required": ["x", "y", "z"], "properties": { "x": { "type": "integer" }, "y": { "type": "integer" }, "z": { "type": "integer" } } },
+    "displayProfile": {
+      "type": "object",
+      "required": ["cell_width", "cell_height", "typeface_id", "spriteset_id"],
+      "properties": {
+        "cell_width": { "type": "integer", "minimum": 1 },
+        "cell_height": { "type": "integer", "minimum": 1 },
+        "typeface_id": { "type": "string", "minLength": 1 },
+        "spriteset_id": { "type": "string", "minLength": 1 }
+      }
+    },
     "flatExport": {
       "type": "object",
       "required": ["file_name", "name", "facing", "interpolation"],

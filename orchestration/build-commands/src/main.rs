@@ -54,7 +54,8 @@ use thaum_renderer_domain::{
     CameraZoomLink, CellPoint, CommandBar, CommandBarButton, CommandBarClickOutcome, Composition,
     ControlActionRow, ControlsProfile, GlyphFontSet, ModulePointerButton, ModulePointerEvent,
     ModuleRect, ModuleRegistry, PersistedRendererUiSessionState, RawInput, RenderQualityProfile,
-    TooltipState, TypingMode, TypingRoute, UiColorRole, UiPalette, MAX_VISIBLE_PLANE_RADIUS,
+    TooltipState, TypingMode, TypingRoute, UiColorRole, UiPalette, GlyphCellProfile,
+    MAX_VISIBLE_PLANE_RADIUS,
 };
 use winit::keyboard::KeyCode;
 
@@ -65,6 +66,34 @@ mod run_log;
 /// Asset root: `THAUM_RENDERER_ASSET_ROOT` env override, else a
 /// `renderer-assets/` folder next to the running exe (deployed portable
 /// layout), else the compiled repo path for in-repo dev runs.
+/// Apply an explicitly requested boot display profile. The saved-file profile
+/// will use the same `BootConfig` fields once file-open owns that handoff; the
+/// env seam makes installed external typefaces runnable today.
+fn apply_glyph_profile_env(config: &mut BootConfig) -> Result<()> {
+    if let Ok(typeface_id) = env::var("THAUM_GLYPH_TYPEFACE_ID") {
+        config.glyph_typeface_id = typeface_id;
+    }
+    if let Ok(spriteset_id) = env::var("THAUM_GLYPH_SPRITESET_ID") {
+        config.glyph_spriteset_id = spriteset_id;
+    }
+    let width = env::var("THAUM_GLYPH_CELL_WIDTH")
+        .ok()
+        .map(|value| value.parse::<usize>().context("THAUM_GLYPH_CELL_WIDTH must be an integer"))
+        .transpose()?;
+    let height = env::var("THAUM_GLYPH_CELL_HEIGHT")
+        .ok()
+        .map(|value| value.parse::<usize>().context("THAUM_GLYPH_CELL_HEIGHT must be an integer"))
+        .transpose()?;
+    if width.is_some() || height.is_some() {
+        config.glyph_cell_profile = GlyphCellProfile::new(
+            width.unwrap_or(config.glyph_cell_profile.width()),
+            height.unwrap_or(config.glyph_cell_profile.height()),
+        )
+        .map_err(anyhow::Error::msg)?;
+    }
+    Ok(())
+}
+
 fn resolve_asset_root() -> PathBuf {
     if let Ok(path) = env::var("THAUM_RENDERER_ASSET_ROOT") {
         return PathBuf::from(path);
@@ -2393,6 +2422,7 @@ fn main() -> Result<()> {
     let mut config = BootConfig::default();
     let asset_root = resolve_asset_root();
     config.asset_root = asset_root.clone();
+    apply_glyph_profile_env(&mut config)?;
     config.window.title = "thaum-painter".to_string();
     config.window.performance_log_path = run_log_dir.as_ref().map(|dir| dir.join("perf.jsonl"));
 

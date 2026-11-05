@@ -259,7 +259,7 @@ impl Module for ToolPresetsModule {
             };
             match row {
                 Row::Save => {
-                    push_text_cells(&mut cells, content_x, y, "SAVE", color, CellWeight::Three, max_x);
+                    push_text_cells(&mut cells, content_x, y, "SAVE", color, CellWeight::THREE, max_x);
                 }
                 Row::SaveOptions => {
                     let mark = if self.save_options_open { '-' } else { '+' };
@@ -269,7 +269,7 @@ impl Module for ToolPresetsModule {
                         y,
                         &format!("[{mark}] save options"),
                         color,
-                        CellWeight::Two,
+                        CellWeight::TWO,
                         max_x,
                     );
                 }
@@ -284,7 +284,7 @@ impl Module for ToolPresetsModule {
                         y,
                         &format!("[{mark}] {}", field.label),
                         color,
-                        CellWeight::Two,
+                        CellWeight::TWO,
                         max_x,
                     );
                 }
@@ -313,9 +313,9 @@ impl Module for ToolPresetsModule {
                         (' ', color)
                     };
                     let weight = if left_match || right_match {
-                        CellWeight::Three
+                        CellWeight::THREE
                     } else {
-                        CellWeight::Two
+                        CellWeight::TWO
                     };
                     cells.push(Cell {
                         position: CellPoint { x: content_x, y, z: 0 },

@@ -15,6 +15,8 @@ pub mod identity;
 pub use thaum_renderer_domain::debug_log;
 #[path = "file/storage/document_locations.rs"]
 pub mod document_locations;
+#[path = "painter-document/display_profile.rs"]
+pub mod document_display_profile;
 #[path = "painter-session/sync/document_sync.rs"]
 pub mod document_sync;
 #[path = "file/file-schema/file_schema.rs"]
@@ -97,11 +99,13 @@ pub mod tool_presets_module;
 pub mod user_session_state;
 
 pub use brush::{apply_brush, brush_points, Canvas, PaintedCell};
+pub use document_display_profile::{document_display_profile, DocumentDisplayProfile};
 pub use camera_actions::{apply_painter_camera_action, apply_painter_pan_action};
 pub use file_schema::{
     parse_file_schema, parse_file_schema_from_str, BreathWindow, CellAppearance,
-    CellColorSlotValue, CellColorValue, CellGraphicValue, DocumentBounds, DocumentContent,
-    ExportSections, FileSchema, FileSchemaMetadata, FlatExport, GridPoint, Group, GroupProperty,
+    CellColorSlotValue, CellColorValue, CellGraphicValue, DisplayProfile, DocumentBounds,
+    DocumentContent, ExportSections, FileSchema, FileSchemaMetadata, FlatExport, GridPoint, Group,
+    GroupProperty,
     ImportExportBookkeeping, LastExport, ParticleEffect, ParticleEffectVisual, PlaybackWindow,
     PropertyBlock, RasterSegment, Rgb, SavedCameraDefaults, TimeAssets, Voxel,
 };

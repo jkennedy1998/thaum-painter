@@ -4,6 +4,13 @@ use serde_json::Value;
 pub const FILE_SCHEMA_KIND: &str = "thaum-painter-file";
 pub const FILE_SCHEMA_VERSION: u32 = 3;
 
+/// The v3-compatible display profile used when a saved document predates the
+/// optional profile block.
+pub const LEGACY_CELL_WIDTH: u32 = 12;
+pub const LEGACY_CELL_HEIGHT: u32 = 16;
+pub const LEGACY_TYPEFACE_ID: &str = "thaum-mono";
+pub const LEGACY_SPRITESET_ID: &str = "monothaum-atlas-v3";
+
 /// The default portable facing name: the identity orientation.
 pub const FACING_POS_Z: &str = "pos-z";
 /// All six portable facing names, comma-joined for error messages.
@@ -156,6 +163,28 @@ pub struct PlaybackWindow {
     pub document_window_end_breath: u32,
 }
 
+/// The four independent display settings saved with one painter document.
+/// Typeface and spriteset identifiers are selected explicitly; neither is
+/// inferred from the cell footprint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplayProfile {
+    pub cell_width: u32,
+    pub cell_height: u32,
+    pub typeface_id: String,
+    pub spriteset_id: String,
+}
+
+impl Default for DisplayProfile {
+    fn default() -> Self {
+        Self {
+            cell_width: LEGACY_CELL_WIDTH,
+            cell_height: LEGACY_CELL_HEIGHT,
+            typeface_id: LEGACY_TYPEFACE_ID.to_owned(),
+            spriteset_id: LEGACY_SPRITESET_ID.to_owned(),
+        }
+    }
+}
+
 /// Declarative configuration consumed by the future general exporter. It says
 /// what to export, never where or when an exporter wrote it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,6 +203,7 @@ pub struct ExportSections {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DocumentContent {
     pub bounds: DocumentBounds,
+    pub display_profile: DisplayProfile,
     pub group_order: Vec<String>,
     pub groups: Vec<Group>,
     pub playback: PlaybackWindow,
@@ -537,6 +567,31 @@ fn parse_playback_window(value: &Value) -> Result<PlaybackWindow> {
     })
 }
 
+fn require_nonempty_identifier(value: &Value, name: &str) -> Result<String> {
+    let identifier = require_str(value, name)?;
+    if identifier.trim().is_empty() {
+        bail!("field '{name}' must not be empty");
+    }
+    Ok(identifier.to_owned())
+}
+
+fn parse_display_profile(document: &Value) -> Result<DisplayProfile> {
+    let Some(value) = document.get("display_profile") else {
+        return Ok(DisplayProfile::default());
+    };
+    let cell_width = require_u32(value, "cell_width")?;
+    let cell_height = require_u32(value, "cell_height")?;
+    if cell_width == 0 || cell_height == 0 {
+        bail!("display_profile cell_width and cell_height must be greater than zero");
+    }
+    Ok(DisplayProfile {
+        cell_width,
+        cell_height,
+        typeface_id: require_nonempty_identifier(value, "typeface_id")?,
+        spriteset_id: require_nonempty_identifier(value, "spriteset_id")?,
+    })
+}
+
 fn parse_document(value: &Value) -> Result<DocumentContent> {
     let groups = require_array(value, "groups")?
         .iter()
@@ -545,6 +600,7 @@ fn parse_document(value: &Value) -> Result<DocumentContent> {
         .context("invalid document group")?;
     Ok(DocumentContent {
         bounds: parse_document_bounds(field(value, "bounds")?)?,
+        display_profile: parse_display_profile(value).context("invalid document display_profile")?,
         group_order: require_string_array(value, "group_order")?,
         groups,
         playback: parse_playback_window(field(value, "playback")?)?,
@@ -679,6 +735,28 @@ mod tests {
         let schema = parse_file_schema_from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap();
         assert_eq!(schema.version, 3);
         assert_eq!(schema.metadata.document_id, "doc_cell_language_001");
+        assert_eq!(
+            schema.document.display_profile,
+            DisplayProfile {
+                cell_width: 12,
+                cell_height: 16,
+                typeface_id: "thaum-mono".to_owned(),
+                spriteset_id: "monothaum-atlas-v3".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn display_profile_defaults_legacy_documents_and_rejects_incomplete_or_invalid_profiles() {
+        let mut value: serde_json::Value = serde_json::from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap();
+        value["document"].as_object_mut().unwrap().remove("display_profile");
+        assert_eq!(parse_file_schema(&value).unwrap().document.display_profile, DisplayProfile::default());
+
+        value["document"]["display_profile"] = serde_json::json!({ "cell_width": 0, "cell_height": 16, "typeface_id": "jetbrains-mono", "spriteset_id": "monothaum-atlas-v3" });
+        assert!(format!("{:#}", parse_file_schema(&value).unwrap_err()).contains("greater than zero"));
+
+        value["document"]["display_profile"] = serde_json::json!({ "cell_width": 12, "cell_height": 16, "typeface_id": "", "spriteset_id": "monothaum-atlas-v3" });
+        assert!(format!("{:#}", parse_file_schema(&value).unwrap_err()).contains("typeface_id"));
     }
 
     #[test]

@@ -495,6 +495,7 @@ mod tests {
             schema_version: SHARED_DOCUMENT_SCHEMA_VERSION,
             document_id: "doc-1".to_string(),
             title: "Doc".to_string(),
+            display_profile: crate::storage::SharedDocumentDisplayProfile::default(),
             layers: layer_ids
                 .iter()
                 .map(|id| SharedDocumentLayer {

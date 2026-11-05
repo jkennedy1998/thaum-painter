@@ -344,6 +344,28 @@ impl Default for DocumentWindow {
     }
 }
 
+/// The live painter file's independently selected renderer display settings.
+/// Missing profiles deserialize to the legacy ThaumMono presentation so older
+/// document snapshots remain fully usable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedDocumentDisplayProfile {
+    pub cell_width: u32,
+    pub cell_height: u32,
+    pub typeface_id: String,
+    pub spriteset_id: String,
+}
+
+impl Default for SharedDocumentDisplayProfile {
+    fn default() -> Self {
+        Self {
+            cell_width: 12,
+            cell_height: 16,
+            typeface_id: "thaum-mono".to_owned(),
+            spriteset_id: "monothaum-atlas-v3".to_owned(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SharedDocumentFile {
     pub file_kind: String,
@@ -357,6 +379,10 @@ pub struct SharedDocumentFile {
     #[serde(default)]
     pub revision: u64,
     pub title: String,
+    /// Renderer display choices are document truth rather than machine-local
+    /// session preferences; users sharing/opening this file see the same grid.
+    #[serde(default)]
+    pub display_profile: SharedDocumentDisplayProfile,
     pub layers: Vec<SharedDocumentLayer>,
     /// Document-owned selection bitmaps, keyed by channel. Selection is per file, not
     /// per layer: one 3D bitmap on the same coordinate system as the canvas, editable
@@ -421,6 +447,7 @@ impl SharedDocumentFile {
             revision: 0,
             document_id: document_id.into(),
             title: title.into(),
+            display_profile: SharedDocumentDisplayProfile::default(),
             layers: vec![SharedDocumentLayer {
                 layer_id: layer_id.into(),
                 name: layer_name.into(),
@@ -3467,6 +3494,7 @@ mod tests {
             schema_version: SHARED_DOCUMENT_SCHEMA_VERSION,
             document_id: "doc-1".to_string(),
             title: "Doc".to_string(),
+            display_profile: SharedDocumentDisplayProfile::default(),
             layers: vec![
                 SharedDocumentLayer {
                     layer_id: "layer-1".to_string(),

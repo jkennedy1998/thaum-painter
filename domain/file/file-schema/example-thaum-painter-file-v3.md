@@ -16,6 +16,16 @@ Each `voxel` has its grid `x`, `y`, and `z` plus an `appearance`:
 
 Asset filenames are non-empty paths relative to the consuming renderer asset root. They are never absolute paths or game-local IDs. Empty cells are absent from the voxel list.
 
+## Display profile
+
+`document.display_profile` independently saves the renderer-facing cell footprint and selections:
+
+- positive `cell_width` and `cell_height`
+- explicit `typeface_id`
+- explicit `spriteset_id`
+
+It does not infer a spriteset from the cell ratio. A missing block in an older v3 document defaults to the legacy ThaumMono profile: `12×16`, `thaum-mono`, and `monothaum-atlas-v3`. Named presets that bundle these four fields are deliberately deferred.
+
 ## Layer placement and origin
 
 `placement` is the authored board location. `origin` is the fixed pivot for later rotation and is not changed by animated `move` properties.

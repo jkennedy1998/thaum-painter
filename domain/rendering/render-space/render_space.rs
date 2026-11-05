@@ -9,7 +9,7 @@ use thaum_renderer_domain::{
 
 use crate::file_schema::{
     parse_grid_point, CellAppearance, CellColorSlotValue, CellColorValue, CellGraphicValue,
-    FileSchema, GridPoint, Group, RasterSegment, Rgb,
+    DisplayProfile, FileSchema, GridPoint, Group, RasterSegment, Rgb,
 };
 
 /// The transient renderer handoff assembled from one file schema at one active breath.
@@ -19,6 +19,9 @@ use crate::file_schema::{
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenderSpace {
     pub camera: Camera,
+    /// Saved per-file renderer selection, carried unchanged so boot can select
+    /// the matching typeface, cell footprint, and spriteset.
+    pub display_profile: DisplayProfile,
     pub composition: Composition,
     pub data_lanes: DataLanes,
 }
@@ -238,6 +241,7 @@ pub fn build_render_space(
 ) -> Result<RenderSpace> {
     Ok(RenderSpace {
         camera,
+        display_profile: schema.document.display_profile.clone(),
         composition: build_composition(schema, active_breath)?,
         data_lanes: build_data_lanes(active_breath),
     })
@@ -383,6 +387,8 @@ mod tests {
         assert_eq!(render_space.camera, camera);
         assert_eq!(render_space.composition.groups.len(), 1);
         assert_eq!(render_space.data_lanes.breath(), Some(4));
+        assert_eq!(render_space.display_profile.typeface_id, "thaum-mono");
+        assert_eq!(render_space.display_profile.spriteset_id, "monothaum-atlas-v3");
     }
 
     #[test]

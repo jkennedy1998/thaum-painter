@@ -255,9 +255,9 @@ impl Module for ToolboxModule {
             let is_selected = is_left || is_right;
             let is_hovered = self.hovered_tool == Some(def.tool);
             let weight = if is_selected {
-                CellWeight::Three
+                CellWeight::THREE
             } else {
-                CellWeight::Two
+                CellWeight::TWO
             };
             let indicator = if is_left && is_right {
                 ('◆', self.palette.get(UiColorRole::Vivid))
@@ -579,15 +579,15 @@ mod tests {
         // three; Lasso is unselected and stays at the normal weight two.
         assert_eq!(
             group.cells[&CellPoint { x: 5, y: 3, z: 0 }].weight,
-            CellWeight::Three
+            CellWeight::THREE
         );
         assert_eq!(
             group.cells[&CellPoint { x: 5, y: 2, z: 0 }].weight,
-            CellWeight::Three
+            CellWeight::THREE
         );
         assert_eq!(
             group.cells[&CellPoint { x: 5, y: 1, z: 0 }].weight,
-            CellWeight::Two
+            CellWeight::TWO
         );
     }
 

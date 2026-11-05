@@ -27,6 +27,8 @@ Own the painter editing-facing document view over saved file state without takin
 ## contents
 - `contract.md`
   - painter-document contract
+- `display_profile.rs`
+  - editing-facing projection of the saved four-axis cell/typeface/spriteset profile
 
 ## dependencies
 - `thaum-painter/domain/file/`
@@ -38,6 +40,12 @@ returns: normalized editing-facing document records
 effects: none
 via: contract
 
+### document_display_profile — project the saved display profile for editor consumers
+send: { schema: FileSchema }
+returns: { cellWidth: u32, cellHeight: u32, typefaceId: String, spritesetId: String }
+effects: none
+via: rust fn
+
 ## interface consumers
 - `domain/painter-session/session_document.rs` and `orchestration/entrypoint/` via `layers_runtime`
 
@@ -45,6 +53,7 @@ via: contract
 - future document-view fixtures derived from `domain/file/file-schema/example-thaum-painter-file-v1.json`
 
 ## tests
+- inline `display_profile.rs` test projects the saved four-axis profile without taking over file-schema storage
 - future document-view tests derived from `domain/file/file-schema/example-thaum-painter-file-v1.json`
 
 ## data

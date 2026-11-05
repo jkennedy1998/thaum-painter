@@ -19,6 +19,12 @@
       "height": 1,
       "depth": 1
     },
+    "display_profile": {
+      "cell_width": 12,
+      "cell_height": 16,
+      "typeface_id": "thaum-mono",
+      "spriteset_id": "monothaum-atlas-v3"
+    },
     "group_order": ["group_asset"],
     "groups": [
       {
