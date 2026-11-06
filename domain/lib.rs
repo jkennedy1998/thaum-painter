@@ -19,6 +19,8 @@ pub mod document_locations;
 pub mod document_display_profile;
 #[path = "modules/individuals/display-profile/display_profile_module.rs"]
 pub mod display_profile_module;
+#[path = "modules/individuals/display-profile/display_profile_presets.rs"]
+pub mod display_profile_presets;
 #[path = "painter-session/sync/document_sync.rs"]
 pub mod document_sync;
 #[path = "file/file-schema/file_schema.rs"]
@@ -103,6 +105,7 @@ pub mod user_session_state;
 pub use brush::{apply_brush, brush_points, Canvas, PaintedCell};
 pub use document_display_profile::{document_display_profile, DocumentDisplayProfile};
 pub use display_profile_module::{DisplayProfileModule, MAX_CELL_DIMENSION, MIN_CELL_DIMENSION};
+pub use display_profile_presets::{built_in_display_profile_presets, DisplayProfilePreset};
 pub use camera_actions::{apply_painter_camera_action, apply_painter_pan_action};
 pub use file_schema::{
     parse_file_schema, parse_file_schema_from_str, BreathWindow, CellAppearance,

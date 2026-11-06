@@ -7,6 +7,9 @@ use thaum_renderer_domain::{
     UiPalette, WorldPoint,
 };
 
+use crate::display_profile_presets::{
+    built_in_display_profile_presets, matching_preset_index, DisplayProfilePreset,
+};
 use crate::storage::SharedDocumentDisplayProfile;
 
 /// The reserved value `spriteset` cycles to for "no spriteset override" —
@@ -29,6 +32,7 @@ pub struct DisplayProfileModule {
     /// Discovered spriteset ids with `NO_SPRITESET_OVERRIDE_ID` prepended —
     /// the discovery helpers never emit that sentinel themselves.
     spriteset_options: Vec<String>,
+    presets: &'static [DisplayProfilePreset],
     number_edit: Rc<RefCell<Option<NumberFieldEdit>>>,
     palette: UiPalette,
     gizmos: GizmoBar,
@@ -53,6 +57,7 @@ impl DisplayProfileModule {
             profile,
             typeface_options,
             spriteset_options: full_spriteset_options,
+            presets: built_in_display_profile_presets(),
             number_edit,
             palette: UiPalette::default(),
             gizmos: GizmoBar::standard(),
@@ -87,7 +92,16 @@ impl DisplayProfileModule {
 
     fn build_rows(&self) -> Vec<PropertyRow> {
         let profile = self.profile.borrow();
+        let preset_value = matching_preset_index(self.presets, &profile)
+            .map(|index| self.presets[index].label.to_owned())
+            .unwrap_or_else(|| "custom".to_owned());
         vec![
+            PropertyRow::ListSwitchRow {
+                id: "preset".into(),
+                label: "preset".into(),
+                value: preset_value,
+                option_count: self.presets.len(),
+            },
             PropertyRow::NumberRow {
                 id: "cell_size".into(),
                 label: "size".into(),
@@ -144,6 +158,24 @@ impl DisplayProfileModule {
         }
     }
 
+    /// Steps the preset switcher forward or backward, wrapping at either
+    /// end, and applies the landed preset's four fields atomically. A
+    /// hand-edited ("custom") combination that matches no preset falls back
+    /// to index 0, same as the typeface/spriteset switchers.
+    fn step_preset(&mut self, forward: bool) {
+        if self.presets.is_empty() {
+            return;
+        }
+        let mut profile = self.profile.borrow_mut();
+        let current_index = matching_preset_index(self.presets, &profile).unwrap_or(0);
+        let next_index = if forward {
+            (current_index + 1) % self.presets.len()
+        } else {
+            (current_index + self.presets.len() - 1) % self.presets.len()
+        };
+        self.presets[next_index].apply(&mut profile);
+    }
+
     fn apply_property_hit(&mut self, hit: PropertyHit) {
         match hit {
             PropertyHit::Number { row_id, field } if row_id == "cell_size" => {
@@ -157,6 +189,9 @@ impl DisplayProfileModule {
                 };
                 *self.number_edit.borrow_mut() =
                     Some(NumberFieldEdit::begin(row_id, field, current));
+            }
+            PropertyHit::ListSwitch { row_id, forward } if row_id == "preset" => {
+                self.step_preset(forward);
             }
             PropertyHit::ListSwitch { row_id, forward } => {
                 self.step_list_switch(&row_id, forward);
@@ -350,8 +385,18 @@ mod tests {
             vec!["monothaum-atlas-v3"],
         );
         let rows = module.build_rows();
+        // The live profile exactly matches the built-in "thaum-mono" preset.
         assert_eq!(
             rows[0],
+            PropertyRow::ListSwitchRow {
+                id: "preset".into(),
+                label: "preset".into(),
+                value: "thaum-mono".into(),
+                option_count: built_in_display_profile_presets().len(),
+            }
+        );
+        assert_eq!(
+            rows[1],
             PropertyRow::NumberRow {
                 id: "cell_size".into(),
                 label: "size".into(),
@@ -362,7 +407,7 @@ mod tests {
             }
         );
         assert_eq!(
-            rows[1],
+            rows[2],
             PropertyRow::ListSwitchRow {
                 id: "typeface".into(),
                 label: "font".into(),
@@ -372,7 +417,7 @@ mod tests {
         );
         // "none" is prepended ahead of the one discovered spriteset.
         assert_eq!(
-            rows[2],
+            rows[3],
             PropertyRow::ListSwitchRow {
                 id: "spriteset".into(),
                 label: "sprites".into(),
@@ -380,6 +425,52 @@ mod tests {
                 option_count: 2,
             }
         );
+    }
+
+    #[test]
+    fn the_preset_row_reports_custom_for_a_hand_edited_combination() {
+        let module = module_with(
+            SharedDocumentDisplayProfile {
+                cell_width: 13,
+                cell_height: 16,
+                typeface_id: "thaum-mono".into(),
+                spriteset_id: "monothaum-atlas-v3".into(),
+            },
+            vec!["thaum-mono"],
+            vec!["monothaum-atlas-v3"],
+        );
+        let rows = module.build_rows();
+        assert_eq!(
+            rows[0],
+            PropertyRow::ListSwitchRow {
+                id: "preset".into(),
+                label: "preset".into(),
+                value: "custom".into(),
+                option_count: built_in_display_profile_presets().len(),
+            }
+        );
+    }
+
+    #[test]
+    fn switching_the_preset_applies_all_four_fields_atomically() {
+        let mut module = module_with(
+            SharedDocumentDisplayProfile {
+                cell_width: 12,
+                cell_height: 16,
+                typeface_id: "thaum-mono".into(),
+                spriteset_id: "monothaum-atlas-v3".into(),
+            },
+            vec!["thaum-mono", "jetbrains-mono"],
+            vec!["monothaum-atlas-v3"],
+        );
+
+        module.step_preset(true);
+
+        let profile = module.profile.borrow();
+        assert_eq!(profile.cell_width, 10);
+        assert_eq!(profile.cell_height, 22);
+        assert_eq!(profile.typeface_id, "jetbrains-mono");
+        assert_eq!(profile.spriteset_id, "none");
     }
 
     #[test]
@@ -446,7 +537,8 @@ mod tests {
             vec!["monothaum-atlas-v3"],
         );
         let (_, value_x, _) = PropertyRows::content_columns(rect());
-        let field_y = rect().y0 + PropertyRows::top_row_y(rect());
+        // Row 0 is the preset switcher; "cell_size" is row 1.
+        let field_y = rect().y0 + PropertyRows::top_row_y(rect()) - 1;
 
         module.on_pointer_event(ModulePointerEvent::Click {
             x: rect().x0 + value_x,
@@ -475,7 +567,8 @@ mod tests {
         );
         let (_, value_x, value_width) = PropertyRows::content_columns(rect());
         let right_arrow_x = rect().x0 + value_x + value_width - 1;
-        let typeface_row_y = rect().y0 + PropertyRows::top_row_y(rect()) - 1;
+        // Rows: 0 preset, 1 cell_size, 2 typeface.
+        let typeface_row_y = rect().y0 + PropertyRows::top_row_y(rect()) - 2;
 
         module.on_pointer_event(ModulePointerEvent::Click {
             x: right_arrow_x,

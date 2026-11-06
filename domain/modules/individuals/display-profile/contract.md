@@ -5,10 +5,12 @@ Own painter's compact display-profile panel: live editing of the open file's cel
 
 ## owns
 - the `DisplayProfileModule` type
+- the `preset` left/right list-switch row: cycles the built-in named bundles (`DisplayProfilePreset`), applying all four axes (cell width, cell height, typeface id, spriteset id) atomically; reports "custom" when the live profile matches no built-in preset
 - the `cell_size` number row (width/height, click to type, scroll to nudge, clamped to a sane editable range)
 - the `typeface` and `spriteset` left/right list-switch rows, cycling through the renderer's installed typeface/spriteset ids with wraparound
 - the `none` no-spriteset-override choice, prepended ahead of the discovered spriteset ids (the discovery helpers never emit it themselves — it is this module's own UI-layer addition)
 - direct edits into the shared live `SharedDocumentDisplayProfile` handle it is constructed with
+- `display_profile_presets.rs`: the built-in `DisplayProfilePreset` list and its exact-match lookup, a small hand-curated Rust list (not a discoverable asset format — premature machinery for a handful of entries)
 
 ## does not own
 - the saved/live document schema for the profile, owned by `thaum-painter/domain/file/storage/` (`SharedDocumentDisplayProfile`) and `thaum-painter/domain/file/file-schema/` (`DisplayProfile`)
@@ -22,7 +24,9 @@ Own painter's compact display-profile panel: live editing of the open file's cel
 
 ## contents
 - `display_profile_module.rs`
-  - module UI for the live cell width/height fields and the typeface/spriteset switchers
+  - module UI for the live cell width/height fields, the preset switcher, and the typeface/spriteset switchers
+- `display_profile_presets.rs`
+  - the built-in named preset list and its exact four-field match lookup
 
 ## dependencies
 - `thaum-painter/domain/file/storage/` (`SharedDocumentDisplayProfile`)
@@ -44,12 +48,16 @@ Own painter's compact display-profile panel: live editing of the open file's cel
 ## tests
 - inline `#[cfg(test)]` in `display_profile_module.rs`
   - light
-  - validates row content against the live profile and option lists, left/right switch cycling (with wraparound and a graceful fallback when the live value is not among the discovered options), the `none` sentinel's position, and number-field click-to-edit opening
+  - validates row content against the live profile and option lists, left/right switch cycling (with wraparound and a graceful fallback when the live value is not among the discovered options), the `none` sentinel's position, number-field click-to-edit opening, and the preset row ("custom" reporting, atomic four-field apply on switch)
+- inline `#[cfg(test)]` in `display_profile_presets.rs`
+  - light
+  - validates atomic apply and exact-match lookup (including the no-match "custom" case)
 
 ## data
 - none
 
 ## notes
 - Matches J's confirmed design (2026-11, recorded in `thaum-renderer/truth.md`): "it should be tied to the file for the cell width and cell height, and maybe a switcher (left right toggle of a list) to keep the ui easy for a selected font, and same with the selected spriteset ideally."
+- Presets added per J (2026-11-06): "ideally we can have presets which bake in the typeface, sprite set, cell x and cell y." The JetBrains Mono preset's cell size (10x22) is tuned to the typeface's own measured natural ratio (5:11, measured through fontdue's `horizontal_line_metrics`/monospace advance width — the same metrics the renderer's own font-fit step uses) rather than an arbitrary guess; its spriteset defaults to `none` since the bundled monothaum sprites are drawn for ThaumMono's 12:16 box and would distort stretched into JetBrains Mono's much taller box.
 - Reuses the shared `NumberFieldEdit`/`PropertyRows::number_field_at` pattern already established by `hand-settings` rather than inventing a second typing seam; the host's `handle_number_field_edit_key` branches on `row_id == "cell_size"` to commit into this module's profile handle instead of `tool_state`.
 - This panel intentionally stays compact (three rows, no scrolling) — it is not a second toolbox.
