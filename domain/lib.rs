@@ -13,14 +13,16 @@ pub mod identity;
 /// Debug logging moved into the renderer domain so renderer and host share one
 /// sink; the painter keeps the same call path through this re-export.
 pub use thaum_renderer_domain::debug_log;
-#[path = "file/storage/document_locations.rs"]
-pub mod document_locations;
-#[path = "painter-document/display_profile.rs"]
-pub mod document_display_profile;
+#[path = "painter-session/paint-color/color_entry.rs"]
+pub mod color_entry;
 #[path = "modules/individuals/display-profile/display_profile_module.rs"]
 pub mod display_profile_module;
 #[path = "modules/individuals/display-profile/display_profile_presets.rs"]
 pub mod display_profile_presets;
+#[path = "painter-document/display_profile.rs"]
+pub mod document_display_profile;
+#[path = "file/storage/document_locations.rs"]
+pub mod document_locations;
 #[path = "painter-session/sync/document_sync.rs"]
 pub mod document_sync;
 #[path = "file/file-schema/file_schema.rs"]
@@ -33,8 +35,6 @@ pub mod graphic_picker_module;
 pub mod hand_settings_module;
 #[path = "painter-document/properties/interp_mode.rs"]
 pub mod interp_mode;
-#[path = "painter-session/paint-color/color_entry.rs"]
-pub mod color_entry;
 #[path = "painter-document/properties/interp_move.rs"]
 pub mod interp_move;
 #[path = "painter-document/properties/interp_raster.rs"]
@@ -43,6 +43,8 @@ pub mod interp_raster;
 pub mod lasso;
 #[path = "painter-session/tool-state/lasso_stroke.rs"]
 pub mod lasso_stroke;
+#[path = "painter-session/tool-state/detailer_stroke.rs"]
+pub mod detailer_stroke;
 #[path = "modules/individuals/layers-panel/layers_panel_module.rs"]
 pub mod layers_panel_module;
 #[path = "painter-document/layers/layers_runtime.rs"]
@@ -89,31 +91,31 @@ pub mod text;
 pub mod text_entry;
 #[path = "painter-session/timeline-state/timeline_state.rs"]
 pub mod timeline_state;
-#[path = "painter-session/tool-state/tool_state.rs"]
-pub mod tool_state;
 #[path = "tool-presets/tool_presets.rs"]
 pub mod tool_presets;
+#[path = "modules/individuals/tool-presets/tool_presets_module.rs"]
+pub mod tool_presets_module;
+#[path = "painter-session/tool-state/tool_state.rs"]
+pub mod tool_state;
 #[path = "modules/individuals/toolbar/toolbar_module.rs"]
 pub mod toolbar_module;
 #[path = "modules/individuals/toolbox/toolbox_module.rs"]
 pub mod toolbox_module;
-#[path = "modules/individuals/tool-presets/tool_presets_module.rs"]
-pub mod tool_presets_module;
 #[path = "user-state/user-session-state/user_session_state.rs"]
 pub mod user_session_state;
 
 pub use brush::{apply_brush, brush_points, Canvas, PaintedCell};
-pub use document_display_profile::{document_display_profile, DocumentDisplayProfile};
+pub use camera_actions::{apply_painter_camera_action, apply_painter_pan_action};
+pub use color_entry::{ColorEntryEdit, ColorEntryField};
 pub use display_profile_module::{DisplayProfileModule, MAX_CELL_DIMENSION, MIN_CELL_DIMENSION};
 pub use display_profile_presets::{built_in_display_profile_presets, DisplayProfilePreset};
-pub use camera_actions::{apply_painter_camera_action, apply_painter_pan_action};
+pub use document_display_profile::{document_display_profile, DocumentDisplayProfile};
 pub use file_schema::{
     parse_file_schema, parse_file_schema_from_str, BreathWindow, CellAppearance,
     CellColorSlotValue, CellColorValue, CellGraphicValue, DisplayProfile, DocumentBounds,
     DocumentContent, ExportSections, FileSchema, FileSchemaMetadata, FlatExport, GridPoint, Group,
-    GroupProperty,
-    ImportExportBookkeeping, LastExport, ParticleEffect, ParticleEffectVisual, PlaybackWindow,
-    PropertyBlock, RasterSegment, Rgb, SavedCameraDefaults, TimeAssets, Voxel,
+    GroupProperty, ImportExportBookkeeping, LastExport, ParticleEffect, ParticleEffectVisual,
+    PlaybackWindow, PropertyBlock, RasterSegment, Rgb, SavedCameraDefaults, TimeAssets, Voxel,
 };
 pub use fill::{
     depth_span_for_canvas, flood_fill, flood_fill_points, flood_fill_points_with, flood_fill_with,
@@ -128,12 +130,11 @@ pub use layers_panel_module::{
     LayerPropertyKind, LayerRow, LayersPanelAction, LayersPanelModule, LayersPanelState,
     PropertyTrackBlock, PropertyTrackRow,
 };
-pub use color_entry::{ColorEntryEdit, ColorEntryField};
+pub use legacy_indexed_palette::legacy_indexed_palette;
 pub use legacy_indexed_palette::{
     default_file_palette, hex_color_string, is_default_file_palette, nearest_indexed_rgb,
-    parse_hex_color, parse_rgb_color, palette_push_color, palette_remove_color, rgb_color_string,
+    palette_push_color, palette_remove_color, parse_hex_color, parse_rgb_color, rgb_color_string,
 };
-pub use legacy_indexed_palette::legacy_indexed_palette;
 pub use material_picker_module::MaterialPickerModule;
 pub use paint_canvas_bounds_module::{DrawingSpaceWheelMode, PaintCanvasBoundsModule};
 pub use paint_color::{PaintColor, PaintColorSlot};
@@ -155,24 +156,23 @@ pub use storage::{
     save_shared_document_snapshot, write_action_records_atomic, PersistedCellPoint,
     PersistedSharedGraphic, PersistedSharedPaintColor, PersistedSharedPaintedCell, SharedCellPatch,
     SharedDocumentAction, SharedDocumentActionRecord, SharedDocumentBackground,
-    SharedDocumentDisplayProfile, SharedDocumentFile,
-    SharedDocumentLayer, SharedDocumentPaths, SharedDocumentPropertyBlock,
-    SharedDocumentPropertyTrack, SharedDocumentRuntime, SharedDocumentSelection,
-    SharedDocumentSelectionChannel, SharedSelectionWriteMode, UnsupportedFileError,
-    UnsupportedFileReason, DEFAULT_SELECTION_CHANNEL_ID, SHARED_DOCUMENT_KIND,
-    SHARED_DOCUMENT_SCHEMA_VERSION, UNDO_HISTORY_DEPTH,
+    SharedDocumentDisplayProfile, SharedDocumentFile, SharedDocumentLayer, SharedDocumentPaths,
+    SharedDocumentPropertyBlock, SharedDocumentPropertyTrack, SharedDocumentRuntime,
+    SharedDocumentSelection, SharedDocumentSelectionChannel, SharedSelectionWriteMode,
+    UnsupportedFileError, UnsupportedFileReason, DEFAULT_SELECTION_CHANNEL_ID,
+    SHARED_DOCUMENT_KIND, SHARED_DOCUMENT_SCHEMA_VERSION, UNDO_HISTORY_DEPTH,
 };
 pub use timeline_state::TimelineState;
+pub use tool_presets::{
+    hand_field, preset_for_number_slot, starter_presets, HandFieldDescriptor, ToolPreset,
+    ToolPresetHand, HAND_FIELDS,
+};
+pub use tool_presets_module::ToolPresetsModule;
 pub use tool_state::{
     EditChannels, HandState, PaintChannel, PaintHand, PaintTarget, PaintTool, ToolState,
 };
-pub use tool_presets::{
-    hand_field, preset_for_number_slot, starter_presets, HandFieldDescriptor, HAND_FIELDS,
-    ToolPreset, ToolPresetHand,
-};
 pub use toolbar_module::{ToolbarButton, ToolbarModule};
 pub use toolbox_module::{ToolDef, ToolboxModule};
-pub use tool_presets_module::ToolPresetsModule;
 pub use user_session_state::{
     painter_default_camera, PainterUserSessionState, PersistedPainterUiState,
 };
