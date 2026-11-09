@@ -17,6 +17,8 @@ pub use thaum_renderer_domain::debug_log;
 pub mod color_entry;
 #[path = "painter-session/tool-state/detailer_stroke.rs"]
 pub mod detailer_stroke;
+#[path = "painter-session/tool-state/vector_construction.rs"]
+pub mod vector_construction;
 #[path = "modules/individuals/display-profile/display_profile_module.rs"]
 pub mod display_profile_module;
 #[path = "modules/individuals/display-profile/display_profile_presets.rs"]

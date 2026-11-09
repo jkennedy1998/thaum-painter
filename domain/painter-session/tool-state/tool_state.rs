@@ -61,6 +61,11 @@ pub enum PaintTool {
     /// Subcell glyph-shape editing; its add/erase mode is a per-hand tool
     /// property, rather than separate toolbox registrations.
     Detailer,
+    /// Vector construction session: presses accumulate points and handles
+    /// across many presses; Enter, Escape, or switching tools commits the
+    /// whole session as one action. Never paints through
+    /// `apply_at_for_hand`.
+    Vector,
 }
 
 /// Which direction an equipped Detailer hand edits its comparison tile.
@@ -73,7 +78,7 @@ pub enum DetailerMode {
 impl PaintTool {
     /// Every live tool, in toolbox order. Drift-tested against the
     /// painter-tools registry.
-    pub fn all() -> [PaintTool; 8] {
+    pub fn all() -> [PaintTool; 9] {
         [
             PaintTool::Brush,
             PaintTool::Fill,
@@ -83,6 +88,7 @@ impl PaintTool {
             PaintTool::Stamp,
             PaintTool::Move,
             PaintTool::Detailer,
+            PaintTool::Vector,
         ]
     }
 
@@ -99,6 +105,7 @@ impl PaintTool {
             PaintTool::Stamp => "stamp",
             PaintTool::Move => "move",
             PaintTool::Detailer => "detailer",
+            PaintTool::Vector => "vector",
         }
     }
 
@@ -112,6 +119,7 @@ impl PaintTool {
             "stamp" => Some(PaintTool::Stamp),
             "move" => Some(PaintTool::Move),
             "detailer" => Some(PaintTool::Detailer),
+            "vector" => Some(PaintTool::Vector),
             _ => None,
         }
     }
@@ -204,6 +212,14 @@ pub struct HandState {
     pub pick_opposite_hand: bool,
     /// Detailer add/erase choice, independently selected for each hand.
     pub detailer_mode: DetailerMode,
+    /// The shared stroke/fill authoring-source pair (J 2026-11-09): whose
+    /// hand's graphic/color/weight a lasso or vector stroke (respectively
+    /// fill) authors with — `Some(hand)` picks that hand's live content,
+    /// `None` skips the channel entirely. Defaults to each hand's own
+    /// content so lasso keeps its today-behavior of filling with the acting
+    /// hand.
+    pub stroke_source: Option<PaintHand>,
+    pub fill_source: Option<PaintHand>,
     /// Detailer cross-weight toggle (J 2026-11-09): when on and the hand's
     /// weight channel is unlocked, a stroke resolves across EVERY declared
     /// render weight and commits the matching glyph's weight onto the cell;
@@ -227,6 +243,8 @@ impl Default for HandState {
             pick_opposite_hand: false,
             detailer_mode: DetailerMode::Additive,
             detailer_multi_weight: false,
+            stroke_source: None,
+            fill_source: None,
             edit_channels: EditChannels::all(),
             select_channels: SelectChannels::all(),
             target: PaintTarget::Image,
@@ -262,12 +280,21 @@ impl Default for ToolState {
             left_tool: PaintTool::Brush,
             right_tool: PaintTool::Brush,
             active_hand: PaintHand::Left,
-            left_hand: HandState::default(),
+            // Each hand's stroke/fill sources default to its own content, so
+            // lasso keeps its today-behavior of filling with the acting hand
+            // (J 2026-11-09).
+            left_hand: HandState {
+                stroke_source: Some(PaintHand::Left),
+                fill_source: Some(PaintHand::Left),
+                ..HandState::default()
+            },
             // Clearing is ordinary brush application with the clear character.
             // Keeping it in hand state means fill, lasso, and future paint
             // tools gain the same clear behavior without special cases.
             right_hand: HandState {
                 graphic: CellGraphic::Glyph(' '),
+                stroke_source: Some(PaintHand::Right),
+                fill_source: Some(PaintHand::Right),
                 ..HandState::default()
             },
             text_options: DEFAULT_TEXT_LAYOUT_OPTIONS,
@@ -413,6 +440,19 @@ impl ToolState {
         self.active_hand = hand;
     }
 
+    /// The shared stroke/fill authoring-source row (J 2026-11-09): whose
+    /// hand's content a lasso/vector stroke (respectively fill) authors
+    /// with. `None` skips the channel entirely.
+    pub fn set_stroke_source_for_hand(&mut self, hand: PaintHand, source: Option<PaintHand>) {
+        self.hand_state_mut(hand).stroke_source = source;
+        self.active_hand = hand;
+    }
+
+    pub fn set_fill_source_for_hand(&mut self, hand: PaintHand, source: Option<PaintHand>) {
+        self.hand_state_mut(hand).fill_source = source;
+        self.active_hand = hand;
+    }
+
     /// Picker behavior: samples the cells under the picking hand's brush-tip
     /// footprint into the receiving hand's graphic/color/weight, one channel
     /// at a time, gated by the *picking* hand's Select row (source-of-truth
@@ -548,7 +588,7 @@ impl ToolState {
         }
     }
 
-    fn resolved_painted_cell(
+    pub(crate) fn resolved_painted_cell(
         &self,
         existing: Option<&PaintedCell>,
         hand: PaintHand,
