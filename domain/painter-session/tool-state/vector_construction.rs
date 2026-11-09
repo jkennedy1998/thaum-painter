@@ -10,7 +10,10 @@
 
 use std::collections::BTreeSet;
 
-use thaum_renderer_domain::{CellGraphic, CellPoint};
+use thaum_renderer_domain::{
+    Cell, CellColor, CellFacing, CellGraphic, CellGroup, CellPoint, CellWeight, WorldPoint,
+    CELL_SHADER_VIVID_FLASH,
+};
 
 use crate::brush::{self, Canvas, PaintedCell};
 use crate::tool_state::{PaintHand, ToolState};
@@ -113,6 +116,116 @@ impl VectorConstruction {
                 .get(selection.subpath)?
                 .connection_count(selection.point),
         )
+    }
+
+    /// Hit-tests every subpath's point anchors: returns the (subpath,
+    /// point) indices whose anchor sits on `cell`. The selected point wins
+    /// first (so re-pressing the selected anchor can't jump subpaths), then
+    /// the most recently authored subpath — the branch-root duplicates make
+    /// shared cells ordinary.
+    pub fn point_at(&self, cell: CellPoint) -> Option<(usize, usize)> {
+        if let Some(selection) = self.selection {
+            if self
+                .subpaths
+                .get(selection.subpath)
+                .and_then(|subpath| subpath.points.get(selection.point))
+                .is_some_and(|point| point.anchor == cell)
+            {
+                return Some((selection.subpath, selection.point));
+            }
+        }
+        for subpath_index in (0..self.subpaths.len()).rev() {
+            for point_index in (0..self.subpaths[subpath_index].points.len()).rev() {
+                if self.subpaths[subpath_index].points[point_index].anchor == cell {
+                    return Some((subpath_index, point_index));
+                }
+            }
+        }
+        None
+    }
+
+    /// Hit-tests the selected point's own handles: a handle is a distinct
+    /// press target only when its point is selected, the handle's magnitude
+    /// is nonzero, and its absolute cell differs from the anchor (J
+    /// 2026-11-09's precedence chart). Handles win over empty-cell presses.
+    pub fn handle_at(&self, cell: CellPoint) -> Option<HandleEnd> {
+        let point = self.selected_point()?;
+        if point
+            .forward_offset
+            .is_some_and(|offset| offset != CellPoint { x: 0, y: 0, z: 0 })
+            && point.forward_handle() == Some(cell)
+            && cell != point.anchor
+        {
+            return Some(HandleEnd::Forward);
+        }
+        if point
+            .backward_offset
+            .is_some_and(|offset| offset != CellPoint { x: 0, y: 0, z: 0 })
+            && point.backward_handle() == Some(cell)
+            && cell != point.anchor
+        {
+            return Some(HandleEnd::Backward);
+        }
+        None
+    }
+
+    /// Rigid-moves the point at (subpath, point) — its handles translate
+    /// with it, live focus depth included in the delta.
+    pub fn translate_point(&mut self, subpath: usize, point: usize, delta: CellPoint) {
+        if let Some(point) = self
+            .subpaths
+            .get_mut(subpath)
+            .and_then(|subpath| subpath.points.get_mut(point))
+        {
+            point.translate(delta);
+        }
+    }
+
+    /// Moves only the named handle of the named point — asymmetric, the
+    /// sibling handle is unaffected (J 2026-11-09).
+    pub fn translate_handle(&mut self, subpath: usize, point: usize, handle: HandleEnd, delta: CellPoint) {
+        let Some(offset) = self
+            .subpaths
+            .get_mut(subpath)
+            .and_then(|subpath| subpath.points.get_mut(point))
+            .and_then(|point| match handle {
+                HandleEnd::Forward => point.forward_offset.as_mut(),
+                HandleEnd::Backward => point.backward_offset.as_mut(),
+            })
+        else {
+            return;
+        };
+        offset.x += delta.x;
+        offset.y += delta.y;
+        offset.z += delta.z;
+    }
+
+    /// Shapes the selected point's handles mirrored around its anchor from
+    /// a live press+drag: the drag cell becomes the forward handle and the
+    /// backward handle is its exact opposite (authoring-time mirror only).
+    /// A drag landing back on the anchor collapses the point to a hard
+    /// corner (J 2026-11-09).
+    pub fn mirror_selected_handles_to(&mut self, forward: CellPoint) {
+        let Some(selection) = self.selection else {
+            return;
+        };
+        let Some(point) = self
+            .subpaths
+            .get_mut(selection.subpath)
+            .and_then(|subpath| subpath.points.get_mut(selection.point))
+        else {
+            return;
+        };
+        if forward == (CellPoint { x: 0, y: 0, z: 0 }) {
+            point.collapse_handles();
+            return;
+        }
+        point.forward_offset = Some(forward);
+        point.backward_offset = Some(CellPoint {
+            x: -forward.x,
+            y: -forward.y,
+            z: -forward.z,
+        });
     }
 
     /// The selected point's handle-drag expansion direction: the line to
@@ -364,6 +477,50 @@ impl VectorConstruction {
         self.subpaths.is_empty()
     }
 
+    /// Undoes one empty-space placement — the empty-space double-click
+    /// pair's second click (J 2026-11-09: the pair's first click's placement
+    /// undoes first, the double-click intent replaces it). A placement that
+    /// started a brand-new subpath (fresh or branch) removes that whole
+    /// subpath — the branch's root duplicate goes with it; a placement that
+    /// appended to an existing subpath removes only the placed point (the
+    /// closed-tail redo case reopens). `previous` restores when it still
+    /// resolves. Returns whether the session is now empty — the caller's
+    /// signal to cancel instead of starting the independent subpath.
+    pub fn undo_placement(
+        &mut self,
+        subpath: usize,
+        point: usize,
+        whole_subpath: bool,
+        previous: Option<VectorSelection>,
+    ) -> bool {
+        if whole_subpath {
+            if subpath < self.subpaths.len() {
+                self.subpaths.remove(subpath);
+            }
+        } else if let Some(sub) = self.subpaths.get_mut(subpath) {
+            if point < sub.points.len() {
+                let was_closed = sub.closed;
+                let was_last = point + 1 == sub.points.len();
+                sub.points.remove(point);
+                if was_closed && was_last {
+                    sub.reopen();
+                }
+                if sub.points.is_empty() {
+                    self.subpaths.remove(subpath);
+                }
+            }
+        }
+        // Removing the placed point or the newest whole subpath never shifts
+        // earlier indices, so the previous selection restores as-is when it
+        // still resolves.
+        self.selection = previous.filter(|selection| {
+            self.subpaths
+                .get(selection.subpath)
+                .is_some_and(|sub| selection.point < sub.points.len())
+        });
+        self.subpaths.is_empty()
+    }
+
     /// Every cell the whole session's committed geometry covers: stroke
     /// bands and fill boundaries from every subpath, unioned.
     pub fn covered_cells(&self, stroke_size: i32) -> BTreeSet<CellPoint> {
@@ -378,6 +535,72 @@ impl VectorConstruction {
         }
         cells
     }
+}
+
+/// The in-progress vector construction preview: every subpath's sampled
+/// curve cells, every point as a plain vertex dot, and the selected
+/// point's handles as their own cells — handles render for the selected
+/// point only (J 2026-11-09). Overlay-only: never commits anything. One
+/// always-visible group reuses the lasso bound path's convention.
+pub fn build_vector_preview_cell_groups(
+    construction: &VectorConstruction,
+    vivid: CellColor,
+) -> Vec<CellGroup> {
+    let mut group = CellGroup::new(WorldPoint { x: 0, y: 0, z: 0 });
+    // The drawn line preview first — dots and handles overwrite curve cells
+    // where they share one.
+    for subpath in construction.subpaths() {
+        for position in subpath.sample() {
+            group.insert(Cell {
+                position,
+                graphic: CellGraphic::Glyph('◌'),
+                color: CellColor::Flat([0.55, 0.75, 1.0, 1.0]),
+                weight: CellWeight::from_index_clamped(3),
+                ..Cell::default()
+            });
+        }
+    }
+    let selection = construction.selection();
+    for (subpath_index, subpath) in construction.subpaths().iter().enumerate() {
+        for (point_index, point) in subpath.points.iter().enumerate() {
+            let selected = selection
+                .is_some_and(|selection| {
+                    selection.subpath == subpath_index && selection.point == point_index
+                });
+            group.insert(Cell {
+                position: point.anchor,
+                graphic: CellGraphic::Glyph('●'),
+                color: vivid,
+                weight: CellWeight::from_index_clamped(if selected { 4 } else { 1 }),
+                shader_stack: if selected {
+                    vec![CELL_SHADER_VIVID_FLASH]
+                } else {
+                    Vec::new()
+                },
+                facing: CellFacing::PosZ,
+                ..Cell::default()
+            });
+            if !selected {
+                continue;
+            }
+            // The selected point's handles only: nonzero magnitude, distinct
+            // cell from the anchor — the same rule the handle hit-test uses.
+            for handle in [point.forward_handle(), point.backward_handle()] {
+                let Some(handle) = handle else { continue };
+                if handle == point.anchor {
+                    continue;
+                }
+                group.insert(Cell {
+                    position: handle,
+                    graphic: CellGraphic::Glyph('◌'),
+                    color: vivid,
+                    weight: CellWeight::from_index_clamped(2),
+                    ..Cell::default()
+                });
+            }
+        }
+    }
+    vec![group]
 }
 
 /// Commits one vector construction session for its hand: every subpath's

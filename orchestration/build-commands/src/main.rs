@@ -762,6 +762,51 @@ fn begin_canvas_press_if_eligible(
     );
 }
 
+/// Commits every open vector construction session (Enter, Escape, and
+/// tool-switch all land here): each open session authors its fill-then-
+/// stroke geometry through its hand's live stroke/fill sources and stages
+/// the whole thing as one CellPatchSet record (one undo step). Escape
+/// commits too — there is no discard path (J 2026-11-09). Returns per-hand
+/// commit errors for the entrypoint to report.
+#[allow(clippy::too_many_arguments)] // session-bridge seam: one fn carries the live session state
+fn commit_open_vector_construction_sessions(
+    pointer_strokes: &mut CanvasPointerStrokes,
+    tool_state: &Rc<RefCell<ToolState>>,
+    selection: &Rc<RefCell<PainterSelection>>,
+    canvas: &mut Canvas,
+    shared_document: &mut SharedDocumentRuntime,
+    shared_document_paths: &SharedDocumentPaths,
+    shared_action_counter: &mut u64,
+    session_user_id: &str,
+    active_layer_id: &mut String,
+    current_breath: u32,
+    persist_to_disk: bool,
+    graphic_fade: Option<&ShapeFade>,
+    detailer_session: &Rc<RefCell<DetailerSession>>,
+) {
+    for hand in [PaintHand::Left, PaintHand::Right] {
+        for error in pointer_strokes.commit_vector_construction_for_hand(
+            &mut canvas_pointer_context(
+                tool_state,
+                selection,
+                canvas,
+                shared_document,
+                shared_document_paths,
+                shared_action_counter,
+                session_user_id,
+                active_layer_id,
+                persist_to_disk,
+                graphic_fade,
+                detailer_session,
+            ),
+            hand,
+            current_breath,
+        ) {
+            eprintln!("vector commit failed (kept in memory): {error:#}");
+        }
+    }
+}
+
 /// Routes one hand's held-pointer frame through the shared seam when the
 /// drag belongs on the canvas: chrome hits cancel the pending stroke, and
 /// only in-surface, in-bounds, non-typing positions continue it. Same
@@ -3423,6 +3468,43 @@ fn main() -> Result<()> {
                     TypingRoute::Reserved => {}
                 }
             }
+            // An open vector construction session owns Enter/Escape/Backspace/Z
+            // (J 2026-11-09): Enter and Escape commit the whole session
+            // (Escape commits too, not discards — no discard path), Backspace
+            // and Z delete the selected point (Z must not reach undo
+            // mid-authoring). Deleting the last point cancels the session.
+            if pointer_strokes.any_vector_construction_open() {
+                match *key {
+                    KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Escape => {
+                        commit_open_vector_construction_sessions(
+                            &mut pointer_strokes,
+                            &tool_state,
+                            &selection,
+                            &mut canvas,
+                            &mut shared_document,
+                            &shared_document_paths,
+                            &mut shared_action_counter,
+                            &session_user_id,
+                            &mut active_layer_id,
+                            timeline_state.borrow().current_breath,
+                            persist_to_disk,
+                            shape_fade.as_deref(),
+                            &detailer_session,
+                        );
+                        continue;
+                    }
+                    KeyCode::Backspace | KeyCode::KeyZ => {
+                        let active = tool_state.borrow().active_hand;
+                        for hand in [active, active.opposite()] {
+                            if pointer_strokes.vector_delete_selected_point(hand) {
+                                break;
+                            }
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
             // While a controls-panel row waits for a captured key, the press
             // becomes that row's new binding and never dispatches a command.
             // The session panel's focused fields consume the same seam; the
@@ -3549,6 +3631,32 @@ fn main() -> Result<()> {
                     }
                     _ => {}
                 }
+            }
+        }
+
+        // Commit-on-tool-switch (J 2026-11-09): a vector construction
+        // session commits when its hand equips a different tool — however
+        // the switch arrived (keys, toolbox clicks, presets all land in
+        // tool state), so the check lives at the frame level, not per path.
+        for hand in [PaintHand::Left, PaintHand::Right] {
+            if tool_state.borrow().tool_for_hand(hand) != PaintTool::Vector
+                && pointer_strokes.vector_construction_open_for(hand)
+            {
+                commit_open_vector_construction_sessions(
+                    &mut pointer_strokes,
+                    &tool_state,
+                    &selection,
+                    &mut canvas,
+                    &mut shared_document,
+                    &shared_document_paths,
+                    &mut shared_action_counter,
+                    &session_user_id,
+                    &mut active_layer_id,
+                    timeline_state.borrow().current_breath,
+                    persist_to_disk,
+                    shape_fade.as_deref(),
+                    &detailer_session,
+                );
             }
         }
 

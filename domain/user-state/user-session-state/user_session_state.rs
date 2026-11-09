@@ -78,6 +78,15 @@ pub struct PersistedHandState {
     pub fill_3d: bool,
     #[serde(default)]
     pub pick_opposite_hand: bool,
+    /// The shared stroke/fill authoring-source pair (lasso + vector): which
+    /// hand's live content each channel authors from. JSON values: "left"/
+    /// "right" name the source hand, "none" skips the channel entirely, and
+    /// an absent field (legacy snapshots) keeps the acting hand's own
+    /// content — lasso's today-behavior (J 2026-11-09).
+    #[serde(default)]
+    pub stroke_source: Option<String>,
+    #[serde(default)]
+    pub fill_source: Option<String>,
     pub edit_channels: PersistedChannelMask,
     pub select_channels: PersistedChannelMask,
     pub target: String,
@@ -183,8 +192,8 @@ impl PersistedToolState {
             active_hand: hand_name(tool_state.active_hand).to_string(),
             left_tool: tool_name(tool_state.left_tool).to_string(),
             right_tool: tool_name(tool_state.right_tool).to_string(),
-            left_hand: PersistedHandState::from_runtime(&tool_state.left_hand),
-            right_hand: PersistedHandState::from_runtime(&tool_state.right_hand),
+            left_hand: PersistedHandState::from_runtime(&tool_state.left_hand, PaintHand::Left),
+            right_hand: PersistedHandState::from_runtime(&tool_state.right_hand, PaintHand::Right),
         }
     }
 
@@ -198,13 +207,13 @@ impl PersistedToolState {
         if let Some(tool) = tool_from_name(&self.right_tool) {
             tool_state.right_tool = tool;
         }
-        self.left_hand.apply_to_runtime(&mut tool_state.left_hand);
-        self.right_hand.apply_to_runtime(&mut tool_state.right_hand);
+        self.left_hand.apply_to_runtime(&mut tool_state.left_hand, PaintHand::Left);
+        self.right_hand.apply_to_runtime(&mut tool_state.right_hand, PaintHand::Right);
     }
 }
 
 impl PersistedHandState {
-    pub fn from_runtime(hand: &HandState) -> Self {
+    pub fn from_runtime(hand: &HandState, own: PaintHand) -> Self {
         Self {
             graphic: PersistedGraphic::from_runtime(&hand.graphic),
             color: PersistedPaintColor::from_runtime(&hand.color),
@@ -213,13 +222,15 @@ impl PersistedHandState {
             fill_connectivity: hand.fill_connectivity.id().to_string(),
             fill_3d: hand.fill_3d,
             pick_opposite_hand: hand.pick_opposite_hand,
+            stroke_source: Some(hand_source_json(hand.stroke_source, own).to_string()),
+            fill_source: Some(hand_source_json(hand.fill_source, own).to_string()),
             edit_channels: PersistedChannelMask::from_mask(hand.edit_channels),
             select_channels: PersistedChannelMask::from_mask(hand.select_channels),
             target: target_name(hand.target).to_string(),
         }
     }
 
-    pub fn apply_to_runtime(&self, hand: &mut HandState) {
+    pub fn apply_to_runtime(&self, hand: &mut HandState, own: PaintHand) {
         hand.graphic = self.graphic.to_runtime();
         hand.color = self.color.to_runtime();
         hand.weight_index = self.weight_index.clamp(0, 3);
@@ -228,6 +239,8 @@ impl PersistedHandState {
             FillConnectivity::from_id(&self.fill_connectivity).unwrap_or_default();
         hand.fill_3d = self.fill_3d;
         hand.pick_opposite_hand = self.pick_opposite_hand;
+        hand.stroke_source = hand_source_runtime(self.stroke_source.as_deref(), own);
+        hand.fill_source = hand_source_runtime(self.fill_source.as_deref(), own);
         hand.edit_channels = self.edit_channels.to_mask();
         hand.select_channels = self.select_channels.to_mask();
         if let Some(target) = target_from_name(&self.target) {
@@ -415,6 +428,35 @@ fn target_from_name(name: &str) -> Option<PaintTarget> {
     }
 }
 
+/// The stroke/fill authoring-source hand (J 2026-11-09): the runtime value
+/// is `Option<PaintHand>`; the JSON shape adds "none" (skip the channel)
+/// and uses an absent field for the acting hand's own content (legacy
+/// snapshots keep lasso's today-behavior).
+fn hand_source_name(source: PaintHand) -> &'static str {
+    match source {
+        PaintHand::Left => "left",
+        PaintHand::Right => "right",
+    }
+}
+
+fn hand_source_json(source: Option<PaintHand>, own: PaintHand) -> &'static str {
+    match source {
+        None => "none",
+        Some(source) if source == own => "self",
+        Some(source) => hand_source_name(source),
+    }
+}
+
+fn hand_source_runtime(json: Option<&str>, own: PaintHand) -> Option<PaintHand> {
+    match json {
+        None | Some("self") => Some(own),
+        Some("none") => None,
+        Some("left") => Some(PaintHand::Left),
+        Some("right") => Some(PaintHand::Right),
+        _ => Some(own),
+    }
+}
+
 // --- session-state file IO and projection -----------------------------------
 
 use std::fs;
@@ -584,6 +626,60 @@ mod tests {
         let text = serde_json::to_string(&state).expect("serialize");
         let restored: PersistedPainterUiState = serde_json::from_str(&text).expect("deserialize");
         assert_eq!(restored.tool_presets, state.tool_presets);
+    }
+
+    #[test]
+    fn stroke_and_fill_sources_survive_a_session_state_round_trip() {
+        let mut tool_state = ToolState::default();
+        tool_state.set_stroke_source_for_hand(PaintHand::Left, Some(PaintHand::Right));
+        tool_state.set_fill_source_for_hand(PaintHand::Left, None);
+        tool_state.set_stroke_source_for_hand(PaintHand::Right, None);
+        tool_state.set_fill_source_for_hand(PaintHand::Right, Some(PaintHand::Left));
+
+        let persisted = PersistedToolState::from_runtime(&tool_state);
+        let text = serde_json::to_string(&persisted).expect("serialize");
+        let restored: PersistedToolState = serde_json::from_str(&text).expect("deserialize");
+        let mut runtime = ToolState::default();
+        restored.apply_to_runtime(&mut runtime);
+
+        assert_eq!(
+            runtime.left_hand.stroke_source,
+            Some(PaintHand::Right),
+            "cross-hand source survives"
+        );
+        assert_eq!(
+            runtime.left_hand.fill_source,
+            None,
+            "explicit skip survives"
+        );
+        assert_eq!(runtime.right_hand.stroke_source, None);
+        assert_eq!(runtime.right_hand.fill_source, Some(PaintHand::Left));
+    }
+
+    #[test]
+    fn snapshots_from_before_stroke_fill_sources_default_to_self_sourced() {
+        let mut tool_state = ToolState::default();
+        tool_state.set_stroke_source_for_hand(PaintHand::Left, Some(PaintHand::Right));
+        let persisted = PersistedToolState::from_runtime(&tool_state);
+        let mut value = serde_json::to_value(&persisted).expect("serialize");
+        // A pre-vector-tool snapshot carries neither field.
+        let hands = value
+            .get_mut("left_hand")
+            .and_then(|hand| hand.as_object_mut())
+            .expect("left hand object");
+        hands.remove("stroke_source");
+        hands.remove("fill_source");
+        let restored: PersistedToolState = serde_json::from_value(value).expect("deserialize");
+        let mut runtime = ToolState::default();
+        restored.apply_to_runtime(&mut runtime);
+
+        assert_eq!(
+            runtime.left_hand.stroke_source,
+            Some(PaintHand::Left),
+            "absent field keeps the acting hand's own content"
+        );
+        assert_eq!(runtime.left_hand.fill_source, Some(PaintHand::Left));
+        assert_eq!(runtime.right_hand.stroke_source, Some(PaintHand::Right));
     }
 
     #[test]

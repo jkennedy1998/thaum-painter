@@ -61,6 +61,10 @@ use crate::{
     storage::{SharedDocumentPaths, SharedDocumentRuntime},
     text_entry::TextEntryState,
     tool_state::{PaintHand, PaintTarget, ToolState},
+    vector_construction::{
+        build_vector_preview_cell_groups, commit_vector_construction, HandleEnd,
+        VectorConstruction, VectorSelection,
+    },
 };
 
 /// The canvas block plus snapshot a stroke started against; release diffs
@@ -366,6 +370,61 @@ fn detailer_multi_weight_for_hand(
     hand_state.detailer_multi_weight && hand_state.edit_channels.weight
 }
 
+/// What one vector-construction press grabbed: the drag phases route off
+/// this, and release clears it (J 2026-11-09's precedence chart — point >
+/// handle > create/close).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VectorPress {
+    /// A press on an existing point: a follow-up drag rigid-moves it.
+    Point { last: CellPoint },
+    /// A press on the selected point's own handle: a follow-up drag moves
+    /// that one handle asymmetrically.
+    Handle { end: HandleEnd, last: CellPoint },
+    /// A press on empty space placed a point: a follow-up drag shapes its
+    /// mirrored handles; release leaves the point placed (a click stays a
+    /// hard corner).
+    Create,
+    /// A press that closed the active subpath: no drag follows.
+    Closed,
+}
+
+/// One hand's open vector construction session. The construction stays open
+/// across many presses; Enter, Escape, or equipping a different tool commits
+/// the whole session as one action (J 2026-11-09) — release never does.
+pub struct VectorPointerSession {
+    pub hand: PaintHand,
+    pub construction: VectorConstruction,
+    press: Option<VectorPress>,
+    /// The just-placed empty-space press, kept so the pair's second click
+    /// can undo it and start the independent subpath instead (J 2026-11-09:
+    /// the double-click intent replaces the first click's placement). The
+    /// placed point sits at the pair's cell, so the second click routes
+    /// through the point-hit branch — this record is what tells those apart.
+    pending_empty_placement: Option<PendingEmptyPlacement>,
+}
+
+/// One empty-space placement awaiting its pair's second click: where it
+/// landed, what to undo (the whole subpath when the placement started one —
+/// a branch's root duplicate goes with it), and the selection to restore.
+struct PendingEmptyPlacement {
+    cell: CellPoint,
+    subpath: usize,
+    point: usize,
+    whole_subpath: bool,
+    previous_selection: Option<VectorSelection>,
+}
+
+impl VectorPointerSession {
+    fn new(hand: PaintHand) -> Self {
+        Self {
+            hand,
+            construction: VectorConstruction::new(hand),
+            press: None,
+            pending_empty_placement: None,
+        }
+    }
+}
+
 /// The in-progress pointer strokes across both hands.
 pub struct CanvasPointerStrokes {
     lasso: Option<LassoStroke>,
@@ -377,6 +436,16 @@ pub struct CanvasPointerStrokes {
     stamp_hover: Option<StampHover>,
     move_stroke: Option<MoveStroke>,
     vector_move: Option<VectorMoveStroke>,
+    /// Each hand's open vector construction session (the vector tool only —
+    /// release never commits it; Enter, Escape, or tool-switch does).
+    left_vector: Option<VectorPointerSession>,
+    right_vector: Option<VectorPointerSession>,
+    /// The vector tool's double-click detectors, one for point presses
+    /// (toggle handles) and one for empty-cell presses (independent
+    /// subpath), both keyed per hand and cell like the move tool's pivot
+    /// detector.
+    vector_point_click: DoubleClick<(PaintHand, CellPoint)>,
+    vector_empty_click: DoubleClick<(PaintHand, CellPoint)>,
     /// The move tool's pivot-set detector: two presses on the same cell within
     /// the shared double-click window pin the active layer's fixed origin.
     move_origin_click: DoubleClick<(PaintHand, CellPoint)>,
@@ -411,6 +480,10 @@ impl CanvasPointerStrokes {
             stamp_hover: None,
             move_stroke: None,
             vector_move: None,
+            left_vector: None,
+            right_vector: None,
+            vector_point_click: DoubleClick::new(),
+            vector_empty_click: DoubleClick::new(),
             move_origin_click: DoubleClick::new(),
             pivot_flash: None,
         }
@@ -437,14 +510,267 @@ impl CanvasPointerStrokes {
         self.selection.is_some()
     }
 
+    fn vector_session(&self, hand: PaintHand) -> Option<&VectorPointerSession> {
+        match hand {
+            PaintHand::Left => self.left_vector.as_ref(),
+            PaintHand::Right => self.right_vector.as_ref(),
+        }
+    }
+
+    fn vector_session_mut(&mut self, hand: PaintHand) -> Option<&mut VectorPointerSession> {
+        match hand {
+            PaintHand::Left => self.left_vector.as_mut(),
+            PaintHand::Right => self.right_vector.as_mut(),
+        }
+    }
+
+    fn vector_session_mut_or_insert(&mut self, hand: PaintHand) -> &mut VectorPointerSession {
+        match hand {
+            PaintHand::Left => self.left_vector.get_or_insert_with(|| VectorPointerSession::new(hand)),
+            PaintHand::Right => self
+                .right_vector
+                .get_or_insert_with(|| VectorPointerSession::new(hand)),
+        }
+    }
+
+    /// A read-only peek at `hand`'s open vector construction — tests and any
+    /// future status readout; only commit mutates through the session take.
+    pub fn vector_construction_for(&self, hand: PaintHand) -> Option<&VectorConstruction> {
+        self.vector_session(hand).map(|session| &session.construction)
+    }
+
+    /// Whether any hand has an open vector construction session — the
+    /// entrypoint's signal to intercept Enter/Escape/Backspace/Z before the
+    /// ordinary binding dispatch.
+    pub fn any_vector_construction_open(&self) -> bool {
+        self.left_vector.is_some() || self.right_vector.is_some()
+    }
+
+    /// Whether `hand` has an open vector construction session — the
+    /// entrypoint's commit-on-tool-switch check (a session commits when its
+    /// hand equips a different tool, however the switch arrived: keys,
+    /// toolbox clicks, or presets).
+    pub fn vector_construction_open_for(&self, hand: PaintHand) -> bool {
+        match hand {
+            PaintHand::Left => self.left_vector.is_some(),
+            PaintHand::Right => self.right_vector.is_some(),
+        }
+    }
+
+    /// Deletes the selected point of `hand`'s open vector session (the
+    /// Backspace/Z gesture, J 2026-11-09). Returns whether a session was
+    /// open and consumed the press; deleting the last point cancels the
+    /// session without committing — the session's only exit-to-zero path.
+    pub fn vector_delete_selected_point(&mut self, hand: PaintHand) -> bool {
+        let Some(session) = self.vector_session_mut(hand) else {
+            return false;
+        };
+        session.pending_empty_placement = None;
+        let empty = session.construction.delete_selected_point();
+        if empty {
+            match hand {
+                PaintHand::Left => self.left_vector = None,
+                PaintHand::Right => self.right_vector = None,
+            }
+        }
+        true
+    }
+
+    /// Commits one hand's open vector construction session: fill-then-stroke
+    /// authoring through the hand's live stroke/fill sources, staged and
+    /// committed as one CellPatchSet record (one undo step). No-op without
+    /// an open session. Returns the commit errors.
+    pub fn commit_vector_construction_for_hand(
+        &mut self,
+        ctx: &mut CanvasPointerContext<'_>,
+        hand: PaintHand,
+        current_breath: u32,
+    ) -> Vec<Error> {
+        let Some(session) = self.vector_take_session(hand) else {
+            return Vec::new();
+        };
+        let Some(block_id) = ctx
+            .document
+            .active_raster_block_id(ctx.active_layer_id, current_breath)
+        else {
+            return Vec::new();
+        };
+        // One snapshot before the authoring writes: the staged-commit diff
+        // below becomes the single committed record.
+        let start: StrokeStart = (ctx.canvas.clone(), block_id.clone());
+        commit_vector_construction(&ctx.tool_state.borrow(), ctx.canvas, &session.construction);
+        let mut errors = Vec::new();
+        if let Err(error) = commit_staged_paint_stroke(
+            ctx.document,
+            ctx.document_paths,
+            ctx.action_counter,
+            ctx.session_user_id,
+            ctx.active_layer_id,
+            ctx.canvas,
+            Some(start),
+            ctx.persist_to_disk,
+        ) {
+            errors.push(error);
+        }
+        errors
+    }
+
+    fn vector_take_session(&mut self, hand: PaintHand) -> Option<VectorPointerSession> {
+        match hand {
+            PaintHand::Left => self.left_vector.take(),
+            PaintHand::Right => self.right_vector.take(),
+        }
+    }
+
+    /// Begins one vector-construction press: the interaction chart's
+    /// precedence exactly — an existing point first (close precondition,
+    /// then double-click toggle, then select), then the selected point's
+    /// own handles, then empty space (continue / branch, with the
+    /// double-click independent-subpath case). Scoped blocks keep the
+    /// session borrow from overlapping the double-click detectors.
+    ///
+    /// The empty-space double-click pair needs one interception: the pair's
+    /// first click already placed a point at its cell, so the second click
+    /// routes through the point-hit branch — the pending placement record
+    /// (plus the shared double-click window) is what recognizes it as the
+    /// pair's completion and undoes the placement first (J 2026-11-09).
+    fn begin_vector_press(&mut self, hand: PaintHand, position: CellPoint) {
+        let now = Instant::now();
+        // Every press notes the empty-pair detector (keyed per hand+cell),
+        // so the pair's second click — which routes through the point-hit
+        // branch because the first click placed a point there — still lands
+        // inside the shared double-click window.
+        let empty_double = self.vector_empty_click.note_click((hand, position), now);
+        if self
+            .vector_session(hand)
+            .is_some_and(|session| session.pending_empty_placement.is_some())
+        {
+            let pending = self
+                .vector_session_mut(hand)
+                .and_then(|session| session.pending_empty_placement.take());
+            if empty_double
+                && pending
+                    .as_ref()
+                    .is_some_and(|pending| pending.cell == position)
+            {
+                let pending = pending.unwrap();
+                let empty = self.vector_session_mut(hand).is_some_and(|session| {
+                    session
+                        .construction
+                        .undo_placement(
+                            pending.subpath,
+                            pending.point,
+                            pending.whole_subpath,
+                            pending.previous_selection,
+                        )
+                });
+                if empty {
+                    // The placement was the session's only content: the
+                    // double-click cancels instead of restarting.
+                    match hand {
+                        PaintHand::Left => self.left_vector = None,
+                        PaintHand::Right => self.right_vector = None,
+                    }
+                    return;
+                }
+                let session = self.vector_session_mut_or_insert(hand);
+                session.construction.start_independent_subpath(position);
+                session.press = None;
+                return;
+            }
+            // Not the pair's completion (wrong cell or beyond the window):
+            // the pending record is dropped and the ordinary chart proceeds.
+        }
+        let point_hit = self
+            .vector_session(hand)
+            .and_then(|session| session.construction.point_at(position));
+        if let Some((subpath, point)) = point_hit {
+            // Close precondition first: pressing the active subpath's own
+            // first point while its open tail is selected closes.
+            let closed = self
+                .vector_session_mut(hand)
+                .is_some_and(|session| session.construction.try_close_subpath(subpath, position));
+            if closed {
+                if let Some(session) = self.vector_session_mut(hand) {
+                    session.press = Some(VectorPress::Closed);
+                }
+                return;
+            }
+            let double = self.vector_point_click.note_click((hand, position), now);
+            let session = self.vector_session_mut_or_insert(hand);
+            if double {
+                // Double-click on an existing point toggles its handles
+                // between hard corner and magnitude 1 along the neighbor
+                // tangent (J 2026-11-09).
+                session.construction.select_point(subpath, point);
+                session.construction.toggle_selected_point_handles();
+                session.press = None;
+            } else {
+                session.construction.select_point(subpath, point);
+                session.press = Some(VectorPress::Point { last: position });
+            }
+            return;
+        }
+        // The selected point's own handles next: only these are ever
+        // pressable (nonzero magnitude, distinct cell from the anchor).
+        let handle_hit = self
+            .vector_session(hand)
+            .and_then(|session| session.construction.handle_at(position));
+        if let Some(end) = handle_hit {
+            let selection = self
+                .vector_session(hand)
+                .and_then(|session| session.construction.selection());
+            if let Some(selection) = selection {
+                let session = self.vector_session_mut_or_insert(hand);
+                session
+                    .construction
+                    .select_handle(selection.subpath, selection.point, end);
+                session.press = Some(VectorPress::Handle {
+                    end,
+                    last: position,
+                });
+            }
+            return;
+        }
+        // Empty space: the press places a point (continue, branch, or fresh
+        // per the selection's connection count) and records itself as the
+        // pending first click of an empty-space double-click pair — the
+        // pair's second click undoes it and starts a brand-new independent
+        // subpath at the same cell (J 2026-11-09).
+        let previous_selection = self
+            .vector_session(hand)
+            .and_then(|session| session.construction.selection());
+        let subpaths_before = self
+            .vector_session(hand)
+            .map(|session| session.construction.subpaths().len())
+            .unwrap_or(0);
+        let session = self.vector_session_mut_or_insert(hand);
+        let (subpath, point) = session.construction.place_from_selection(position, None);
+        session.pending_empty_placement = Some(PendingEmptyPlacement {
+            cell: position,
+            subpath,
+            point,
+            whole_subpath: session.construction.subpaths().len() > subpaths_before,
+            previous_selection,
+        });
+        session.press = Some(VectorPress::Create);
+    }
+
     /// Cancels in-progress work when a press or drag lands on chrome: the
     /// strokes clear regardless of owning hand, the cancelling hand's drag
-    /// position clears, staged starts survive (they commit as no-ops).
+    /// position clears, staged starts survive (they commit as no-ops). An
+    /// open vector session keeps its accumulated construction — only the
+    /// transient press drops (a Create press's placed point stays, exactly
+    /// like a completed click).
     pub fn cancel(&mut self, hand: PaintHand) {
         self.lasso = None;
         self.selection = None;
         self.move_stroke = None;
         self.vector_move = None;
+        if let Some(session) = self.vector_session_mut(hand) {
+            session.press = None;
+            session.pending_empty_placement = None;
+        }
         *self.drag_position_mut(hand) = None;
     }
 
@@ -693,6 +1019,15 @@ impl CanvasPointerStrokes {
                 }
                 _ => {}
             }
+            return None;
+        }
+        // Vector construction: a press begins (or continues) a multi-press
+        // session that stays open across many presses — release never
+        // commits it; Enter, Escape, or switching tools does (J 2026-11-09).
+        if drag_behavior(pressed_tool_id) == DragBehavior::VectorConstruction
+            && ctx.tool_state.borrow().hand_state(hand).target == PaintTarget::Image
+        {
+            self.begin_vector_press(hand, position);
             return None;
         }
         let target = ctx.tool_state.borrow().hand_state(hand).target;
@@ -1018,6 +1353,67 @@ impl CanvasPointerStrokes {
         {
             return;
         }
+        // Vector construction drags: rigid point moves, asymmetric handle
+        // moves, or mirrored-handle shaping on the just-placed point (J
+        // 2026-11-09's chart). The drag frame recomputes from the last drag
+        // position, so a mid-drag depth scroll folds in like the move tool's.
+        if drag_behavior(ctx.tool_state.borrow().tool_for_hand(hand).id())
+            == DragBehavior::VectorConstruction
+        {
+            if let Some(session) = self.vector_session_mut(hand) {
+                match session.press {
+                    Some(VectorPress::Point { last }) => {
+                        let delta = CellPoint {
+                            x: position.x - last.x,
+                            y: position.y - last.y,
+                            z: position.z - last.z,
+                        };
+                        let selection = session.construction.selection();
+                        if let Some(selection) = selection {
+                            session
+                                .construction
+                                .translate_point(selection.subpath, selection.point, delta);
+                        }
+                        session.press = Some(VectorPress::Point { last: position });
+                    }
+                    Some(VectorPress::Handle { end, last }) => {
+                        let delta = CellPoint {
+                            x: position.x - last.x,
+                            y: position.y - last.y,
+                            z: position.z - last.z,
+                        };
+                        let selection = session.construction.selection();
+                        if let Some(selection) = selection {
+                            session.construction.translate_handle(
+                                selection.subpath,
+                                selection.point,
+                                end,
+                                delta,
+                            );
+                        }
+                        session.press = Some(VectorPress::Handle { end, last: position });
+                    }
+                    Some(VectorPress::Create) => {
+                        // The drag shapes the just-placed point's handles
+                        // mirrored around its anchor (authoring-time only).
+                        if let Some(anchor) = session
+                            .construction
+                            .selected_point()
+                            .map(|point| point.anchor)
+                        {
+                            session.construction.mirror_selected_handles_to(CellPoint {
+                                x: position.x - anchor.x,
+                                y: position.y - anchor.y,
+                                z: position.z - anchor.z,
+                            });
+                        }
+                    }
+                    // A closed press and no press at all: no drag follows.
+                    _ => {}
+                }
+            }
+            return;
+        }
         let stroke_positions = self
             .drag_position(hand)
             .map(|last| interpolate_cell_path(last, position))
@@ -1119,6 +1515,15 @@ impl CanvasPointerStrokes {
         auto_key: bool,
     ) -> Vec<Error> {
         let mut errors = Vec::new();
+        // A vector release never commits: the session stays open across
+        // presses (Enter/Escape/tool-switch commits). Only the transient
+        // press drops.
+        if let Some(session) = self.left_vector.as_mut() {
+            session.press = None;
+        }
+        if let Some(session) = self.right_vector.as_mut() {
+            session.press = None;
+        }
         if let Some(stroke) = self.vector_move.take() {
             let (dx, dy, dz) = stroke.world_offset();
             if let Err(error) = commit_move_offset(
@@ -1420,6 +1825,14 @@ impl CanvasPointerStrokes {
             // release will place there.
             let previews = stroke.preview_cells(ctx.canvas);
             groups.extend(build_lasso_preview_cell_groups(&previews, vivid));
+        }
+        // Open vector construction sessions: every subpath's sampled curve,
+        // every point as a vertex dot, the selected point's handles only.
+        for session in [&self.left_vector, &self.right_vector]
+            .into_iter()
+            .flatten()
+        {
+            groups.extend(build_vector_preview_cell_groups(&session.construction, vivid));
         }
         groups
     }
@@ -3371,5 +3784,194 @@ mod tests {
         assert!(errors.is_empty());
         assert_eq!(session.action_counter, 0);
         assert!(session.canvas.get(&point(0, 0)).is_none());
+    }
+
+    fn vector_session() -> Session {
+        let mut session = Session::new();
+        session
+            .tool_state
+            .get_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Vector);
+        session
+    }
+
+    fn vector_press(
+        strokes: &mut CanvasPointerStrokes,
+        session: &mut Session,
+        position: CellPoint,
+    ) {
+        strokes.begin_press(
+            &mut session.ctx(),
+            PaintHand::Left,
+            position,
+            canvas_bounds(),
+            flat_view(),
+            0,
+        );
+    }
+
+    fn vector_drag(
+        strokes: &mut CanvasPointerStrokes,
+        session: &mut Session,
+        position: CellPoint,
+    ) {
+        strokes.continue_drag(
+            &mut session.ctx(),
+            PaintHand::Left,
+            position,
+            canvas_bounds(),
+            flat_view(),
+        );
+    }
+
+    fn vector_release(strokes: &mut CanvasPointerStrokes, session: &mut Session) {
+        let errors = strokes.finish_pointer_stroke(&mut session.ctx(), flat_view(), 0, false);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn vector_press_opens_a_session_and_a_second_press_continues_it() {
+        let mut session = vector_session();
+        let mut strokes = CanvasPointerStrokes::new();
+        vector_press(&mut strokes, &mut session, point(0, 0));
+        assert!(strokes.vector_construction_open_for(PaintHand::Left));
+        let construction = strokes.vector_construction_for(PaintHand::Left).unwrap();
+        assert_eq!(construction.subpaths().len(), 1);
+        assert_eq!(construction.subpaths()[0].points.len(), 1);
+        vector_release(&mut strokes, &mut session);
+        // The session stays open across the release — release never commits.
+        assert!(strokes.vector_construction_open_for(PaintHand::Left));
+
+        vector_press(&mut strokes, &mut session, point(3, 0));
+        let construction = strokes.vector_construction_for(PaintHand::Left).unwrap();
+        assert_eq!(construction.subpaths()[0].points.len(), 2, "continued");
+        assert_eq!(construction.selection().unwrap(), VectorSelection {
+            subpath: 0,
+            point: 1,
+            handle: None,
+        });
+        vector_release(&mut strokes, &mut session);
+        assert!(strokes.vector_construction_open_for(PaintHand::Left));
+    }
+
+    #[test]
+    fn vector_release_never_commits_and_commit_for_hand_paints_once() {
+        let mut session = vector_session();
+        {
+            let tool_state = session.tool_state.get_mut();
+            tool_state.set_graphic_for_hand(PaintHand::Left, CellGraphic::Glyph('S'));
+            tool_state.set_stroke_source_for_hand(PaintHand::Left, Some(PaintHand::Left));
+            tool_state.set_fill_source_for_hand(PaintHand::Left, None);
+        }
+        let mut strokes = CanvasPointerStrokes::new();
+        vector_press(&mut strokes, &mut session, point(0, 0));
+        vector_press(&mut strokes, &mut session, point(4, 0));
+        // Press the first point with the open tail selected: the subpath
+        // closes (the close precondition fires inside the press dispatch).
+        vector_press(&mut strokes, &mut session, point(0, 0));
+        vector_release(&mut strokes, &mut session);
+        assert!(session.canvas.get(&point(2, 0)).is_none(), "release never commits");
+
+        // The explicit commit paints the whole session as one action and
+        // clears it.
+        let errors = strokes.commit_vector_construction_for_hand(
+            &mut session.ctx(),
+            PaintHand::Left,
+            0,
+        );
+        assert!(errors.is_empty());
+        assert!(!strokes.vector_construction_open_for(PaintHand::Left));
+        assert!(session.canvas.get(&point(0, 0)).is_some(), "committed");
+        assert!(session.canvas.get(&point(4, 0)).is_some());
+        // A second commit is a no-op (the session is gone).
+        let errors = strokes.commit_vector_construction_for_hand(
+            &mut session.ctx(),
+            PaintHand::Left,
+            0,
+        );
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn an_empty_space_double_click_pair_replaces_its_first_placements() {
+        let mut session = vector_session();
+        let mut strokes = CanvasPointerStrokes::new();
+        // An open two-point subpath with its tail selected.
+        vector_press(&mut strokes, &mut session, point(0, 0));
+        vector_release(&mut strokes, &mut session);
+        vector_press(&mut strokes, &mut session, point(4, 0));
+        vector_release(&mut strokes, &mut session);
+
+        // The pair's first click continues the selected tail to (8, 0).
+        vector_press(&mut strokes, &mut session, point(8, 0));
+        {
+            let construction = strokes.vector_construction_for(PaintHand::Left).unwrap();
+            assert_eq!(construction.subpaths().len(), 1);
+            assert_eq!(construction.subpaths()[0].points.len(), 3);
+        }
+        vector_release(&mut strokes, &mut session);
+        // The pair's second click undoes that placement and starts a
+        // brand-new independent subpath at the same cell instead.
+        vector_press(&mut strokes, &mut session, point(8, 0));
+        {
+            let construction = strokes.vector_construction_for(PaintHand::Left).unwrap();
+            assert_eq!(construction.subpaths().len(), 2, "independent subpath");
+            assert_eq!(construction.subpaths()[0].points.len(), 2, "placement undone");
+            assert_eq!(construction.subpaths()[1].points.len(), 1);
+            assert_eq!(construction.selection().unwrap().subpath, 1);
+        }
+        vector_release(&mut strokes, &mut session);
+    }
+
+    #[test]
+    fn a_double_click_on_a_settled_point_toggles_its_handles() {
+        let mut session = vector_session();
+        let mut strokes = CanvasPointerStrokes::new();
+        // Three placements; the middle point is the toggle target.
+        vector_press(&mut strokes, &mut session, point(0, 0));
+        vector_release(&mut strokes, &mut session);
+        vector_press(&mut strokes, &mut session, point(4, 0));
+        vector_release(&mut strokes, &mut session);
+        vector_press(&mut strokes, &mut session, point(8, 0));
+        vector_release(&mut strokes, &mut session);
+        // The tail (8,0) is selected and its placement's pair window is
+        // still pending — a press on the settled middle point clears it
+        // (cell mismatch) without firing the pair.
+        vector_press(&mut strokes, &mut session, point(4, 0));
+        vector_release(&mut strokes, &mut session);
+        // Now the rapid pair on the settled middle point: first click
+        // selects, second click toggles its handles along the neighbor
+        // tangent (J 2026-11-09).
+        vector_press(&mut strokes, &mut session, point(4, 0));
+        {
+            let construction = strokes.vector_construction_for(PaintHand::Left).unwrap();
+            assert!(construction.selected_point().unwrap().has_handles());
+        }
+        vector_release(&mut strokes, &mut session);
+    }
+
+    #[test]
+    fn backspace_deletes_the_selected_point_and_the_last_delete_cancels() {
+        let mut session = vector_session();
+        let mut strokes = CanvasPointerStrokes::new();
+        vector_press(&mut strokes, &mut session, point(0, 0));
+        vector_release(&mut strokes, &mut session);
+        vector_press(&mut strokes, &mut session, point(4, 0));
+        vector_release(&mut strokes, &mut session);
+        // The tail is selected: Backspace deletes it, the session stays.
+        assert!(strokes.vector_delete_selected_point(PaintHand::Left));
+        assert!(strokes.vector_construction_open_for(PaintHand::Left));
+        {
+            let construction = strokes.vector_construction_for(PaintHand::Left).unwrap();
+            assert_eq!(construction.subpaths()[0].points.len(), 1);
+            assert_eq!(construction.selection(), None, "selection clears");
+        }
+        // Re-select the last point and delete it: the session empties and
+        // cancels without committing.
+        vector_press(&mut strokes, &mut session, point(0, 0));
+        vector_release(&mut strokes, &mut session);
+        assert!(strokes.vector_delete_selected_point(PaintHand::Left));
+        assert!(!strokes.vector_construction_open_for(PaintHand::Left), "cancelled");
+        assert!(session.canvas.get(&point(0, 0)).is_none(), "nothing committed");
     }
 }

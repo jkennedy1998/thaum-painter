@@ -11,7 +11,7 @@ use thaum_renderer_domain::{
 use crate::{
     fill::FillConnectivity,
     selection_state::{PainterSelection, SelectionMode},
-    tool_state::{DetailerMode, PaintChannel, PaintHand, PaintTarget, PaintTool, ToolState},
+    tool_state::{DetailerMode, HandState, PaintChannel, PaintHand, PaintTarget, PaintTool, ToolState},
 };
 
 /// Rows reserved at the top of the content area for the two 3x3 hand
@@ -188,6 +188,29 @@ impl HandSettingsModule {
             fill_3d_columns.push(column);
         }
 
+        // The shared stroke/fill authoring-source pair (lasso + vector): a
+        // tri-state Left/None/Right row per channel — the hand's shape
+        // authors from the named hand's live content, or leaves existing
+        // cells untouched on None (J 2026-11-09).
+        let stroke_fill_columns = |row: &str, source: fn(&HandState) -> Option<PaintHand>| {
+            let mut columns = Vec::new();
+            for (id, label, value) in [
+                ("left", "L", Some(PaintHand::Left)),
+                ("none", "—", None),
+                ("right", "R", Some(PaintHand::Right)),
+            ] {
+                let mut column = PropertyMatrixColumn::new(id, label);
+                column.left_value = source(&left) == value;
+                column.right_value = source(&right) == value;
+                column.left_enabled = Self::hand_declares_row(&state, PaintHand::Left, row);
+                column.right_enabled = Self::hand_declares_row(&state, PaintHand::Right, row);
+                columns.push(column);
+            }
+            columns
+        };
+        let stroke_columns = stroke_fill_columns("stroke", |hand| hand.stroke_source);
+        let fill_columns = stroke_fill_columns("fill", |hand| hand.fill_source);
+
         let mut picker_opp_columns = Vec::new();
         for (id, label, value) in [("self", "self", false), ("opp", "opp", true)] {
             let mut column = PropertyMatrixColumn::new(id, label);
@@ -289,6 +312,25 @@ impl HandSettingsModule {
                 id: "fill_3d".into(),
                 label: "3d".into(),
                 columns: fill_3d_columns,
+                token_width: 4,
+            });
+        }
+        // The shared stroke/fill authoring-source pair, lasso + vector only
+        // (J 2026-11-09): lasso declares fill_3d before them, vector only
+        // these two plus size.
+        if Self::tool_row_used(&state, "stroke") {
+            rows.push(PropertyRow::Matrix {
+                id: "stroke".into(),
+                label: "stroke".into(),
+                columns: stroke_columns,
+                token_width: 4,
+            });
+        }
+        if Self::tool_row_used(&state, "fill") {
+            rows.push(PropertyRow::Matrix {
+                id: "fill".into(),
+                label: "fill".into(),
+                columns: fill_columns,
                 token_width: 4,
             });
         }
@@ -535,6 +577,24 @@ impl HandSettingsModule {
                     _ => return,
                 };
                 state.set_fill_3d_for_hand(hand, fill_3d);
+            }
+            "stroke" => {
+                let source = match column_id.as_str() {
+                    "left" => Some(PaintHand::Left),
+                    "none" => None,
+                    "right" => Some(PaintHand::Right),
+                    _ => return,
+                };
+                state.set_stroke_source_for_hand(hand, source);
+            }
+            "fill" => {
+                let source = match column_id.as_str() {
+                    "left" => Some(PaintHand::Left),
+                    "none" => None,
+                    "right" => Some(PaintHand::Right),
+                    _ => return,
+                };
+                state.set_fill_source_for_hand(hand, source);
             }
             "picker_opposite_hand" => {
                 let pick_opposite_hand = match column_id.as_str() {
@@ -1015,6 +1075,111 @@ mod tests {
 
         assert!(state.borrow().right_hand.fill_3d);
         assert!(!state.borrow().left_hand.fill_3d);
+    }
+
+    #[test]
+    fn clicking_stroke_and_fill_tokens_sets_the_hand_authoring_sources() {
+        let state = tool_state();
+        state
+            .borrow_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Vector);
+        state
+            .borrow_mut()
+            .set_tool_for_hand(PaintHand::Right, PaintTool::Lasso);
+        let mut module =
+            HandSettingsModule::new("hands", rect(), state.clone(), selection(), number_edit());
+
+        module.apply_property_hit(PropertyHit::Matrix {
+            row_id: "stroke".into(),
+            side: PropertyMatrixSide::Left,
+            column_id: "right".into(),
+        });
+        module.apply_property_hit(PropertyHit::Matrix {
+            row_id: "fill".into(),
+            side: PropertyMatrixSide::Right,
+            column_id: "left".into(),
+        });
+
+        assert_eq!(
+            state.borrow().left_hand.stroke_source,
+            Some(PaintHand::Right),
+            "left hand's stroke authors from the right hand's content"
+        );
+        assert_eq!(state.borrow().right_hand.fill_source, Some(PaintHand::Left));
+        assert_eq!(
+            state.borrow().left_hand.fill_source,
+            Some(PaintHand::Left),
+            "untouched hand keeps its self-sourced default"
+        );
+        assert_eq!(
+            state.borrow().right_hand.stroke_source,
+            Some(PaintHand::Right),
+            "untouched hand keeps its self-sourced default"
+        );
+
+        // The None token clears the channel again.
+        module.apply_property_hit(PropertyHit::Matrix {
+            row_id: "stroke".into(),
+            side: PropertyMatrixSide::Left,
+            column_id: "none".into(),
+        });
+        assert_eq!(state.borrow().left_hand.stroke_source, None);
+    }
+
+    #[test]
+    fn stroke_and_fill_rows_appear_for_lasso_and_vector_and_gate_per_hand() {
+        let state = tool_state();
+        let mut module =
+            HandSettingsModule::new("hands", rect(), state.clone(), selection(), number_edit());
+
+        let matrix_rows = |module: &HandSettingsModule| -> Vec<(String, Vec<(bool, bool)>)> {
+            module
+                .build_rows()
+                .into_iter()
+                .filter_map(|row| match row {
+                    PropertyRow::Matrix { id, columns, .. } => Some((
+                        id,
+                        columns
+                            .iter()
+                            .map(|column| (column.left_enabled, column.right_enabled))
+                            .collect(),
+                    )),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        // Neither default hand holds a shape tool: both rows hide.
+        let ids: Vec<String> = matrix_rows(&module).into_iter().map(|(id, _)| id).collect();
+        assert!(!ids.contains(&"stroke".to_string()));
+        assert!(!ids.contains(&"fill".to_string()));
+
+        // Left hand holds the vector tool: both rows appear, but only the
+        // left side's tokens are live (lasso declares them too — but the
+        // right hand still holds the brush).
+        state
+            .borrow_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Vector);
+        let rows = matrix_rows(&module);
+        let ids: Vec<String> = rows.iter().map(|(id, _)| id.clone()).collect();
+        assert!(ids.contains(&"stroke".to_string()));
+        assert!(ids.contains(&"fill".to_string()));
+        for (id, enabled) in &rows {
+            if id == "stroke" || id == "fill" {
+                assert!(enabled[0].0, "vector hand's {id} tokens live");
+                assert!(!enabled[0].1, "brush hand's {id} tokens dead");
+            }
+        }
+
+        // Right hand takes the lasso: its side goes live too.
+        state
+            .borrow_mut()
+            .set_tool_for_hand(PaintHand::Right, PaintTool::Lasso);
+        for (id, enabled) in matrix_rows(&module) {
+            if id == "stroke" || id == "fill" {
+                assert!(enabled[1].0 && enabled[1].1, "both hands' {id} tokens live");
+            }
+        }
     }
 
     #[test]

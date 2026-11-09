@@ -119,6 +119,28 @@ pub const HAND_FIELDS: &[HandFieldDescriptor] = &[
         },
     },
     HandFieldDescriptor {
+        key: "stroke_source",
+        label: "stroke source",
+        get: |hand| serde_json::to_value(&hand.stroke_source).unwrap_or(Value::Null),
+        set: |hand, value| {
+            hand.stroke_source = match value.as_str() {
+                Some(id @ ("self" | "left" | "right" | "none")) => Some(id.to_string()),
+                _ => return,
+            };
+        },
+    },
+    HandFieldDescriptor {
+        key: "fill_source",
+        label: "fill source",
+        get: |hand| serde_json::to_value(&hand.fill_source).unwrap_or(Value::Null),
+        set: |hand, value| {
+            hand.fill_source = match value.as_str() {
+                Some(id @ ("self" | "left" | "right" | "none")) => Some(id.to_string()),
+                _ => return,
+            };
+        },
+    },
+    HandFieldDescriptor {
         key: "pick_opposite_hand",
         label: "pick opposite hand",
         get: |hand| serde_json::to_value(hand.pick_opposite_hand).unwrap_or(Value::Null),
@@ -184,9 +206,10 @@ impl ToolPresetHand {
     pub fn capture(
         tool: PaintTool,
         hand: &HandState,
+        own: PaintHand,
         capture_keys: &std::collections::BTreeSet<String>,
     ) -> Self {
-        let persisted = PersistedHandState::from_runtime(hand);
+        let persisted = PersistedHandState::from_runtime(hand, own);
         let fields = HAND_FIELDS
             .iter()
             .filter(|field| capture_keys.contains(field.key))
@@ -215,13 +238,13 @@ impl ToolPresetHand {
             tool_state.set_tool_for_hand(hand, tool);
         }
         let mut updated = tool_state.hand_state(hand);
-        let mut scratch = PersistedHandState::from_runtime(&updated);
+        let mut scratch = PersistedHandState::from_runtime(&updated, hand);
         for (key, value) in &self.fields {
             if let Some(field) = hand_field(key) {
                 (field.set)(&mut scratch, value);
             }
         }
-        scratch.apply_to_runtime(&mut updated);
+        scratch.apply_to_runtime(&mut updated, hand);
         match hand {
             PaintHand::Left => tool_state.left_hand = updated,
             PaintHand::Right => tool_state.right_hand = updated,
@@ -253,11 +276,13 @@ impl ToolPreset {
             left: ToolPresetHand::capture(
                 tool_state.left_tool,
                 &tool_state.left_hand,
+                PaintHand::Left,
                 capture_keys,
             ),
             right: ToolPresetHand::capture(
                 tool_state.right_tool,
                 &tool_state.right_hand,
+                PaintHand::Right,
                 capture_keys,
             ),
         }
@@ -344,7 +369,7 @@ mod tests {
         hand.weight_index = 3;
         hand.brush_size = 4;
         hand.target = PaintTarget::Selection;
-        let captured = ToolPresetHand::capture(PaintTool::Brush, &hand, &keys(true));
+        let captured = ToolPresetHand::capture(PaintTool::Brush, &hand, PaintHand::Left, &keys(true));
         assert_eq!(captured.tool, "brush");
         assert_eq!(captured.fields.len(), HAND_FIELDS.len());
     }
@@ -354,7 +379,7 @@ mod tests {
         let mut hand = HandState::default();
         hand.weight_index = 1;
         hand.brush_size = 4;
-        let captured = ToolPresetHand::capture(PaintTool::Fill, &hand, &keys(false));
+        let captured = ToolPresetHand::capture(PaintTool::Fill, &hand, PaintHand::Left, &keys(false));
         assert_eq!(captured.tool, "fill");
         assert_eq!(captured.fields.keys().collect::<Vec<_>>(), ["brush_size"]);
         assert_eq!(captured.fields["brush_size"], serde_json::json!(4));
@@ -368,7 +393,7 @@ mod tests {
         // The left hand starts at glyph '#' weight 2 (defaults); the preset
         // captures only the brush size, so applying it must not stomp the
         // hand's appearance.
-        let captured = ToolPresetHand::capture(PaintTool::Fill, &hand, &keys(false));
+        let captured = ToolPresetHand::capture(PaintTool::Fill, &hand, PaintHand::Left, &keys(false));
         captured.apply_to_runtime(&mut tool_state, PaintHand::Left);
         let left = tool_state.hand_state(PaintHand::Left);
         assert_eq!(left.graphic, CellGraphic::Glyph('#'));
@@ -399,6 +424,38 @@ mod tests {
         preset.apply_to_runtime(&mut tool_state);
         assert_eq!(tool_state.left_tool, PaintTool::Lasso);
         assert_eq!(tool_state.right_tool, PaintTool::Move);
+    }
+
+    #[test]
+    fn stroke_and_fill_sources_capture_and_apply_per_hand() {
+        let mut tool_state = ToolState::default();
+        tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Vector);
+        tool_state.set_stroke_source_for_hand(PaintHand::Left, Some(PaintHand::Right));
+        tool_state.set_fill_source_for_hand(PaintHand::Left, None);
+
+        let keys = ["stroke_source", "fill_source"]
+            .into_iter()
+            .map(|key| key.to_string())
+            .collect::<std::collections::BTreeSet<String>>();
+        let preset = ToolPreset::capture("vec", &tool_state, &keys);
+
+        // A different hand state applies the captured sources back.
+        let mut fresh = ToolState::default();
+        fresh.set_tool_for_hand(PaintHand::Left, PaintTool::Lasso);
+        preset.left.apply_to_runtime(&mut fresh, PaintHand::Left);
+        let left = fresh.hand_state(PaintHand::Left);
+        assert_eq!(
+            left.stroke_source,
+            Some(PaintHand::Right),
+            "cross-hand stroke source rides the preset"
+        );
+        assert_eq!(left.fill_source, None, "explicit skip rides the preset");
+        // The right half captured the untouched right hand (self-sourced).
+        preset.right.apply_to_runtime(&mut fresh, PaintHand::Right);
+        assert_eq!(
+            fresh.hand_state(PaintHand::Right).fill_source,
+            Some(PaintHand::Right),
+        );
     }
 
     #[test]

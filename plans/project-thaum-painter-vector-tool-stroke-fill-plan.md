@@ -235,30 +235,30 @@ Lasso is wired into more places than the plan originally listed; vector needs th
 - [ ] update lasso's descriptor test
 
 ### phase-6 — `domain/painter-session/tool-state/`
-- [ ] `PaintTool::Vector` variant + full parity (`all()`, `id()`, `from_id()`)
-- [ ] vector construction API over a multi-subpath session with one selection pointer (select point/handle, place-from-selection with continue-vs-branch, move selected point/handle, close active subpath, toggle selected point's handles, start an independent subpath, delete selected point, commit the whole session for hand)
-- [ ] `stroke_source`/`fill_source` per-hand fields + setters, resolved live through `resolved_painted_cell` → `write_cell` at commit time
-- [ ] tests per the encapsulation-details list above
+- [x] `PaintTool::Vector` variant + full parity (`all()`, `id()`, `from_id()`)
+- [x] vector construction API over a multi-subpath session with one selection pointer (select point/handle, place-from-selection with continue-vs-branch, move selected point/handle, close active subpath, toggle selected point's handles, start an independent subpath, delete selected point, commit the whole session for hand)
+- [x] `stroke_source`/`fill_source` per-hand fields + setters, resolved live through `resolved_painted_cell` → `write_cell` at commit time
+- [x] tests per the encapsulation-details list above
 
 ### phase-7 — `domain/painter-session/canvas-pointer/`
-- [ ] in-progress multi-subpath vector-construction state (session + selection pointer) held alongside the existing lasso/typing state
-- [ ] press/drag/release/double-click dispatch for `DragBehavior::VectorConstruction` implementing the interaction chart's precedence exactly (point > handle > create/close)
-- [ ] Enter/Escape/tool-switch commit wiring for the whole session (no discard path)
-- [ ] live flashing preview: handles render only for the selected point, every other point a plain vertex dot, reusing the existing vivid/`CellGroup` preview convention, across every open subpath
-- [ ] tests per the encapsulation-details list above
+- [x] in-progress multi-subpath vector-construction state (session + selection pointer) held alongside the existing lasso/typing state
+- [x] press/drag/release/double-click dispatch for `DragBehavior::VectorConstruction` implementing the interaction chart's precedence exactly (point > handle > create/close)
+- [x] Enter/Escape/tool-switch commit wiring for the whole session (no discard path)
+- [x] live flashing preview: handles render only for the selected point, every other point a plain vertex dot, reusing the existing vivid/`CellGroup` preview convention, across every open subpath
+- [x] tests per the encapsulation-details list above
 
 ### phase-8 — `domain/modules/individuals/hand-settings/`
-- [ ] add the confirmed `stroke`/`fill` row shape, gated to lasso/vector
-- [ ] tests mirroring the existing `fill_3d` row tests
+- [x] add the confirmed `stroke`/`fill` row shape, gated to lasso/vector
+- [x] tests mirroring the existing `fill_3d` row tests
 
 ### phase-9 — `domain/user-state/user-session-state/` + `domain/tool-presets/`
-- [ ] persist `stroke_source`/`fill_source` in session save/load
-- [ ] register both fields in the tool-presets get/set table
-- [ ] tests mirroring the existing `fill_3d` round-trips in both encapsulations
+- [x] persist `stroke_source`/`fill_source` in session save/load
+- [x] register both fields in the tool-presets get/set table
+- [x] tests mirroring the existing `fill_3d` round-trips in both encapsulations
 
 ### phase-final — implementation closure + tests + approval + commit
-- [ ] verify every planned task above is complete
-- [ ] run the full workspace test suite (`cargo test -p thaum-renderer-domain --lib`, `cargo test -p thaum-painter-entrypoint` or the relevant crate scopes touched)
+- [x] verify every planned task above is complete
+- [x] run the full workspace test suite (`cargo test -p thaum-renderer-domain --lib`, `cargo test -p thaum-painter-entrypoint` or the relevant crate scopes touched)
 - [ ] manual pass in the running painter: place a hard-corner vector point, a handled point, move a handle asymmetrically, move a vertex and confirm both handles translate rigidly, scroll depth mid-drag while spawning/moving a point or handle and confirm it lands at the new depth, select an earlier non-active point and edit it, close a subpath only when its own open tail is selected (confirm it refuses otherwise), branch a new subpath from a selected two-connection point, double-click empty space to start an independent subpath, double-click a point to collapse then expand its handles, draw two overlapping closed subpaths and confirm the overlap subtracts (a hole/donut), start a second subpath mid-session and confirm both commit together as one undo step, commit via Enter, commit via Escape, commit via tool-switch, undo in one `z` press; set lasso and vector stroke/fill to Left/Right and confirm the authored content matches the selected hand's graphic/color/weight (including clearing when that hand holds the clear glyph), swap a hand's graphic/color mid-construction and confirm only subsequently authored points pick it up, and confirm `None` leaves existing cells untouched
 - [ ] review with J and record approval
 - [ ] git commit if approved
