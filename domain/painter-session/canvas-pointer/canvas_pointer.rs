@@ -816,12 +816,16 @@ impl CanvasPointerStrokes {
         self.pivot_flash.as_ref().map(|flash| flash.pivot)
     }
 
-    /// Applies one direct-canvas Detailer sample at `position`'s cell. The
-    /// entrypoint owns the continuous surface-to-cell-local mapping; this
-    /// seam owns the selected stroke, typeface-local resolve, and eventual
-    /// document commit. A drag entering a cell with no live buffer seeds one
-    /// first (authored tile, or blank for an additive crossing), so one
-    /// stroke edits every cell it crosses (J 2026-11-09).
+    /// Applies one direct-canvas Detailer sample anchored at the pointer's
+    /// continuous position inside `position`'s cell. The entrypoint owns the
+    /// surface-to-cell-local mapping; this seam owns the selected stroke,
+    /// typeface-local resolve, and eventual document commit. The brush
+    /// footprint anchors at the pointer's continuous subcell position, so a
+    /// footprint that crosses a cell edge authors the overlapping subpixels
+    /// into every adjacent cell it touches — pressed into a corner, a size-2
+    /// brush writes one subpixel in each of the four cells around that
+    /// corner (J 2026-11-09). No snapping: seeding follows the same guards
+    /// as a press, and a cell the footprint only clips keeps its own edit.
     pub fn paint_detailer_at_cell_local(
         &mut self,
         ctx: &mut CanvasPointerContext<'_>,
@@ -842,32 +846,84 @@ impl CanvasPointerStrokes {
         if !session.borrow().has_stroke_at(&position) {
             // The drag crossed into a fresh cell: seed it with the mode the
             // stroke captured at press, under the same guards as a press.
-            let target_ok = ctx.tool_state.borrow().hand_state(hand).target == PaintTarget::Image;
-            let mode = session
-                .borrow()
-                .stroke_mode()
-                .unwrap_or_else(|| ctx.tool_state.borrow().hand_state(hand).detailer_mode);
-            if !target_ok {
+            if !self.seed_detailer_cell(ctx, session, fade, hand, position) {
                 return;
             }
-            let Some((weight, seed, seed_glyph)) =
-                detailer_seed_for_position(ctx, position, hand, mode)
-            else {
-                return;
-            };
-            session.borrow_mut().begin(
-                DetailerStroke::begin(hand, position, mode, weight, seed, seed_glyph),
-                |stroke| stroke.resolve(fade),
-            );
         }
-        session.borrow_mut().paint_at_cell_local(
-            position,
-            cell_local[0],
-            cell_local[1],
-            brush_size,
-            u8::MAX,
+        // The typeface tile dimensions are shared by every cell's buffer;
+        // read them from the pointer cell's live stroke and decompose the
+        // anchored footprint across the cells it touches.
+        let (buffer_width, buffer_height) = match session.borrow().stroke_dimensions_at(&position) {
+            Some(dimensions) => dimensions,
+            None => return,
+        };
+        let pointer_x = (position.x as f32 + cell_local[0].clamp(0.0, 1.0 - f32::EPSILON))
+            * buffer_width as f32;
+        let pointer_y = (position.y as f32 + cell_local[1].clamp(0.0, 1.0 - f32::EPSILON))
+            * buffer_height as f32;
+        let start_x = DetailerStroke::footprint_start(pointer_x, brush_size);
+        let start_y = DetailerStroke::footprint_start(pointer_y, brush_size);
+        let size = brush_size.clamp(1, 5) as i64;
+        let cell_x_min = start_x.div_euclid(buffer_width as i64);
+        let cell_x_max = (start_x + size - 1).div_euclid(buffer_width as i64);
+        let cell_y_min = start_y.div_euclid(buffer_height as i64);
+        let cell_y_max = (start_y + size - 1).div_euclid(buffer_height as i64);
+        let mut samples = Vec::new();
+        for cell_y in cell_y_min..=cell_y_max {
+            for cell_x in cell_x_min..=cell_x_max {
+                let cell = CellPoint {
+                    x: cell_x as i32,
+                    y: cell_y as i32,
+                    z: position.z,
+                };
+                if !session.borrow().has_stroke_at(&cell)
+                    && !self.seed_detailer_cell(ctx, session, fade, hand, cell)
+                {
+                    continue;
+                }
+                samples.push((
+                    cell,
+                    start_x - cell_x * buffer_width as i64,
+                    start_y - cell_y * buffer_height as i64,
+                ));
+            }
+        }
+        session
+            .borrow_mut()
+            .paint_samples(samples, brush_size, u8::MAX, |stroke| {
+                stroke.resolve(fade)
+            });
+    }
+
+    /// Seeds one cell's detailer stroke under the press guards: image target,
+    /// stroke-captured add/erase mode, and the position's own seed rules.
+    /// Returns false when the cell cannot participate (wrong target, no fade,
+    /// no seedable tile).
+    fn seed_detailer_cell(
+        &self,
+        ctx: &mut CanvasPointerContext<'_>,
+        session: &Rc<RefCell<DetailerSession>>,
+        fade: &ShapeFade,
+        hand: PaintHand,
+        position: CellPoint,
+    ) -> bool {
+        let target_ok = ctx.tool_state.borrow().hand_state(hand).target == PaintTarget::Image;
+        let mode = session
+            .borrow()
+            .stroke_mode()
+            .unwrap_or_else(|| ctx.tool_state.borrow().hand_state(hand).detailer_mode);
+        if !target_ok {
+            return false;
+        }
+        let Some((weight, seed, seed_glyph)) = detailer_seed_for_position(ctx, position, hand, mode)
+        else {
+            return false;
+        };
+        session.borrow_mut().begin(
+            DetailerStroke::begin(hand, position, mode, weight, seed, seed_glyph),
             |stroke| stroke.resolve(fade),
         );
+        true
     }
 
     /// Cancels only the hand that lost direct canvas ownership to chrome.
@@ -2460,6 +2516,67 @@ mod tests {
         assert_eq!(painted.facing, CellFacing::PosZ);
         assert!(!detailer.borrow().is_active());
         assert_eq!(detailer.borrow().pending_graphic_at(&point(0, 0)), None);
+    }
+
+    /// J 2026-11-09: "it shouldnt snap, it should really feel fluid like
+    /// just drawing over multiple cells simply with this detailer tool" —
+    /// a size-2 footprint anchored at a cell's left edge spills its left
+    /// subpixel column into the left neighbor's buffer, seeding it under
+    /// the same guards, and release commits both cells.
+    #[test]
+    fn an_edge_anchored_footprint_spills_into_the_adjacent_cell() {
+        let mut session = Session::new();
+        session
+            .tool_state
+            .get_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Detailer);
+        let fade = ShapeFade::build(&DetailerFadeTiles);
+        let detailer = Rc::new(RefCell::new(DetailerSession::default()));
+
+        let mut strokes = CanvasPointerStrokes::new();
+        let bounds = canvas_bounds();
+        strokes.begin_press(
+            &mut session.detailer_ctx(&fade, &detailer),
+            PaintHand::Left,
+            point(0, 0),
+            bounds,
+            flat_view(),
+            0,
+        );
+        // Pointer at cell-local (0.02, 0.4): the continuous position maps to
+        // subcell column 0, and the size-2 footprint starts at column -1 —
+        // half the brush lands in the left neighbor.
+        strokes.paint_detailer_at_cell_local(
+            &mut session.detailer_ctx(&fade, &detailer),
+            PaintHand::Left,
+            point(0, 0),
+            [0.02, 0.4],
+            2,
+        );
+        // Both cells preview: the pointer's cell and the spilled neighbor.
+        assert!(detailer.borrow().pending_graphic_at(&point(0, 0)).is_some());
+        assert!(detailer
+            .borrow()
+            .pending_graphic_at(&CellPoint { x: -1, y: 0, z: 0 })
+            .is_some());
+
+        strokes
+            .finish_detailer_for_hand(&mut session.detailer_ctx(&fade, &detailer), PaintHand::Left);
+        let errors = strokes.finish_pointer_stroke(
+            &mut session.detailer_ctx(&fade, &detailer),
+            flat_view(),
+            0,
+            false,
+        );
+        assert!(errors.is_empty());
+        assert_eq!(session.action_counter, 1, "one stroke, one staged action");
+        // Both cells committed something: the neighbor was seeded additively
+        // on blank and resolves to the smallest ink mark.
+        assert!(session.canvas.get(&point(0, 0)).is_some());
+        assert!(session
+            .canvas
+            .get(&CellPoint { x: -1, y: 0, z: 0 })
+            .is_some());
     }
 
     /// Cell-local samples covering every subpixel of the tests' 4x4 tile:

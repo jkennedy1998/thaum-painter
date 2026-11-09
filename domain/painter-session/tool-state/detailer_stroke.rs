@@ -45,12 +45,13 @@ pub struct DetailerStroke {
     /// that paints and then paints back to exactly its seed has no visible
     /// change and commits nothing, even though pixels moved along the way.
     seed_alpha: Vec<u8>,
-    /// The last subcell pixel this stroke painted in this buffer, for
-    /// interpolating between consecutive samples: a drag crossing a cell
+    /// The last subcell footprint start this stroke painted in this buffer,
+    /// for interpolating between consecutive samples: a drag crossing a cell
     /// leaves a continuous line, not isolated frames (J 2026-11-09: draw a
     /// big circle and each cell should resolve to the glyph nearest its own
-    /// segment of the stroke).
-    last_painted: Option<(usize, usize)>,
+    /// segment of the stroke). Coordinates are footprint top-left indices and
+    /// may sit outside the buffer — the footprint clips.
+    last_painted: Option<(i64, i64)>,
 }
 
 impl DetailerStroke {
@@ -85,14 +86,36 @@ impl DetailerStroke {
         (self.buffer_width, self.buffer_height)
     }
 
-    /// Paints ink at one subcell pixel: additive raises it toward full ink,
+    /// Paints the brush footprint whose top-left subcell pixel is `x`,`y`:
+    /// sizes 1..=3 are solid `size`×`size` blocks, sizes 4 and 5 drop the
+    /// four corner pixels (J 2026-11-09: "1 will be 1 subpixel. 2 will be
+    /// 2x2 subpixel. 3 will be 3x3 subpixel. 4 will be 4x4 subpixels with
+    /// the corners removed. 5x5 with corners removed for the size 5").
+    /// Samples outside the buffer are no-ops, so a footprint anchored near
+    /// or past a cell's edge simply clips to the part that lands inside.
+    pub fn paint_footprint(&mut self, x: i64, y: i64, size: i32, strength: u8) {
+        let size = size.clamp(1, 5) as i64;
+        for dy in 0..size {
+            for dx in 0..size {
+                if size >= 4
+                    && (dx == 0 || dx == size - 1)
+                    && (dy == 0 || dy == size - 1)
+                {
+                    continue;
+                }
+                self.paint(x + dx, y + dy, strength);
+            }
+        }
+    }
+
+    /// Paints one subcell pixel: additive raises it toward full ink,
     /// subtractive lowers it toward none, both by `strength`, saturating at
     /// the ink range's ends. An out-of-bounds coordinate is a no-op.
-    pub fn paint(&mut self, x: usize, y: usize, strength: u8) {
-        if x >= self.buffer_width || y >= self.buffer_height {
+    pub fn paint(&mut self, x: i64, y: i64, strength: u8) {
+        if x < 0 || y < 0 || x >= self.buffer_width as i64 || y >= self.buffer_height as i64 {
             return;
         }
-        let index = y * self.buffer_width + x;
+        let index = y as usize * self.buffer_width + x as usize;
         let before = self.buffer[index];
         self.buffer[index] = match self.mode {
             DetailerMode::Additive => before.saturating_add(strength),
@@ -100,28 +123,6 @@ impl DetailerStroke {
         };
         if self.buffer[index] != before {
             self.changed = true;
-        }
-    }
-
-    /// Paints the brush footprint: a square of `size` subcell pixels
-    /// centered on the sample, the same square shape the cell brush draws
-    /// at size 1..=5, scaled down into the buffer. Size 1 is the single
-    /// sample pixel; the footprint simply clips at the buffer's edges
-    /// (J 2026-11-09: "maybe size for this tool could effect the sub pixels
-    /// that it is effecting").
-    pub fn paint_footprint(&mut self, x: usize, y: usize, size: i32, strength: u8) {
-        let size = size.clamp(1, 5);
-        let left_radius = (size - 1) / 2;
-        let right_radius = size - 1 - left_radius;
-        for dy in -left_radius..=right_radius {
-            for dx in -left_radius..=right_radius {
-                let sample_x = x as i64 + dx as i64;
-                let sample_y = y as i64 + dy as i64;
-                if sample_x < 0 || sample_y < 0 {
-                    continue;
-                }
-                self.paint(sample_x as usize, sample_y as usize, strength);
-            }
         }
     }
 
@@ -138,23 +139,25 @@ impl DetailerStroke {
         self.buffer != self.seed_alpha
     }
 
-    /// Paints the brush footprint at `x`,`y` and interpolates from this
-    /// buffer's last painted pixel with a Bresenham line, footprint at
-    /// every step — a drag crossing a cell leaves a continuous stroke
-    /// segment instead of isolated frame dots. Re-crossing a cell picks up
-    /// from where it left, so a line drawn through a cell stays connected.
-    pub fn paint_line_to(&mut self, x: usize, y: usize, size: i32, strength: u8) {
+    /// Paints the brush footprint with top-left at `x`,`y` and interpolates
+    /// from this buffer's last painted footprint start with a Bresenham
+    /// line, footprint at every step — a drag crossing a cell leaves a
+    /// continuous stroke segment instead of isolated frame dots. Re-crossing
+    /// a cell picks up from where it left, so a line drawn through a cell
+    /// stays connected. Coordinates may sit outside the buffer; the
+    /// footprints clip, so only the in-cell part lands.
+    pub fn paint_line_to(&mut self, x: i64, y: i64, size: i32, strength: u8) {
         let target = (x, y);
         if let Some((last_x, last_y)) = self.last_painted {
-            let mut from = (last_x as i64, last_y as i64);
-            let to = (target.0 as i64, target.1 as i64);
+            let mut from = (last_x, last_y);
+            let to = target;
             let dx = (to.0 - from.0).abs();
             let dy = -(to.1 - from.1).abs();
             let step_x = if to.0 > from.0 { 1 } else { -1 };
             let step_y = if to.1 > from.1 { 1 } else { -1 };
             let mut error = dx + dy;
             loop {
-                self.paint_footprint(from.0 as usize, from.1 as usize, size, strength);
+                self.paint_footprint(from.0, from.1, size, strength);
                 if from == to {
                     break;
                 }
@@ -172,6 +175,17 @@ impl DetailerStroke {
             self.paint_footprint(x, y, size, strength);
         }
         self.last_painted = Some(target);
+    }
+
+    /// The continuous footprint start subcell coordinate for a pointer at
+    /// continuous cell-local position `pointer` (0..typeface-width) with a
+    /// brush of `size`: odd sizes center on the pointer, even sizes split
+    /// the half-subpixel evenly so pressing exactly on a cell's corner
+    /// authors the matching corner subpixels in every adjacent cell
+    /// (J 2026-11-09: "if i press the corner of a cell it should draw 1
+    /// cell at each appropriate corner of a cell").
+    pub fn footprint_start(pointer: f32, size: i32) -> i64 {
+        (pointer - (size - 1) as f32 / 2.0).floor() as i64
     }
 
     /// The live buffer as a comparison-resolution tile, for resolving a
@@ -297,6 +311,16 @@ impl DetailerSession {
         self.strokes.contains_key(position)
     }
 
+    /// One live stroke buffer's (width, height) at `position`, if crossed.
+    /// Every cell's buffer shares the typeface's comparison-tile dimensions;
+    /// callers read them here to map continuous canvas positions into
+    /// subcell coordinates.
+    pub fn stroke_dimensions_at(&self, position: &CellPoint) -> Option<(usize, usize)> {
+        self.strokes
+            .get(position)
+            .map(|stroke| stroke.buffer_dimensions())
+    }
+
     pub fn pending_graphic_at(&self, position: &CellPoint) -> Option<char> {
         self.pending.get(position).copied()
     }
@@ -328,14 +352,53 @@ impl DetailerSession {
         strength: u8,
         resolve: impl Fn(&DetailerStroke) -> Option<char>,
     ) {
-        self.paint_at_cell_local(
-            position,
-            (x as f32 + 0.5) / self.strokes.get(&position).map(|s| s.buffer_width).unwrap_or(1) as f32,
-            (y as f32 + 0.5) / self.strokes.get(&position).map(|s| s.buffer_height).unwrap_or(1) as f32,
+        self.paint_samples(
+            [(position, x as i64, y as i64)],
             1,
             strength,
             resolve,
         );
+    }
+
+    /// Paints one brush footprint sample per entry: each sample names its
+    /// cell and that cell's footprint top-left in the cell's own subcell
+    /// coordinates (possibly out of range — the footprint clips). One drag
+    /// anchored near a cell edge or corner touches several cells at once;
+    /// each touched cell's stroke receives only the part of the footprint
+    /// that lands inside it, so authoring feels continuous across the whole
+    /// canvas instead of snapping to one cell (J 2026-11-09: "it shouldnt
+    /// snap, it should really feel fluid like just drawing over multiple
+    /// cells simply with this detailer tool"). Calls naming a cell without
+    /// a live stroke are skipped; every painted cell's preview candidate
+    /// refreshes.
+    pub fn paint_samples(
+        &mut self,
+        samples: impl IntoIterator<Item = (CellPoint, i64, i64)>,
+        brush_size: i32,
+        strength: u8,
+        resolve: impl Fn(&DetailerStroke) -> Option<char>,
+    ) {
+        for (position, x, y) in samples {
+            let resolved = {
+                let Some(stroke) = self.strokes.get_mut(&position) else {
+                    continue;
+                };
+                stroke.paint_line_to(x, y, brush_size, strength);
+                if stroke.visibly_changed() {
+                    resolve(stroke)
+                } else {
+                    None
+                }
+            };
+            match resolved {
+                Some(graphic) => {
+                    self.pending.insert(position, graphic);
+                }
+                None => {
+                    self.pending.remove(&position);
+                }
+            }
+        }
     }
 
     /// Paints the brush footprint at the direct canvas pointer's position
@@ -351,34 +414,25 @@ impl DetailerSession {
         strength: u8,
         resolve: impl Fn(&DetailerStroke) -> Option<char>,
     ) {
-        let (x, y) = {
+        let (pointer_x, pointer_y) = {
             let Some(stroke) = self.strokes.get(&position) else {
                 return;
             };
             (
-                (local_x.clamp(0.0, 1.0 - f32::EPSILON) * stroke.buffer_width as f32) as usize,
-                (local_y.clamp(0.0, 1.0 - f32::EPSILON) * stroke.buffer_height as f32) as usize,
+                local_x.clamp(0.0, 1.0 - f32::EPSILON) * stroke.buffer_width as f32,
+                local_y.clamp(0.0, 1.0 - f32::EPSILON) * stroke.buffer_height as f32,
             )
         };
-        let resolved = {
-            let Some(stroke) = self.strokes.get_mut(&position) else {
-                return;
-            };
-            stroke.paint_line_to(x, y, brush_size, strength);
-            if stroke.visibly_changed() {
-                resolve(stroke)
-            } else {
-                None
-            }
-        };
-        match resolved {
-            Some(graphic) => {
-                self.pending.insert(position, graphic);
-            }
-            None => {
-                self.pending.remove(&position);
-            }
-        }
+        self.paint_samples(
+            [(
+                position,
+                DetailerStroke::footprint_start(pointer_x, brush_size),
+                DetailerStroke::footprint_start(pointer_y, brush_size),
+            )],
+            brush_size,
+            strength,
+            resolve,
+        );
     }
 
     /// Ends the active direct-canvas stroke for `hand`. Another hand's
@@ -602,8 +656,8 @@ mod tests {
             DetailerMode::Additive,
             CellWeight::ONE,
             flat_tile(0), None);
-        stroke.paint(BUFFER_WIDTH, 0, 255);
-        stroke.paint(0, BUFFER_HEIGHT, 255);
+        stroke.paint(BUFFER_WIDTH as i64, 0, 255);
+        stroke.paint(0, BUFFER_HEIGHT as i64, 255);
         assert_eq!(stroke.tile(), flat_tile(0));
     }
 
@@ -631,7 +685,7 @@ mod tests {
 
         for y in 0..BUFFER_HEIGHT {
             for x in 0..BUFFER_WIDTH {
-                stroke.paint(x, y, 255);
+                stroke.paint(x as i64, y as i64, 255);
             }
         }
         assert_eq!(
@@ -654,7 +708,7 @@ mod tests {
 
         for y in 0..BUFFER_HEIGHT {
             for x in 0..BUFFER_WIDTH {
-                stroke.paint(x, y, 255);
+                stroke.paint(x as i64, y as i64, 255);
             }
         }
         assert_eq!(
@@ -856,43 +910,122 @@ mod tests {
 
     #[test]
     fn the_brush_footprint_scales_down_into_the_subpixel_buffer() {
-        let mut stroke = DetailerStroke::begin(
-            PaintHand::Left,
-            point(),
-            DetailerMode::Additive,
-            CellWeight::ONE,
-            flat_tile(0), None);
-        // Size 1 touches exactly one subcell pixel.
-        stroke.paint_footprint(1, 1, 1, 255);
-        let mut expected = flat_tile(0);
-        expected.alpha[1 * BUFFER_WIDTH + 1] = 255;
-        assert_eq!(stroke.tile(), expected);
+        // J 2026-11-09: "1 will be 1 subpixel. 2 will be 2x2 subpixel.
+        // 3 will be 3x3 subpixel. 4 will be 4x4 subpixels with the corners
+        // removed. 5x5 with corners removed for the size 5." The footprint
+        // anchors at its top-left subpixel and clips at the buffer's edges.
+        const W: usize = 8;
+        let blank = || GlyphTileRaster {
+            width: W,
+            height: W,
+            alpha: vec![0u8; W * W],
+        };
+        let painted = |x: i64, y: i64, size: i32| {
+            let mut stroke = DetailerStroke::begin(
+                PaintHand::Left,
+                point(),
+                DetailerMode::Additive,
+                CellWeight::ONE,
+                blank(), None);
+            stroke.paint_footprint(x, y, size, 255);
+            stroke.tile()
+        };
 
-        // Size 3 paints the centered 3x3 block.
-        let mut stroke = DetailerStroke::begin(
-            PaintHand::Left,
-            point(),
-            DetailerMode::Additive,
-            CellWeight::ONE,
-            flat_tile(0), None);
-        stroke.paint_footprint(1, 1, 3, 255);
-        let mut expected = flat_tile(0);
-        for y in 0..3 {
-            for x in 0..3 {
-                expected.alpha[y * BUFFER_WIDTH + x] = 255;
+        // Size 1 touches exactly one subcell pixel.
+        let mut expected = blank();
+        expected.alpha[1 * W + 1] = 255;
+        assert_eq!(painted(1, 1, 1), expected);
+
+        // Size 2 paints the 2x2 block from its top-left.
+        let mut expected = blank();
+        for y in 1..3 {
+            for x in 1..3 {
+                expected.alpha[y * W + x] = 255;
             }
         }
-        assert_eq!(stroke.tile(), expected);
+        assert_eq!(painted(1, 1, 2), expected);
 
-        // The footprint clips at the buffer's edge instead of panicking.
-        let mut stroke = DetailerStroke::begin(
-            PaintHand::Left,
-            point(),
-            DetailerMode::Additive,
-            CellWeight::ONE,
-            flat_tile(0), None);
-        stroke.paint_footprint(0, 0, 5, 255);
-        assert!(stroke.changed());
+        // Size 4 paints the 4x4 block minus its four corners (12 pixels).
+        let mut expected = blank();
+        for y in 0..4 {
+            for x in 0..4 {
+                let corner = (x == 0 || x == 3) && (y == 0 || y == 3);
+                if !corner {
+                    expected.alpha[y * W + x] = 255;
+                }
+            }
+        }
+        assert_eq!(painted(0, 0, 4), expected);
+
+        // Size 5 paints the 5x5 block minus its four corners (21 pixels).
+        let mut expected = blank();
+        for y in 0..5 {
+            for x in 0..5 {
+                let corner = (x == 0 || x == 4) && (y == 0 || y == 4);
+                if !corner {
+                    expected.alpha[y * W + x] = 255;
+                }
+            }
+        }
+        assert_eq!(painted(0, 0, 5), expected);
+
+        // A footprint anchored past the buffer's edge clips, never panics.
+        assert_ne!(painted(W as i64 - 1, 2, 5), blank());
+    }
+
+    /// J 2026-11-09: "if i press the corner of a cell it should draw 1 cell
+    /// at each appropriate corner of a cell" — an even-size footprint
+    /// anchored exactly on the cell boundary splits its subpixels evenly
+    /// between the adjacent cells, and the pointer's cell decomposition
+    /// carries the overlapping part of the footprint into each touched
+    /// cell's own buffer.
+    #[test]
+    fn footprint_start_splits_even_sizes_evenly_on_cell_boundaries() {
+        // A pointer at the exact left boundary with size 2 starts one subcell
+        // into the left neighbor: the 2x2 block lands half here, half there.
+        assert_eq!(DetailerStroke::footprint_start(0.0, 2), -1);
+        // Mid-subpixel, size 2 stays in the pointer's subcell column.
+        assert_eq!(DetailerStroke::footprint_start(0.5, 2), 0);
+        // Odd sizes center on the pointer's subcell.
+        assert_eq!(DetailerStroke::footprint_start(1.5, 3), 0);
+        assert_eq!(DetailerStroke::footprint_start(1.5, 5), -1);
+    }
+
+    #[test]
+    fn a_corner_anchored_footprint_paints_every_touched_cells_corner() {
+        let fade = ShapeFade::build(&Bars);
+        let mut session = DetailerSession::default();
+        // Seed two cells that share an edge: the pointer's cell and its left
+        // neighbor, both blank at comparison resolution.
+        for position in [CellPoint { x: 0, y: 0, z: 0 }, CellPoint { x: 1, y: 0, z: 0 }] {
+            session.begin(
+                DetailerStroke::begin(
+                    PaintHand::Left,
+                    position,
+                    DetailerMode::Additive,
+                    CellWeight::ONE,
+                    flat_tile(0),
+                    None,
+                ),
+                |_| Some('.'),
+            );
+        }
+        // Size 2 anchored exactly on the shared boundary: one subpixel column
+        // in each cell (the even split), no snapping to the pointer's cell.
+        session.paint_samples(
+            [
+                (CellPoint { x: 0, y: 0, z: 0 }, BUFFER_WIDTH as i64 - 1, 0),
+                (CellPoint { x: 1, y: 0, z: 0 }, 0, 0),
+            ],
+            2,
+            255,
+            |_| Some('#'),
+        );
+        let left = session.pending_graphic_at(&CellPoint { x: 0, y: 0, z: 0 });
+        let right = session.pending_graphic_at(&CellPoint { x: 1, y: 0, z: 0 });
+        assert_eq!(left, Some('#'), "left cell keeps its half of the footprint");
+        assert_eq!(right, Some('#'), "right cell keeps its half of the footprint");
+        assert_eq!(fade.nearest_glyph_at_weight_excluding(&flat_tile(0), CellWeight::ONE, None).is_some(), true);
     }
 
     #[test]
