@@ -51,6 +51,7 @@ use crate::{
     },
     paint_color::PaintColor,
     painter_tools::shared::{drag_behavior, selection_behavior, DragBehavior},
+    render_space::resolve_painted_shader_stack,
     selection_state::{PainterSelection, SelectionMode},
     selection_stroke::{build_plane_selection_cell_groups, interpolate_cell_path, SelectionStroke},
     session_document::{
@@ -324,37 +325,28 @@ fn detailer_seed_for_position(
     Option<char>,
 )> {
     let Some(fade) = ctx.graphic_fade else {
-        eprintln!("[detailer-debug] seed: no graphic fade built");
         return None;
     };
     if let Some(cell) = ctx.canvas.get(&position) {
         if !brush::is_blank_cell(cell) {
             let CellGraphic::Glyph(glyph) = cell.graphic else {
-                eprintln!("[detailer-debug] seed: cell at {position:?} is not a glyph");
                 return None;
             };
             let weight =
                 thaum_renderer_domain::CellWeight::from_index_clamped(cell.weight_index as i32);
             let Some(seed) = fade.glyph_tile_at_weight(glyph, weight) else {
-                eprintln!(
-                    "[detailer-debug] seed: no comparison tile for {glyph:?} at weight {weight:?}"
-                );
                 return None;
             };
             return Some((weight, seed, Some(glyph)));
         }
     }
     if mode != DetailerMode::Additive {
-        eprintln!(
-            "[detailer-debug] seed: empty cell at {position:?}, subtract has nothing to erase"
-        );
         return None;
     }
     let weight = thaum_renderer_domain::CellWeight::from_index_clamped(
         ctx.tool_state.borrow().hand_state(hand).weight_index as i32,
     );
     let Some(seed) = fade.blank_tile_at_weight(weight) else {
-        eprintln!("[detailer-debug] seed: no blank tile at weight {weight:?}");
         return None;
     };
     Some((weight, seed, None))
@@ -629,15 +621,12 @@ impl CanvasPointerStrokes {
                         (hand_state.target, hand_state.detailer_mode)
                     };
                     let Some(session) = ctx.detailer_session else {
-                        eprintln!("[detailer-debug] press: no detailer session wired");
                         return None;
                     };
                     if target != PaintTarget::Image {
-                        eprintln!("[detailer-debug] press: target is not Image");
                         return None;
                     }
                     let Some(fade) = ctx.graphic_fade else {
-                        eprintln!("[detailer-debug] press: no graphic fade built");
                         return None;
                     };
                     let Some((weight, seed, seed_glyph)) =
@@ -645,11 +634,6 @@ impl CanvasPointerStrokes {
                     else {
                         return None;
                     };
-                    eprintln!(
-                        "[detailer-debug] press: seeded at {position:?} tile {}x{} weight {weight:?} mode {mode:?} seed_glyph {seed_glyph:?}",
-                        seed.width,
-                        seed.height
-                    );
                     session.borrow_mut().begin(
                         DetailerStroke::begin(hand, position, mode, weight, seed, seed_glyph),
                         |stroke| stroke.resolve(fade),
@@ -871,7 +855,6 @@ impl CanvasPointerStrokes {
             else {
                 return;
             };
-            eprintln!("[detailer-debug] drag entered {position:?}, seeded {}x{} weight {weight:?} mode {mode:?} seed_glyph {seed_glyph:?}", seed.width, seed.height);
             session.borrow_mut().begin(
                 DetailerStroke::begin(hand, position, mode, weight, seed, seed_glyph),
                 |stroke| stroke.resolve(fade),
@@ -1163,7 +1146,6 @@ impl CanvasPointerStrokes {
             .map(|session| session.borrow_mut().take_pending_commits())
             .unwrap_or_default();
         if !commits.is_empty() {
-            eprintln!("[detailer-debug] commit consumed: {} cell(s)", commits.len());
             // No-op guard: a resolve that landed back on the cell's own
             // authored glyph writes nothing visible, so it must not author
             // (or overwrite) the cell at all.
@@ -1175,10 +1157,6 @@ impl CanvasPointerStrokes {
                     .get(&commit.position)
                     .is_some_and(|cell| cell.graphic == CellGraphic::Glyph(commit.graphic))
                 {
-                    eprintln!(
-                        "[detailer-debug] commit skipped (no-op, already {:?}): {:?}",
-                        commit.graphic, commit.position
-                    );
                     continue;
                 }
                 // Graphic-only edit: an authored cell keeps its color,
@@ -1201,7 +1179,8 @@ impl CanvasPointerStrokes {
                 changes.push((commit.position, Some(cell)));
             }
             if changes.is_empty() {
-                eprintln!("[detailer-debug] commit consumed: nothing visible to write");
+                // A resolve that landed back on each cell's own authored
+                // glyph writes nothing visible; stage nothing.
             } else if let Some(block_id) = ctx
                 .document
                 .active_raster_block_id(ctx.active_layer_id, current_breath)
@@ -1215,10 +1194,6 @@ impl CanvasPointerStrokes {
                     &block_id,
                 );
                 self.set_image_start(committing_hand, start);
-            } else {
-                eprintln!(
-                    "[detailer-debug] commit skipped: no active raster block",
-                );
             }
         }
         for start in [self.left_image_start.take(), self.right_image_start.take()] {
@@ -1257,42 +1232,49 @@ impl CanvasPointerStrokes {
         );
         // Detailer never mutates the canvas until grid release. Overlay each
         // crossed cell's resolved candidate so the document remains the
-        // source of truth while the user compares live changes. Empty-cell
-        // strokes preview with the hand's own color and weight.
+        // source of truth while the user compares live changes. The preview
+        // cell is the exact cell release would write — the existing cell
+        // cloned with only its graphic swapped (color, weight, facing, and
+        // shader stack preserved), or a fresh cell from the acting hand's
+        // color and weight — and the document pass suppresses the
+        // pre-edit cell underneath, so the preview replaces the cell instead
+        // of compositing over it (J 2026-11-09: preview must be the same
+        // implementation as the final).
         for (position, glyph) in ctx
             .detailer_session
             .map(|session| session.borrow().pending_previews())
             .unwrap_or_default()
         {
-            let existing = ctx.canvas.get(&position);
+            let hand = ctx
+                .detailer_session
+                .and_then(|session| session.borrow().active_hand())
+                .unwrap_or(PaintHand::Left);
+            let preview_cell = match ctx.canvas.get(&position).cloned() {
+                Some(mut painted) => {
+                    painted.graphic = CellGraphic::Glyph(glyph);
+                    painted
+                }
+                None => {
+                    let hand_state = ctx.tool_state.borrow().hand_state(hand);
+                    PaintedCell {
+                        facing: CellFacing::PosZ,
+                        graphic: CellGraphic::Glyph(glyph),
+                        color: hand_state.color.clone(),
+                        weight_index: hand_state.weight_index,
+                        shader_stack: Vec::new(),
+                    }
+                }
+            };
             let mut preview = CellGroup::new(WorldPoint::origin());
             preview.insert(Cell {
                 position,
-                graphic: CellGraphic::Glyph(glyph),
-                color: existing
-                    .map(|cell| cell.color.to_cell_color())
-                    .unwrap_or_else(|| {
-                        ctx.tool_state
-                            .borrow()
-                            .hand_state(PaintHand::Left)
-                            .color
-                            .clone()
-                            .to_cell_color()
-                    }),
+                graphic: preview_cell.graphic.clone(),
+                color: preview_cell.color.to_cell_color(),
                 weight: thaum_renderer_domain::CellWeight::from_index_clamped(
-                    existing
-                        .map(|cell| cell.weight_index)
-                        .unwrap_or_else(|| {
-                            ctx.tool_state
-                                .borrow()
-                                .hand_state(PaintHand::Left)
-                                .weight_index
-                        }) as i32,
+                    preview_cell.weight_index as i32,
                 ),
-                facing: existing.map(|cell| cell.facing).unwrap_or(CellFacing::PosZ),
-                // Live renderer shader ids are resolved only in the
-                // document render bridge; preserve the graphic preview
-                // rather than inventing an asset-id mapping here.
+                facing: preview_cell.facing,
+                shader_stack: resolve_painted_shader_stack(&preview_cell.shader_stack),
                 ..Cell::default()
             });
             groups.push(preview);

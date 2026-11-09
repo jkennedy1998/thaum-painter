@@ -4457,6 +4457,18 @@ fn main() -> Result<()> {
             0.0
         };
         let mut groups = modules.backdrop_groups();
+        // The detailer's live preview replaces the crossed cells' document
+        // rendering (J 2026-11-09: the preview must be the same implementation
+        // as the final): the document pass suppresses those cells on the
+        // active layer while the overlay renders the exact post-edit cell.
+        let detailer_preview_positions: Vec<thaum_renderer_domain::CellPoint> = detailer_session
+            .borrow()
+            .pending_previews()
+            .iter()
+            .map(|(position, _)| *position)
+            .collect();
+        let detailer_replacement = (!detailer_preview_positions.is_empty())
+            .then_some((active_layer_id.as_str(), detailer_preview_positions.as_slice()));
         groups.extend(build_document_layer_cell_groups(
             &shared_document,
             timeline_state.borrow().current_breath,
@@ -4465,6 +4477,7 @@ fn main() -> Result<()> {
                 .as_ref()
                 .map(|(layer_id, delta)| (layer_id.as_str(), *delta)),
             shape_fade.as_deref(),
+            detailer_replacement,
         ));
         // The graphic picker previews the hands' tooling weights and blinks
         // between them on the same vivid-flash breath the selection shader

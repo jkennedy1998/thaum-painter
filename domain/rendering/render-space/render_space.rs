@@ -402,11 +402,11 @@ mod tests {
         let mut runtime = SharedDocumentRuntime::new(document);
         assert!(runtime.set_layer_visible("layer-1", false));
 
-        let groups = build_document_layer_cell_groups(&runtime, 0, 0.0, None, None);
+        let groups = build_document_layer_cell_groups(&runtime, 0, 0.0, None, None, None);
         assert!(groups.is_empty());
 
         assert!(runtime.set_layer_visible("layer-1", true));
-        let groups = build_document_layer_cell_groups(&runtime, 0, 0.0, None, None);
+        let groups = build_document_layer_cell_groups(&runtime, 0, 0.0, None, None, None);
         assert_eq!(groups.len(), 1);
     }
 
@@ -436,7 +436,7 @@ mod tests {
         runtime.add_move_offset("layer-1", 0, WorldPoint { x: 2, y: 0, z: 3 });
         assert!(runtime.set_layer_origin("layer-1", WorldPoint { x: 4, y: 5, z: 6 }));
 
-        let groups = build_document_layer_cell_groups(&runtime, 0, 0.0, None, None);
+        let groups = build_document_layer_cell_groups(&runtime, 0, 0.0, None, None, None);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].origin, WorldPoint { x: 4, y: 5, z: 6 });
         // Cells are pivot-relative: canvas + move − pivot, so the composed
@@ -459,6 +459,7 @@ mod tests {
             0.0,
             Some(("layer-1", WorldPoint { x: 1, y: 1, z: 0 })),
             None,
+            None,
         );
         let dragged = groups[0]
             .iter_cells()
@@ -467,6 +468,60 @@ mod tests {
         assert_eq!(
             groups[0].world_point_for(dragged.position),
             WorldPoint { x: 8, y: 6, z: 3 }
+        );
+    }
+
+    #[test]
+    fn detailer_preview_suppression_removes_the_cell_from_its_layer_only() {
+        let document = SharedDocumentFile::single_layer("doc-1", "Doc", "layer-1", "One");
+        let mut runtime = SharedDocumentRuntime::new(document);
+        let _ = runtime.add_layer("layer-2", "Two");
+        let block_id = runtime
+            .active_raster_block_id("layer-1", 0)
+            .expect("default raster block");
+        let painted = PaintedCell {
+            facing: CellFacing::PosZ,
+            graphic: CellGraphic::Glyph('#'),
+            color: PaintColor::FlatRgb(255, 255, 255),
+            weight_index: 1,
+            shader_stack: Vec::new(),
+        };
+        let position = CellPoint { x: 3, y: 3, z: 0 };
+        runtime.stage_canvas_patches(
+            "layer-1",
+            &block_id,
+            &[SharedCellPatch::new(position, None, Some(&painted))],
+        );
+        let block2 = runtime.active_raster_block_id("layer-2", 0).unwrap();
+        runtime.stage_canvas_patches(
+            "layer-2",
+            &block2,
+            &[SharedCellPatch::new(position, None, Some(&painted))],
+        );
+
+        // The detailer previews layer-1's cell: the document pass must drop
+        // it there (the overlay shows the post-edit glyph) but keep the same
+        // position alive on other layers, which the commit does not touch.
+        let groups = build_document_layer_cell_groups(
+            &runtime,
+            0,
+            0.0,
+            None,
+            None,
+            Some(("layer-1", &[position])),
+        );
+        assert_eq!(groups.len(), 2, "both layers still render");
+        assert!(
+            !groups[0]
+                .iter_cells()
+                .any(|c| c.position == position),
+            "layer-1 cell suppressed"
+        );
+        assert!(
+            groups[1]
+                .iter_cells()
+                .any(|c| c.position == position),
+            "layer-2 cell unaffected"
         );
     }
 
@@ -512,8 +567,37 @@ pub fn build_paint_canvas_cell_group(
     move_offset: WorldPoint,
     pivot: WorldPoint,
 ) -> CellGroup {
+    build_paint_canvas_cell_group_except(canvas, move_offset, pivot, &[])
+}
+
+/// Resolves a painted cell's shader-stack filenames into the renderer's live
+/// shader ids, dropping unknown filenames exactly as the document render
+/// path always has. Shared by the document pass and the detailer's preview
+/// overlay so both render the identical cell appearance (J 2026-11-09: the
+/// preview must be the same implementation as the final).
+pub fn resolve_painted_shader_stack(shader_stack: &[String]) -> Vec<u32> {
+    shader_stack
+        .iter()
+        .filter_map(|asset_file| resolve_shader_asset(asset_file).ok())
+        .collect()
+}
+
+/// `build_paint_canvas_cell_group` with an exclusion set: canvas positions
+/// named here are skipped entirely. The detailer's live preview supplies its
+/// crossed cells so the document pass never draws the pre-edit glyph under
+/// the previewed one — the preview must replace the cell, not composite over
+/// it (J 2026-11-09).
+pub fn build_paint_canvas_cell_group_except(
+    canvas: &Canvas,
+    move_offset: WorldPoint,
+    pivot: WorldPoint,
+    suppressed: &[CellPoint],
+) -> CellGroup {
     let mut group = CellGroup::new(pivot);
     for (position, painted) in canvas {
+        if suppressed.contains(position) {
+            continue;
+        }
         group.insert(Cell {
             position: CellPoint {
                 x: position.x + move_offset.x - pivot.x,
@@ -527,11 +611,7 @@ pub fn build_paint_canvas_cell_group(
             // Until the renderer registry lands, live preview can resolve its
             // currently built-in filenames; persistence still retains unknown
             // filenames verbatim for a future asset root.
-            shader_stack: painted
-                .shader_stack
-                .iter()
-                .filter_map(|asset_file| resolve_shader_asset(asset_file).ok())
-                .collect(),
+            shader_stack: resolve_painted_shader_stack(&painted.shader_stack),
             ..Cell::default()
         });
     }
@@ -552,6 +632,12 @@ pub fn build_document_layer_cell_groups(
     breath_fraction: f32,
     pending_move_offset: Option<(&str, WorldPoint)>,
     graphic_fade: Option<&thaum_renderer_domain::shape_fade::fade::ShapeFade>,
+    // The detailer preview's replacement scope: cells at these positions are
+    // suppressed from this one layer's document pass because the overlay
+    // renders the post-edit cell there instead. Scoped to the active layer
+    // so a lower layer's cell at the same position still renders, exactly as
+    // it would after the commit.
+    preview_replacement: Option<(&str, &[CellPoint])>,
 ) -> Vec<CellGroup> {
     runtime
         .layers()
@@ -588,7 +674,12 @@ pub fn build_document_layer_cell_groups(
             let pivot = runtime
                 .layer_origin(&layer.layer_id)
                 .unwrap_or_else(WorldPoint::origin);
-            let mut group = build_paint_canvas_cell_group(&canvas, offset, pivot);
+            let suppressed: &[CellPoint] = preview_replacement
+                .and_then(|(layer_id, positions)| {
+                    (layer_id == layer.layer_id).then_some(positions)
+                })
+                .unwrap_or(&[]);
+            let mut group = build_paint_canvas_cell_group_except(&canvas, offset, pivot, suppressed);
             group.origin = pivot;
             Some(group)
         })

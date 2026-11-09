@@ -87,7 +87,11 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
         label: "Detailer",
         icon: '░',
         description: "redraw a glyph at subcell resolution",
-        property_row_ids: &["detailer_mode"],
+        // brush_size rides along (J 2026-11-09): the detailer maps the hand's
+        // brush footprint down into the subcell buffer, so a bigger size
+        // authors a thicker subpixel line and directional buildup lands in
+        // one pass instead of many.
+        property_row_ids: &["detailer_mode", "brush_size"],
         select_action: None,
         hotkey: None,
     },

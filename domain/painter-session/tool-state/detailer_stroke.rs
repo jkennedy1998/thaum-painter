@@ -373,12 +373,7 @@ impl DetailerSession {
         };
         match resolved {
             Some(graphic) => {
-                let previous = self.pending.insert(position, graphic);
-                if previous != resolved {
-                    eprintln!(
-                        "[detailer-debug] paint at {position:?} ({x},{y}) brush {brush_size} -> resolve {graphic:?} (was {previous:?})",
-                    );
-                }
+                self.pending.insert(position, graphic);
             }
             None => {
                 self.pending.remove(&position);
@@ -402,10 +397,6 @@ impl DetailerSession {
         let strokes = std::mem::take(&mut self.strokes);
         for (position, stroke) in strokes {
             let resolved = self.pending.get(&position).copied();
-            eprintln!(
-                "[detailer-debug] finish at {position:?} changed={} -> commit {resolved:?}",
-                stroke.changed()
-            );
             if let (true, Some(graphic)) = (stroke.visibly_changed(), resolved) {
                 self.pending_commits.insert(
                     position,
