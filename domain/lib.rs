@@ -15,6 +15,10 @@ pub mod identity;
 pub use thaum_renderer_domain::debug_log;
 #[path = "painter-session/paint-color/color_entry.rs"]
 pub mod color_entry;
+#[path = "modules/individuals/detailer-grid/detailer_grid_module.rs"]
+pub mod detailer_grid_module;
+#[path = "painter-session/tool-state/detailer_stroke.rs"]
+pub mod detailer_stroke;
 #[path = "modules/individuals/display-profile/display_profile_module.rs"]
 pub mod display_profile_module;
 #[path = "modules/individuals/display-profile/display_profile_presets.rs"]
@@ -43,8 +47,6 @@ pub mod interp_raster;
 pub mod lasso;
 #[path = "painter-session/tool-state/lasso_stroke.rs"]
 pub mod lasso_stroke;
-#[path = "painter-session/tool-state/detailer_stroke.rs"]
-pub mod detailer_stroke;
 #[path = "modules/individuals/layers-panel/layers_panel_module.rs"]
 pub mod layers_panel_module;
 #[path = "painter-document/layers/layers_runtime.rs"]
@@ -107,6 +109,8 @@ pub mod user_session_state;
 pub use brush::{apply_brush, brush_points, Canvas, PaintedCell};
 pub use camera_actions::{apply_painter_camera_action, apply_painter_pan_action};
 pub use color_entry::{ColorEntryEdit, ColorEntryField};
+pub use detailer_grid_module::DetailerGridModule;
+pub use detailer_stroke::{DetailerCommit, DetailerMode, DetailerSession, DetailerStroke};
 pub use display_profile_module::{DisplayProfileModule, MAX_CELL_DIMENSION, MIN_CELL_DIMENSION};
 pub use display_profile_presets::{built_in_display_profile_presets, DisplayProfilePreset};
 pub use document_display_profile::{document_display_profile, DocumentDisplayProfile};

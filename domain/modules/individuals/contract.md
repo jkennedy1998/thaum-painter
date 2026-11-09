@@ -11,6 +11,8 @@ Own painter's own concrete modules — panels the ASCII painter needs that the g
 - the shared logic these modules are built from, owned by `thaum-renderer/domain/modules/shared/` and `domain/modules/shared/`
 
 ## children-encapsulations
+- `detailer-grid/`
+  - default
 - `toolbar/`
   - default
 - `toolbox/`
@@ -61,6 +63,7 @@ Own painter's own concrete modules — panels the ASCII painter needs that the g
 - `material-picker/` owns material palette picking over that same hand color seam.
 - `hand-settings/` owns the compact weight/mask/target/lock controls tied to shared hand state.
 - `graphic-picker/` owns choosing the live hand `graphic` itself, showing sprite choices plus glyphs grouped by Thaum Mono section order.
+- `detailer-grid/` renders and maps the live enlarged subcell grid for an active detailer stroke; it has no document-write ownership.
 - remaining candidates from the old system's `src/mono_ui/modules/`: `character_editor_module.ts`, `painter_file_menu_module.ts`.
 - `layers-panel/` is the old system's `groups_module.ts` rebuild. Current pass: layer list (select, add, delete, per-layer visibility/lock toggle) plus a labeled timeline header (auto-key + scrubbable breath ruler/playhead) wired to `painter-session/timeline-state/`, with nested raster/move property rows under the selected layer as the real edit surface. This required extending `SharedDocumentLayer` (`domain/file/storage/`) with `visible`/`locked`/`start_breath`/`length_breaths` fields and matching `SharedDocumentRuntime` methods, since the live runtime schema previously only carried `layer_id`+`name`. The panel was also widened (`ModuleRect { x0: 25, y0: -24, x1: 70, y1: -3 }`) to give the timeline region real room, matching the old system's wider `groups_module.ts` panel proportions.
 - Still deliberately deferred on `layers-panel/`: rename (needs a `Module` trait text-input/keyboard hook that does not exist yet — a cross-repo `thaum-renderer` change), drag-based reorder, a document-level frames-per-breath control (needs a playback-settings seam on the live document schema, mirroring the `visible`/`locked`/timing gaps already closed for layers), and the deeper shared bar-editing seam for blank/create/merge/compact behaviors (`painter-operations/bar-editing/`).

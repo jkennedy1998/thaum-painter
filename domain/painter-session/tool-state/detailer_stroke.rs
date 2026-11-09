@@ -99,6 +99,97 @@ impl DetailerStroke {
     }
 }
 
+/// The one graphic-only write requested when an active detail stroke ends.
+/// The canvas-pointer seam consumes it in phase 6; the detail grid never
+/// owns a document or performs this write itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DetailerCommit {
+    pub position: CellPoint,
+    pub graphic: char,
+}
+
+/// Shared live state between the canvas target selector, detail grid, and
+/// canvas preview. The grid changes only the stroke buffer through this type;
+/// it cannot know or mutate document appearance beyond the pending glyph.
+#[derive(Debug, Default)]
+pub struct DetailerSession {
+    stroke: Option<DetailerStroke>,
+    pending_graphic: Option<char>,
+    pending_commit: Option<DetailerCommit>,
+}
+
+impl DetailerSession {
+    /// Begins one selected target and clears an unconsumed prior release.
+    /// `resolve` is supplied by the caller because the live typeface fade is
+    /// orchestration-owned and can change when the file changes its face.
+    pub fn begin(
+        &mut self,
+        stroke: DetailerStroke,
+        resolve: impl FnOnce(&DetailerStroke) -> Option<char>,
+    ) {
+        self.pending_graphic = resolve(&stroke);
+        self.stroke = Some(stroke);
+        self.pending_commit = None;
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.stroke.is_some()
+    }
+
+    pub fn active_hand(&self) -> Option<PaintHand> {
+        self.stroke.as_ref().map(|stroke| stroke.hand)
+    }
+
+    pub fn active_tile(&self) -> Option<GlyphTileRaster> {
+        self.stroke.as_ref().map(DetailerStroke::tile)
+    }
+
+    pub fn pending_graphic(&self) -> Option<char> {
+        self.pending_graphic
+    }
+
+    /// Paints one comparison pixel and immediately refreshes the canvas
+    /// preview candidate. Calls made without an active target are a no-op.
+    pub fn paint(
+        &mut self,
+        x: usize,
+        y: usize,
+        strength: u8,
+        resolve: impl FnOnce(&DetailerStroke) -> Option<char>,
+    ) {
+        let Some(stroke) = self.stroke.as_mut() else {
+            return;
+        };
+        stroke.paint(x, y, strength);
+        self.pending_graphic = resolve(stroke);
+    }
+
+    /// Ends the active grid drag. There is at most one queued commit, and it
+    /// is graphic-only by construction. No resolved glyph means no write.
+    pub fn finish(&mut self) {
+        let Some(stroke) = self.stroke.take() else {
+            return;
+        };
+        self.pending_commit = self.pending_graphic.map(|graphic| DetailerCommit {
+            position: stroke.position,
+            graphic,
+        });
+        self.pending_graphic = None;
+    }
+
+    /// Cancels the active stroke and any previously queued, unconsumed write.
+    pub fn cancel(&mut self) {
+        self.stroke = None;
+        self.pending_graphic = None;
+        self.pending_commit = None;
+    }
+
+    /// Transfers the one release request to the document-owning consumer.
+    pub fn take_pending_commit(&mut self) -> Option<DetailerCommit> {
+        self.pending_commit.take()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,7 +287,11 @@ mod tests {
             CellWeight::ONE,
             flat_tile(0),
         );
-        assert_eq!(stroke.resolve(&fade), Some(' '), "starts at the seeded empty glyph");
+        assert_eq!(
+            stroke.resolve(&fade),
+            Some(' '),
+            "starts at the seeded empty glyph"
+        );
 
         for y in 0..BUFFER_HEIGHT {
             for x in 0..BUFFER_WIDTH {
@@ -249,5 +344,56 @@ mod tests {
         );
         let resolved = stroke.resolve(&fade).unwrap();
         assert_ne!(resolved, 'm', "weight ZERO's graph has no 'm' node to find");
+    }
+
+    #[test]
+    fn session_updates_its_pending_glyph_and_queues_one_graphic_only_commit() {
+        let mut session = DetailerSession::default();
+        session.begin(
+            DetailerStroke::begin(
+                PaintHand::Left,
+                point(),
+                DetailerMode::Additive,
+                CellWeight::ONE,
+                flat_tile(0),
+            ),
+            |_| Some('.'),
+        );
+        assert_eq!(session.pending_graphic(), Some('.'));
+        assert_eq!(session.active_hand(), Some(PaintHand::Left));
+
+        session.paint(0, 0, 255, |stroke| {
+            (stroke.tile().alpha[0] == 255).then_some('#')
+        });
+        assert_eq!(session.pending_graphic(), Some('#'));
+
+        session.finish();
+        assert!(!session.is_active());
+        assert_eq!(session.pending_graphic(), None);
+        assert_eq!(
+            session.take_pending_commit(),
+            Some(DetailerCommit {
+                position: point(),
+                graphic: '#',
+            })
+        );
+        assert_eq!(session.take_pending_commit(), None, "release queues once");
+    }
+
+    #[test]
+    fn session_without_a_resolved_glyph_never_queues_a_document_write() {
+        let mut session = DetailerSession::default();
+        session.begin(
+            DetailerStroke::begin(
+                PaintHand::Right,
+                point(),
+                DetailerMode::Subtractive,
+                CellWeight::TWO,
+                flat_tile(0),
+            ),
+            |_| None,
+        );
+        session.finish();
+        assert_eq!(session.take_pending_commit(), None);
     }
 }
