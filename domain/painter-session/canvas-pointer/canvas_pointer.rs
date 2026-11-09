@@ -42,6 +42,7 @@ use thaum_renderer_domain::{
 
 use crate::{
     brush::{self, Canvas, PaintedCell},
+    detailer_stroke::{DetailerSession, DetailerStroke},
     clipboard::WorldCopyData,
     fill::CanvasBounds,
     lasso_stroke::{
@@ -294,6 +295,9 @@ pub struct CanvasPointerContext<'a> {
     /// sampling (the picker's blended size pick). `None` keeps the halfway
     /// cutoff.
     pub graphic_fade: Option<&'a ShapeFade>,
+    /// Shared typeface-local detail grid state; document writes stay in this
+    /// canvas-owner seam and are consumed only after grid release.
+    pub detailer_session: Option<&'a Rc<RefCell<DetailerSession>>>,
 }
 
 /// What a text-tool press hands back to the entrypoint: the typing session
@@ -557,6 +561,39 @@ impl CanvasPointerStrokes {
                 }
                 // The stamp places the hover preview's payload at the press
                 // cell: changes stage once so release commits one undo step.
+                "detailer" => {
+                    // Detailer is graphic-only and image-only: a press on an
+                    // authored glyph seeds the typeface/weight-matched grid.
+                    // The grid owns subcell dragging; this canvas seam merely
+                    // chooses the target and starts its live preview session.
+                    let (target, mode) = {
+                        let state = ctx.tool_state.borrow();
+                        (state.hand_state(hand).target, state.hand_state(hand).detailer_mode)
+                    };
+                    let Some(session) = ctx.detailer_session else {
+                        return None;
+                    };
+                    let Some(fade) = ctx.graphic_fade else {
+                        return None;
+                    };
+                    let Some(cell) = ctx.canvas.get(&position) else {
+                        return None;
+                    };
+                    let CellGraphic::Glyph(glyph) = cell.graphic else {
+                        return None;
+                    };
+                    if target != PaintTarget::Image {
+                        return None;
+                    }
+                    let weight = thaum_renderer_domain::CellWeight::from_index_clamped(cell.weight_index as i32);
+                    let Some(seed) = fade.glyph_tile_at_weight(glyph, weight) else {
+                        return None;
+                    };
+                    session.borrow_mut().begin(
+                        DetailerStroke::begin(hand, position, mode, weight, seed),
+                        |stroke| stroke.resolve(fade),
+                    );
+                }
                 "stamp" => {
                     let data = self
                         .stamp_hover
@@ -1148,6 +1185,7 @@ mod tests {
                 active_layer_id: &mut self.layer_id,
                 persist_to_disk: true,
                 graphic_fade: None,
+                detailer_session: None,
             }
         }
     }
