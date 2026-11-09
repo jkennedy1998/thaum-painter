@@ -97,6 +97,7 @@ impl DetailerStroke {
 /// owns a document or performs this write itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DetailerCommit {
+    pub hand: PaintHand,
     pub position: CellPoint,
     pub graphic: char,
 }
@@ -141,6 +142,13 @@ impl DetailerSession {
         self.pending_graphic
     }
 
+    /// The authored cell receiving the live candidate, while a grid stroke is
+    /// open. Kept separate from the candidate so canvas rendering does not
+    /// need access to the private mutable stroke buffer.
+    pub fn pending_position(&self) -> Option<CellPoint> {
+        self.stroke.as_ref().map(|stroke| stroke.position)
+    }
+
     /// Paints one comparison pixel and immediately refreshes the canvas
     /// preview candidate. Calls made without an active target are a no-op.
     pub fn paint(
@@ -164,6 +172,7 @@ impl DetailerSession {
             return;
         };
         self.pending_commit = self.pending_graphic.map(|graphic| DetailerCommit {
+            hand: stroke.hand,
             position: stroke.position,
             graphic,
         });
@@ -366,6 +375,7 @@ mod tests {
         assert_eq!(
             session.take_pending_commit(),
             Some(DetailerCommit {
+                hand: PaintHand::Left,
                 position: point(),
                 graphic: '#',
             })

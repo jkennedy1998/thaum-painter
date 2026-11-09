@@ -340,6 +340,7 @@ mod tests {
         assert_eq!(
             session.borrow_mut().take_pending_commit(),
             Some(crate::detailer_stroke::DetailerCommit {
+                hand: PaintHand::Left,
                 position: CellPoint { x: 4, y: 5, z: 0 },
                 graphic: '#',
             })

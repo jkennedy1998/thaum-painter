@@ -36,7 +36,7 @@ use anyhow::Error;
 use thaum_renderer_domain::CellFacing;
 use thaum_renderer_domain::{
     project_world_relative_to_view, shape_fade::fade::ShapeFade, unproject_view_relative_to_world,
-    CameraViewOrientation, CellColor, CellGraphic, CellGroup, CellPoint, DoubleClick,
+    CameraViewOrientation, Cell, CellColor, CellGraphic, CellGroup, CellPoint, DoubleClick,
     ViewRelativePoint, WorldPoint,
 };
 
@@ -1008,6 +1008,31 @@ impl CanvasPointerStrokes {
                 );
             }
         }
+        // The detail grid ends independently from the canvas pointer. Its
+        // one queued request is consumed here, where document writes and undo
+        // records belong. Clone the authored cell before changing only its
+        // graphic, preserving color, weight, shaders, and facing exactly.
+        if let Some(commit) = ctx
+            .detailer_session
+            .and_then(|session| session.borrow_mut().take_pending_commit())
+        {
+            if let (Some(block_id), Some(mut cell)) = (
+                ctx.document
+                    .active_raster_block_id(ctx.active_layer_id, current_breath),
+                ctx.canvas.get(&commit.position).cloned(),
+            ) {
+                let start = (ctx.canvas.clone(), block_id.clone());
+                cell.graphic = CellGraphic::Glyph(commit.graphic);
+                stage_painted_cells_chunk(
+                    ctx.document,
+                    ctx.canvas,
+                    vec![(commit.position, Some(cell))],
+                    ctx.active_layer_id,
+                    &block_id,
+                );
+                self.set_image_start(commit.hand, start);
+            }
+        }
         for start in [self.left_image_start.take(), self.right_image_start.take()] {
             if let Err(error) = commit_staged_paint_stroke(
                 ctx.document,
@@ -1042,6 +1067,31 @@ impl CanvasPointerStrokes {
             ctx.canvas,
             vivid,
         );
+        // Detailer never mutates the canvas until grid release. Overlay its
+        // resolved candidate at the original authored cell so the document
+        // remains the source of truth while the user compares live changes.
+        if let Some((position, glyph)) = ctx.detailer_session.and_then(|session| {
+            let session = session.borrow();
+            Some((session.pending_position()?, session.pending_graphic()?))
+        }) {
+            if let Some(existing) = ctx.canvas.get(&position) {
+                let mut preview = CellGroup::new(WorldPoint::origin());
+                preview.insert(Cell {
+                    position,
+                    graphic: CellGraphic::Glyph(glyph),
+                    color: existing.color.to_cell_color(),
+                    weight: thaum_renderer_domain::CellWeight::from_index_clamped(
+                        existing.weight_index as i32,
+                    ),
+                    facing: existing.facing,
+                    // Live renderer shader ids are resolved only in the
+                    // document render bridge; preserve the graphic preview
+                    // rather than inventing an asset-id mapping here.
+                    ..Cell::default()
+                });
+                groups.push(preview);
+            }
+        }
         if let Some(stroke) = &self.lasso {
             groups.push(build_lasso_path_cell_group(stroke));
             let target = ctx.tool_state.borrow().hand_state(stroke.hand).target;
