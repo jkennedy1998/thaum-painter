@@ -24,6 +24,11 @@ pub enum DragBehavior {
     /// selection there). The pointer lifecycle owns the in-progress move
     /// stroke (move).
     MoveSelection,
+    /// A press begins a vector construction session that stays open across
+    /// many presses; Enter, Escape, or switching tools commits the
+    /// accumulated shape — the pointer lifecycle owns the in-progress
+    /// point/handle state (vector).
+    VectorConstruction,
 }
 
 /// Which drag behavior the tool with this registration id uses.
@@ -37,9 +42,18 @@ pub fn drag_behavior(tool_id: &str) -> DragBehavior {
         // applies its separate cell-local subcell samples across the drag.
         "detailer" => DragBehavior::ClickOnly,
         "move" => DragBehavior::MoveSelection,
+        "vector" => DragBehavior::VectorConstruction,
         // Unknown registrations behave as ordinary per-position paint tools.
         _ => DragBehavior::PerPosition,
     }
+}
+
+/// Whether the tool with this registration id carries the shared stroke/fill
+/// property rows (the per-hand Left/None/Right authoring-source pair). Only
+/// lasso and vector author drawn shapes today (J 2026-11-09); the other six
+/// tools keep their own content seams.
+pub fn carries_stroke_fill_rows(tool_id: &str) -> bool {
+    matches!(tool_id, "lasso" | "vector")
 }
 
 #[cfg(test)]
@@ -60,5 +74,24 @@ mod tests {
     #[test]
     fn unknown_registrations_default_to_per_position() {
         assert_eq!(drag_behavior("future-shape"), DragBehavior::PerPosition);
+    }
+
+    #[test]
+    fn vector_is_a_construction_session() {
+        assert_eq!(drag_behavior("vector"), DragBehavior::VectorConstruction);
+    }
+
+    #[test]
+    fn only_lasso_and_vector_carry_the_stroke_fill_rows() {
+        assert!(carries_stroke_fill_rows("lasso"));
+        assert!(carries_stroke_fill_rows("vector"));
+        assert!(!carries_stroke_fill_rows("brush"));
+        assert!(!carries_stroke_fill_rows("fill"));
+        assert!(!carries_stroke_fill_rows("text"));
+        assert!(!carries_stroke_fill_rows("picker"));
+        assert!(!carries_stroke_fill_rows("stamp"));
+        assert!(!carries_stroke_fill_rows("detailer"));
+        assert!(!carries_stroke_fill_rows("move"));
+        assert!(!carries_stroke_fill_rows("future-shape"));
     }
 }

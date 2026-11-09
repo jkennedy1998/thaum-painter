@@ -25,6 +25,8 @@ Own pure line, rectangle, lasso, and later 3d shape rasterization helpers for pa
   - shapes contract
 - `lasso.rs`
   - `lasso_points(path)` even-odd closed-polygon rasterization (interior plus bound, path's plane) + raster tests
+- `vector.rs`
+  - pure vector-point/subpath geometry: `VectorPoint` (anchor + whole-cell handle offsets, mirrored authoring, rigid translate, collapse/expand), `VectorSubpath` (open/closed, connection counts, closing/reopening), cubic-bezier-through-handles curve sampling, boundary-only fill cells, and the size-wide centered stroke band
 
 ## dependencies
 - `thaum-painter/domain/painter-operations/brush/`

@@ -43,6 +43,8 @@ pub mod interp_move;
 pub mod interp_raster;
 #[path = "painter-operations/shapes/lasso.rs"]
 pub mod lasso;
+#[path = "painter-operations/shapes/vector.rs"]
+pub mod vector;
 #[path = "painter-session/tool-state/lasso_stroke.rs"]
 pub mod lasso_stroke;
 #[path = "modules/individuals/layers-panel/layers_panel_module.rs"]
