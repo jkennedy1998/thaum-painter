@@ -352,6 +352,20 @@ fn detailer_seed_for_position(
     Some((weight, seed, None))
 }
 
+/// Whether one hand's detailer strokes may resolve across every declared
+/// render weight: the multi-weight toggle AND the weight channel unlocked.
+/// A locked weight channel forces the resolve to stay scoped to the cell's
+/// own weight (J 2026-11-09: "weight lock forces the weight to stay the
+/// same as the cell and keeps the other authored changes (character)").
+fn detailer_multi_weight_for_hand(
+    ctx: &CanvasPointerContext<'_>,
+    hand: PaintHand,
+) -> bool {
+    let state = ctx.tool_state.borrow();
+    let hand_state = state.hand_state(hand);
+    hand_state.detailer_multi_weight && hand_state.edit_channels.weight
+}
+
 /// The in-progress pointer strokes across both hands.
 pub struct CanvasPointerStrokes {
     lasso: Option<LassoStroke>,
@@ -635,7 +649,15 @@ impl CanvasPointerStrokes {
                         return None;
                     };
                     session.borrow_mut().begin(
-                        DetailerStroke::begin(hand, position, mode, weight, seed, seed_glyph),
+                        DetailerStroke::begin(
+                        hand,
+                        position,
+                        mode,
+                        weight,
+                        detailer_multi_weight_for_hand(ctx, hand),
+                        seed,
+                        seed_glyph,
+                    ),
                         |stroke| stroke.resolve(fade),
                     );
                 }
@@ -920,7 +942,15 @@ impl CanvasPointerStrokes {
             return false;
         };
         session.borrow_mut().begin(
-            DetailerStroke::begin(hand, position, mode, weight, seed, seed_glyph),
+            DetailerStroke::begin(
+                hand,
+                position,
+                mode,
+                weight,
+                detailer_multi_weight_for_hand(ctx, hand),
+                seed,
+                seed_glyph,
+            ),
             |stroke| stroke.resolve(fade),
         );
         true
@@ -1232,6 +1262,11 @@ impl CanvasPointerStrokes {
                     }
                 };
                 cell.graphic = CellGraphic::Glyph(commit.graphic);
+                // The resolved weight: the cell's own weight when the resolve
+                // stayed weight-scoped (a no-op write), or the winning
+                // glyph's weight on a cross-weight resolve (J 2026-11-09
+                // multi-weight).
+                cell.weight_index = commit.weight.as_index() as i64;
                 changes.push((commit.position, Some(cell)));
             }
             if changes.is_empty() {
@@ -1296,7 +1331,7 @@ impl CanvasPointerStrokes {
         // pre-edit cell underneath, so the preview replaces the cell instead
         // of compositing over it (J 2026-11-09: preview must be the same
         // implementation as the final).
-        for (position, glyph) in ctx
+        for (position, glyph, weight) in ctx
             .detailer_session
             .map(|session| session.borrow().pending_previews())
             .unwrap_or_default()
@@ -1308,6 +1343,9 @@ impl CanvasPointerStrokes {
             let preview_cell = match ctx.canvas.get(&position).cloned() {
                 Some(mut painted) => {
                     painted.graphic = CellGraphic::Glyph(glyph);
+                    // A cross-weight resolve commits the winning glyph's
+                    // weight; the preview shows exactly that.
+                    painted.weight_index = weight.as_index() as i64;
                     painted
                 }
                 None => {
@@ -1316,7 +1354,7 @@ impl CanvasPointerStrokes {
                         facing: CellFacing::PosZ,
                         graphic: CellGraphic::Glyph(glyph),
                         color: hand_state.color.clone(),
-                        weight_index: hand_state.weight_index,
+                        weight_index: weight.as_index() as i64,
                         shader_stack: Vec::new(),
                     }
                 }
@@ -1396,10 +1434,11 @@ mod tests {
         layers_runtime::resolved_active_layer_id,
         paint_color::PaintColor,
         session_document::sync_canvas_from_active_layer,
-        tool_state::PaintTool,
+        tool_state::{PaintChannel, PaintTool},
     };
     use thaum_renderer_domain::{
         camera_view_orientation_for_camera, CameraRoll, CameraSwing, CellColor, CellGraphic,
+        CellWeight,
     };
 
     fn canvas_bounds() -> CanvasBounds {
@@ -2466,7 +2505,7 @@ mod tests {
         // A fresh press has not moved ink: it previews nothing yet, even
         // though its resolve (seed glyph barred) would name some other
         // glyph. Only the sweep's ink puts this cell on the commit track.
-        assert_eq!(detailer.borrow().pending_graphic_at(&point(0, 0)), None);
+        assert_eq!(detailer.borrow().pending_at(&point(0, 0)), None);
 
         draw_sweep(
             &mut strokes,
@@ -2474,7 +2513,7 @@ mod tests {
             &sweep_in_cell(point(0, 0), &CENTER_SWEEP),
         );
         // The center sweep filled the ring's empty middle: exactly `#`.
-        assert_eq!(detailer.borrow().pending_graphic_at(&point(0, 0)), Some('#'));
+        assert_eq!(detailer.borrow().pending_at(&point(0, 0)).map(|(g, _)| g), Some('#'));
 
         // The live preview mirrors exactly what release will paint: one
         // pending cell at the authored position, no old/new flash pair.
@@ -2515,7 +2554,7 @@ mod tests {
         assert_eq!(painted.weight_index, 0);
         assert_eq!(painted.facing, CellFacing::PosZ);
         assert!(!detailer.borrow().is_active());
-        assert_eq!(detailer.borrow().pending_graphic_at(&point(0, 0)), None);
+        assert_eq!(detailer.borrow().pending_at(&point(0, 0)), None);
     }
 
     /// J 2026-11-09: "it shouldnt snap, it should really feel fluid like
@@ -2523,6 +2562,154 @@ mod tests {
     /// a size-2 footprint anchored at a cell's left edge spills its left
     /// subpixel column into the left neighbor's buffer, seeding it under
     /// the same guards, and release commits both cells.
+    /// Two weights with disjoint shape vocabularies: weight ZERO carries
+    /// the ring `o` and the dot `.`, weight ONE carries only the full `#`.
+    struct WeightSplitTiles;
+    impl thaum_renderer_domain::shape_fade::neighbor_graph::WeightedFadeTileProvider
+        for WeightSplitTiles
+    {
+        fn weight_count(&self) -> usize {
+            2
+        }
+        fn tiles_at_weight(
+            &self,
+            weight: CellWeight,
+        ) -> Vec<(char, thaum_renderer_domain::GlyphTileRaster)> {
+            let mut ring = vec![255u8; 16];
+            for y in 1..3 {
+                for x in 1..3 {
+                    ring[y * 4 + x] = 0;
+                }
+            }
+            let mut dot = vec![0u8; 16];
+            dot[2 * 4 + 2] = 255;
+            let tile = |alpha: Vec<u8>| thaum_renderer_domain::GlyphTileRaster {
+                width: 4,
+                height: 4,
+                alpha,
+            };
+            match weight {
+                CellWeight::ONE => vec![('#', tile(vec![255; 16]))],
+                _ => vec![('o', tile(ring)), ('.', tile(dot))],
+            }
+        }
+    }
+
+    /// J 2026-11-09 multi-weight: with the toggle on and the weight channel
+    /// unlocked, a stroke on a weight-ZERO ring resolves to weight ONE's
+    /// full block and the commit authors that weight onto the cell.
+    #[test]
+    fn multi_weight_resolve_commits_the_winning_glyphs_weight() {
+        let mut session = Session::new();
+        {
+            let tool_state = session.tool_state.get_mut();
+            tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Detailer);
+            tool_state.set_detailer_multi_weight_for_hand(PaintHand::Left, true);
+        }
+        apply_brush(
+            &mut session.canvas,
+            point(0, 0),
+            authored_glyph_cell('o', PaintColor::FlatRgb(10, 20, 30)),
+        );
+        session.canvas.get_mut(&point(0, 0)).unwrap().weight_index = 0;
+        let fade = ShapeFade::build_weighted(&WeightSplitTiles);
+        let detailer = Rc::new(RefCell::new(DetailerSession::default()));
+
+        let mut strokes = CanvasPointerStrokes::new();
+        strokes.begin_press(
+            &mut session.detailer_ctx(&fade, &detailer),
+            PaintHand::Left,
+            point(0, 0),
+            canvas_bounds(),
+            flat_view(),
+            0,
+        );
+        draw_sweep(
+            &mut strokes,
+            &mut session.detailer_ctx(&fade, &detailer),
+            &sweep_in_cell(point(0, 0), &CENTER_SWEEP),
+        );
+        // The filled ring matches weight ONE's full block exactly; the
+        // resolve names that weight for the commit.
+        assert_eq!(
+            detailer.borrow().pending_at(&point(0, 0)),
+            Some(('#', CellWeight::ONE))
+        );
+
+        strokes.finish_detailer_for_hand(
+            &mut session.detailer_ctx(&fade, &detailer),
+            PaintHand::Left,
+        );
+        let errors = strokes.finish_pointer_stroke(
+            &mut session.detailer_ctx(&fade, &detailer),
+            flat_view(),
+            0,
+            false,
+        );
+        assert!(errors.is_empty());
+        let painted = session.canvas.get(&point(0, 0)).unwrap();
+        assert_eq!(painted.graphic, CellGraphic::Glyph('#'));
+        assert_eq!(painted.weight_index, 1, "the winning weight is authored");
+        // The cell's other authored state (color) survives the weight change.
+        assert_eq!(painted.color, PaintColor::FlatRgb(10, 20, 30));
+    }
+
+    /// J 2026-11-09: a locked weight channel forces the resolve to stay
+    /// scoped to the cell's own weight even with multi-weight on — the
+    /// weight stays the cell's and the other authored changes keep.
+    #[test]
+    fn a_locked_weight_channel_keeps_the_resolve_weight_scoped() {
+        let mut session = Session::new();
+        {
+            let tool_state = session.tool_state.get_mut();
+            tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Detailer);
+            tool_state.set_detailer_multi_weight_for_hand(PaintHand::Left, true);
+            tool_state.toggle_edit_channel_for_hand(PaintHand::Left, PaintChannel::Weight);
+        }
+        apply_brush(
+            &mut session.canvas,
+            point(0, 0),
+            authored_glyph_cell('o', PaintColor::FlatRgb(10, 20, 30)),
+        );
+        session.canvas.get_mut(&point(0, 0)).unwrap().weight_index = 0;
+        let fade = ShapeFade::build_weighted(&WeightSplitTiles);
+        let detailer = Rc::new(RefCell::new(DetailerSession::default()));
+
+        let mut strokes = CanvasPointerStrokes::new();
+        strokes.begin_press(
+            &mut session.detailer_ctx(&fade, &detailer),
+            PaintHand::Left,
+            point(0, 0),
+            canvas_bounds(),
+            flat_view(),
+            0,
+        );
+        draw_sweep(
+            &mut strokes,
+            &mut session.detailer_ctx(&fade, &detailer),
+            &sweep_in_cell(point(0, 0), &CENTER_SWEEP),
+        );
+        // Weight ZERO has no full block: the same sweep cannot reach weight
+        // ONE's `#` and stays inside weight ZERO's own vocabulary.
+        let resolved = detailer.borrow().pending_at(&point(0, 0));
+        assert_eq!(resolved.map(|(g, _)| g), Some('.'));
+        assert_eq!(resolved.map(|(_, w)| w), Some(CellWeight::ZERO));
+
+        strokes.finish_detailer_for_hand(
+            &mut session.detailer_ctx(&fade, &detailer),
+            PaintHand::Left,
+        );
+        let errors = strokes.finish_pointer_stroke(
+            &mut session.detailer_ctx(&fade, &detailer),
+            flat_view(),
+            0,
+            false,
+        );
+        assert!(errors.is_empty());
+        let painted = session.canvas.get(&point(0, 0)).unwrap();
+        assert_eq!(painted.weight_index, 0, "the cell's weight never moves");
+    }
+
     #[test]
     fn an_edge_anchored_footprint_spills_into_the_adjacent_cell() {
         let mut session = Session::new();
@@ -2554,10 +2741,10 @@ mod tests {
             2,
         );
         // Both cells preview: the pointer's cell and the spilled neighbor.
-        assert!(detailer.borrow().pending_graphic_at(&point(0, 0)).is_some());
+        assert!(detailer.borrow().pending_at(&point(0, 0)).is_some());
         assert!(detailer
             .borrow()
-            .pending_graphic_at(&CellPoint { x: -1, y: 0, z: 0 })
+            .pending_at(&CellPoint { x: -1, y: 0, z: 0 })
             .is_some());
 
         strokes
@@ -2637,7 +2824,7 @@ mod tests {
             &mut session.detailer_ctx(&fade, &detailer),
             &sweep_in_cell(point(2, 2), &full_sweep()),
         );
-        assert_eq!(detailer.borrow().pending_graphic_at(&point(2, 2)), Some('#'));
+        assert_eq!(detailer.borrow().pending_at(&point(2, 2)).map(|(g, _)| g), Some('#'));
 
         strokes
             .finish_detailer_for_hand(&mut session.detailer_ctx(&fade, &detailer), PaintHand::Left);
@@ -2699,7 +2886,7 @@ mod tests {
             &sweep_in_cell(point(2, 2), &[[0.05, 0.05]]),
         );
         assert_eq!(
-            detailer.borrow().pending_graphic_at(&point(2, 2)),
+            detailer.borrow().pending_at(&point(2, 2)).map(|(g, _)| g),
             Some('.'),
             "the sparsest additive mark resolves to the smallest inked glyph, never the blank"
         );
@@ -2782,7 +2969,7 @@ mod tests {
         // The buffer never left its seed ('o''s center was already empty,
         // so the subtract sweep and the dabs moved no ink): the
         // visible-change gate previews and stages nothing.
-        assert_eq!(detailer.borrow().pending_graphic_at(&point(2, 2)), None);
+        assert_eq!(detailer.borrow().pending_at(&point(2, 2)), None);
 
         strokes
             .finish_detailer_for_hand(&mut session.detailer_ctx(&fade, &detailer), PaintHand::Left);
@@ -2849,7 +3036,7 @@ mod tests {
             &mut session.detailer_ctx(&fade, &detailer),
             &sweep_in_cell(point(0, 0), &full_sweep()),
         );
-        assert_eq!(detailer.borrow().pending_graphic_at(&point(0, 0)), Some(' '));
+        assert_eq!(detailer.borrow().pending_at(&point(0, 0)).map(|(g, _)| g), Some(' '));
 
         strokes
             .finish_detailer_for_hand(&mut session.detailer_ctx(&fade, &detailer), PaintHand::Left);
@@ -2953,7 +3140,7 @@ mod tests {
             &mut session.detailer_ctx(&fade, &detailer),
             &sweep_in_cell(point(0, 0), &CENTER_SWEEP),
         );
-        assert_eq!(detailer.borrow().pending_graphic_at(&point(0, 0)), Some('#'));
+        assert_eq!(detailer.borrow().pending_at(&point(0, 0)).map(|(g, _)| g), Some('#'));
 
         // The user's cursor was captured by chrome mid-stroke: the stroke is
         // cancelled and its release becomes a no-op — no document write.
@@ -3087,7 +3274,7 @@ mod tests {
         // moved no ink, so the buffer is still at its seed and previews
         // nothing. The captured-mode property is exercised for real in
         // phase 2 below, which paints with the flipped mode.
-        assert_eq!(detailer.borrow().pending_graphic_at(&point(0, 0)), None);
+        assert_eq!(detailer.borrow().pending_at(&point(0, 0)), None);
 
         strokes
             .cancel_detailer_for_hand(&mut session.detailer_ctx(&fade, &detailer), PaintHand::Left);
@@ -3118,7 +3305,7 @@ mod tests {
             &mut session.detailer_ctx(&fade, &detailer),
             &sweep_in_cell(point(0, 0), &CENTER_SWEEP),
         );
-        assert_eq!(detailer.borrow().pending_graphic_at(&point(0, 0)), Some('o'));
+        assert_eq!(detailer.borrow().pending_at(&point(0, 0)).map(|(g, _)| g), Some('o'));
         strokes
             .finish_detailer_for_hand(&mut session.detailer_ctx(&fade, &detailer), PaintHand::Left);
         let errors = strokes.finish_pointer_stroke(

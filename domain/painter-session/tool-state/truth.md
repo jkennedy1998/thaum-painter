@@ -17,3 +17,7 @@
 ### 2026-11-09-detailer-fluid-corners
 - j-quote: "if i press the corder of a cell it should draw 1 cell at each appropriate corner of a cell. we dont show the user this directly, but thats the system behavior. it shouldnt snap, it should really feel fluid like just drawing over multiple cells simply with this detailer tool, so a user can turn their brain off and just additivly draw onto the canvas."
 - interpretation: The detailer footprint anchors at the pointer's continuous position and decomposes across every cell it touches (corner presses author corner subpixels in all adjacent cells); nothing snaps to the pointer's cell.
+
+### 2026-11-09-detailer-multi-weight
+- j-quote: "what if this could select from different weights too? that could make it incredibly powerfull overall. like a single property toggle for the detailer 'multi-weight'. but wait that makes the weight lock weird... maybe weight lock forces the weight to stay the same as the cell and keeps the other authored changes (character)."
+- interpretation: One per-hand multi-weight toggle; with it on AND the weight channel unlocked the resolve searches every declared render weight and commits the winning glyph's weight. A locked weight channel forces the resolve to stay scoped to the cell's own weight, keeping the cell's other authored state.

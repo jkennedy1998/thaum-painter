@@ -4465,7 +4465,7 @@ fn main() -> Result<()> {
             .borrow()
             .pending_previews()
             .iter()
-            .map(|(position, _)| *position)
+            .map(|(position, _, _)| *position)
             .collect();
         let detailer_replacement = (!detailer_preview_positions.is_empty())
             .then_some((active_layer_id.as_str(), detailer_preview_positions.as_slice()));

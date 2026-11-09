@@ -214,6 +214,18 @@ impl HandSettingsModule {
             detailer_mode_columns.push(column);
         }
 
+        let mut multi_weight_columns = Vec::new();
+        for (id, label, value) in [("one", "one", false), ("multi", "multi", true)] {
+            let mut column = PropertyMatrixColumn::new(id, label);
+            column.left_value = left.detailer_multi_weight == value;
+            column.right_value = right.detailer_multi_weight == value;
+            column.left_enabled =
+                Self::hand_declares_row(&state, PaintHand::Left, "multi_weight");
+            column.right_enabled =
+                Self::hand_declares_row(&state, PaintHand::Right, "multi_weight");
+            multi_weight_columns.push(column);
+        }
+
         let char_step = state.text_options.char_step;
         let enter_step = state.text_options.enter_step;
 
@@ -298,6 +310,18 @@ impl HandSettingsModule {
                 id: "detailer_mode".into(),
                 label: "detail".into(),
                 columns: detailer_mode_columns,
+                token_width: 6,
+            });
+        }
+        // Detailer cross-weight toggle: with the weight channel unlocked,
+        // "multi" resolves across every declared render weight and commits
+        // the matching glyph's weight; "one" stays scoped to the cell's own
+        // weight (J 2026-11-09).
+        if Self::tool_row_used(&state, "multi_weight") {
+            rows.push(PropertyRow::Matrix {
+                id: "multi_weight".into(),
+                label: "wt".into(),
+                columns: multi_weight_columns,
                 token_width: 6,
             });
         }
@@ -527,6 +551,14 @@ impl HandSettingsModule {
                     _ => return,
                 };
                 state.set_detailer_mode_for_hand(hand, mode);
+            }
+            "multi_weight" => {
+                let multi_weight = match column_id.as_str() {
+                    "one" => false,
+                    "multi" => true,
+                    _ => return,
+                };
+                state.set_detailer_multi_weight_for_hand(hand, multi_weight);
             }
             _ => {}
         }

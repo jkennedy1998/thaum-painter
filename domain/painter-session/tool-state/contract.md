@@ -16,7 +16,7 @@ Own live tool settings and active authoring-hand state for the painter session.
 - picker session behavior: click-only cell sampling into a hand's graphic/color/weight, gated by the picking hand's Select row (the same gfx/color/weight mask the fill uses for flood walls), with the per-hand `pick_opposite_hand` property routing the sample to the opposite hand. Size-N footprints fold through the raster interpolation seam (`blend_cell_run`); a footprint straddling clear fades the folded pick toward the dot `.` clear-transition glyph by the footprint's clear fraction — the same one-sided fade curve raster interpolation uses (J 2026-09-12)
 - the `PaintTool` enum and per-tool session behavior match arms (edit/select semantics) — the thin enum <-> registry bridge and the property manifest delegation now read from `domain/painter-tools/`
 - lasso session behavior: in-progress bound accumulation (`lasso_stroke`), release-time enclosed-region fill through the channel mask, and release-time selection-surface application
-- detailer session behavior: the in-progress typeface-derived subcell buffer, pending nearest-glyph preview, and one graphic-only release request (`detailer_stroke`); continuous canvas-pointer mapping and document writes stay outside this boundary
+- detailer session behavior: the in-progress typeface-derived subcell buffer, pending nearest-glyph (and weight) preview, and one release request carrying the resolved glyph plus weight (`detailer_stroke`); continuous canvas-pointer mapping and document writes stay outside this boundary
 - text-entry and paste option state that belongs to the live session
 
 ## does not own
@@ -67,7 +67,7 @@ Own live tool settings and active authoring-hand state for the painter session.
   - validates lasso stroke accumulation
 - inline `#[cfg(test)]` in `detailer_stroke.rs`
   - light
-  - validates detail stroke alpha accumulation, nearest-glyph resolution, shared pending preview, and exactly-one graphic-only release request
+  - validates detail stroke alpha accumulation, nearest-glyph resolution (weight-scoped and cross-weight), shared pending preview, and exactly-one release request
 
 ## data
 - none

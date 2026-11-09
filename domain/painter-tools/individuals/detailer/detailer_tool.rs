@@ -17,6 +17,9 @@ mod tests {
     fn detailer_resolves_its_own_descriptor() {
         let descriptor = DetailerTool::descriptor();
         assert_eq!(descriptor.id, "detailer");
-        assert_eq!(descriptor.property_row_ids, &["detailer_mode", "brush_size"]);
+        assert_eq!(
+            descriptor.property_row_ids,
+            &["detailer_mode", "multi_weight", "brush_size"]
+        );
     }
 }

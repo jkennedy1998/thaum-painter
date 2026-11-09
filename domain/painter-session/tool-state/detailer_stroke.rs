@@ -27,6 +27,11 @@ pub struct DetailerStroke {
     pub position: CellPoint,
     pub mode: DetailerMode,
     pub weight: CellWeight,
+    /// Captured at stroke start: whether this stroke may resolve across
+    /// every declared render weight (J 2026-11-09's multi-weight toggle,
+    /// gated by the hand's weight-channel lock at press time). A property
+    /// flip mid-stroke never retargets the live resolve.
+    pub multi_weight: bool,
     buffer_width: usize,
     buffer_height: usize,
     /// Ink amount per subcell pixel (row-major), seeded from the cell's
@@ -64,6 +69,7 @@ impl DetailerStroke {
         position: CellPoint,
         mode: DetailerMode,
         weight: CellWeight,
+        multi_weight: bool,
         seed: GlyphTileRaster,
         seed_glyph: Option<char>,
     ) -> Self {
@@ -72,6 +78,7 @@ impl DetailerStroke {
             position,
             mode,
             weight,
+            multi_weight,
             buffer_width: seed.width,
             buffer_height: seed.height,
             seed_alpha: seed.alpha.clone(),
@@ -205,7 +212,7 @@ impl DetailerStroke {
     /// already-authored glyph is a valid, expected outcome (J 2026-11-08:
     /// "ideally snap to nearest which might be the cell that is currently
     /// authored and that's ok").
-    pub fn resolve(&self, fade: &ShapeFade) -> Option<char> {
+    pub fn resolve(&self, fade: &ShapeFade) -> Option<(char, CellWeight)> {
         // Two resolve bars, both from J 2026-11-09:
         // - additive strokes resolve against inked glyphs only (the blank
         //   tile is every sparse mark's nearest neighbor and would make
@@ -217,19 +224,40 @@ impl DetailerStroke {
         //   to a different, visible shape — a line subtracted through a
         //   full cell lands on the nearest glyph with that negative in it,
         //   not back on the untouched original.
-        match self.mode {
-            DetailerMode::Additive => fade.nearest_inked_glyph_at_weight_excluding(
-                &self.tile(),
-                self.weight,
-                self.seed_glyph,
-            ),
-            DetailerMode::Subtractive => fade.nearest_glyph_at_weight_excluding(
-                &self.tile(),
-                self.weight,
-                self.seed_glyph,
-            ),
+        //
+        // Weight scope (J 2026-11-09): with multi-weight captured (the
+        // toggle on AND the hand's weight channel unlocked) the search runs
+        // across every declared render weight and the winner names its own
+        // weight for the commit; otherwise the search stays scoped to the
+        // stroke's captured weight and that weight is authored unchanged.
+        if self.multi_weight {
+            match self.mode {
+                DetailerMode::Additive => {
+                    fade.nearest_inked_glyph_across_weights_excluding(
+                        &self.tile(),
+                        self.seed_glyph,
+                    )
+                }
+                DetailerMode::Subtractive => {
+                    fade.nearest_glyph_across_weights_excluding(&self.tile(), self.seed_glyph)
+                }
+            }
+            .map(|(glyph, weight, _distance)| (glyph, weight))
+        } else {
+            match self.mode {
+                DetailerMode::Additive => fade.nearest_inked_glyph_at_weight_excluding(
+                    &self.tile(),
+                    self.weight,
+                    self.seed_glyph,
+                ),
+                DetailerMode::Subtractive => fade.nearest_glyph_at_weight_excluding(
+                    &self.tile(),
+                    self.weight,
+                    self.seed_glyph,
+                ),
+            }
+            .map(|(glyph, _distance)| (glyph, self.weight))
         }
-        .map(|(glyph, _distance)| glyph)
     }
 }
 
@@ -241,6 +269,10 @@ pub struct DetailerCommit {
     pub hand: PaintHand,
     pub position: CellPoint,
     pub graphic: char,
+    /// The weight the resolved glyph named: the stroke's captured weight
+    /// when the resolve stayed weight-scoped, or the winning glyph's own
+    /// weight on a cross-weight resolve (J 2026-11-09 multi-weight).
+    pub weight: CellWeight,
 }
 
 /// Shared live state between the canvas target selector, detail grid, and
@@ -259,8 +291,9 @@ pub struct DetailerSession {
     /// One in-progress buffer per cell the stroke has crossed, keyed by
     /// that cell. Re-entering a cell keeps its live buffer.
     strokes: BTreeMap<CellPoint, DetailerStroke>,
-    /// Each stroke's live resolved glyph, for preview and release commit.
-    pending: BTreeMap<CellPoint, char>,
+    /// Each stroke's live resolved (glyph, weight), for preview and release
+    /// commit.
+    pending: BTreeMap<CellPoint, (char, CellWeight)>,
     /// Queued graphic-only writes from the last release, keyed by cell.
     pending_commits: BTreeMap<CellPoint, DetailerCommit>,
 }
@@ -275,7 +308,7 @@ impl DetailerSession {
     pub fn begin(
         &mut self,
         stroke: DetailerStroke,
-        resolve: impl FnOnce(&DetailerStroke) -> Option<char>,
+        resolve: impl FnOnce(&DetailerStroke) -> Option<(char, CellWeight)>,
     ) {
         if self.active.is_none() {
             self.active = Some(stroke.hand);
@@ -286,8 +319,8 @@ impl DetailerSession {
         // name some other glyph. Only an actual paint puts a cell on the
         // preview/commit track.
         if stroke.visibly_changed() {
-            if let Some(graphic) = resolve(&stroke) {
-                self.pending.insert(stroke.position, graphic);
+            if let Some(resolved) = resolve(&stroke) {
+                self.pending.insert(stroke.position, resolved);
             }
         }
         self.strokes.entry(stroke.position).or_insert(stroke);
@@ -321,15 +354,15 @@ impl DetailerSession {
             .map(|stroke| stroke.buffer_dimensions())
     }
 
-    pub fn pending_graphic_at(&self, position: &CellPoint) -> Option<char> {
+    pub fn pending_at(&self, position: &CellPoint) -> Option<(char, CellWeight)> {
         self.pending.get(position).copied()
     }
 
     /// Every changed cell's live candidate: exactly what release would
-    /// write, one (position, glyph) per crossed cell whose buffer actually
-    /// moved ink and resolved. Untouched cells preview nothing — a buffer
-    /// still at its seed has nothing to show yet.
-    pub fn pending_previews(&self) -> Vec<(CellPoint, char)> {
+    /// write, one (position, glyph, weight) per crossed cell whose buffer
+    /// actually moved ink and resolved. Untouched cells preview nothing —
+    /// a buffer still at its seed has nothing to show yet.
+    pub fn pending_previews(&self) -> Vec<(CellPoint, char, CellWeight)> {
         self.pending
             .iter()
             .filter(|(position, _)| {
@@ -337,7 +370,7 @@ impl DetailerSession {
                     .get(position)
                     .is_some_and(|stroke| stroke.visibly_changed())
             })
-            .map(|(p, g)| (*p, *g))
+            .map(|(p, (g, w))| (*p, *g, *w))
             .collect()
     }
 
@@ -350,7 +383,7 @@ impl DetailerSession {
         x: usize,
         y: usize,
         strength: u8,
-        resolve: impl Fn(&DetailerStroke) -> Option<char>,
+        resolve: impl Fn(&DetailerStroke) -> Option<(char, CellWeight)>,
     ) {
         self.paint_samples(
             [(position, x as i64, y as i64)],
@@ -376,7 +409,7 @@ impl DetailerSession {
         samples: impl IntoIterator<Item = (CellPoint, i64, i64)>,
         brush_size: i32,
         strength: u8,
-        resolve: impl Fn(&DetailerStroke) -> Option<char>,
+        resolve: impl Fn(&DetailerStroke) -> Option<(char, CellWeight)>,
     ) {
         for (position, x, y) in samples {
             let resolved = {
@@ -412,7 +445,7 @@ impl DetailerSession {
         local_y: f32,
         brush_size: i32,
         strength: u8,
-        resolve: impl Fn(&DetailerStroke) -> Option<char>,
+        resolve: impl Fn(&DetailerStroke) -> Option<(char, CellWeight)>,
     ) {
         let (pointer_x, pointer_y) = {
             let Some(stroke) = self.strokes.get(&position) else {
@@ -451,13 +484,14 @@ impl DetailerSession {
         let strokes = std::mem::take(&mut self.strokes);
         for (position, stroke) in strokes {
             let resolved = self.pending.get(&position).copied();
-            if let (true, Some(graphic)) = (stroke.visibly_changed(), resolved) {
+            if let (true, Some((graphic, weight))) = (stroke.visibly_changed(), resolved) {
                 self.pending_commits.insert(
                     position,
                     DetailerCommit {
                         hand: stroke.hand,
                         position,
                         graphic,
+                        weight,
                     },
                 );
             }
@@ -536,6 +570,7 @@ mod tests {
             point(),
             DetailerMode::Additive,
             CellWeight::ONE,
+            false,
             flat_tile(0),
             None,
         )
@@ -553,12 +588,12 @@ mod tests {
         let mut vertical = bar_stroke();
         vertical.paint_line_to(1, 1, 1, 255);
         vertical.paint_line_to(1, 2, 1, 255);
-        assert_eq!(vertical.resolve(&fade), Some('|'), "vertical segment");
+        assert_eq!(vertical.resolve(&fade).map(|(g, _)| g), Some('|'), "vertical segment");
 
         let mut horizontal = bar_stroke();
         horizontal.paint_line_to(1, 1, 1, 255);
         horizontal.paint_line_to(2, 1, 1, 255);
-        assert_eq!(horizontal.resolve(&fade), Some('-'), "horizontal segment");
+        assert_eq!(horizontal.resolve(&fade).map(|(g, _)| g), Some('-'), "horizontal segment");
 
         assert_ne!(
             vertical.resolve(&fade),
@@ -589,19 +624,20 @@ mod tests {
 
         let mut additive = bar_stroke();
         additive.paint_line_to(1, 1, 1, 255);
-        assert_ne!(additive.resolve(&fade), None);
-        assert_ne!(additive.resolve(&fade), Some(' '));
+        assert!(additive.resolve(&fade).is_some());
+        assert_ne!(additive.resolve(&fade).map(|(g, _)| g), Some(' '));
 
         let mut subtractive = DetailerStroke::begin(
             PaintHand::Left,
             point(),
             DetailerMode::Subtractive,
             CellWeight::ONE,
+            false,
             flat_tile(255),
             Some('#'),
         );
         subtractive.paint_line_to(1, 1, 1, 255);
-        let resolved = subtractive.resolve(&fade);
+        let resolved = subtractive.resolve(&fade).map(|(g, _)| g);
         assert_ne!(resolved, Some('#'), "seed glyph barred");
         assert_ne!(resolved, None, "a moved buffer resolves to some glyph");
     }
@@ -615,6 +651,7 @@ mod tests {
             point(),
             DetailerMode::Additive,
             CellWeight::ONE,
+            false,
             seed.clone(), None);
         assert_eq!(stroke.tile(), seed);
         assert_eq!(stroke.buffer_dimensions(), (BUFFER_WIDTH, BUFFER_HEIGHT));
@@ -627,6 +664,7 @@ mod tests {
             point(),
             DetailerMode::Additive,
             CellWeight::ONE,
+            false,
             flat_tile(200), None);
         stroke.paint(0, 0, 40);
         assert_eq!(stroke.tile().alpha[0], 240);
@@ -641,6 +679,7 @@ mod tests {
             point(),
             DetailerMode::Subtractive,
             CellWeight::ONE,
+            false,
             flat_tile(20), None);
         stroke.paint(0, 0, 15);
         assert_eq!(stroke.tile().alpha[0], 5);
@@ -655,6 +694,7 @@ mod tests {
             point(),
             DetailerMode::Additive,
             CellWeight::ONE,
+            false,
             flat_tile(0), None);
         stroke.paint(BUFFER_WIDTH as i64, 0, 255);
         stroke.paint(0, BUFFER_HEIGHT as i64, 255);
@@ -676,9 +716,10 @@ mod tests {
             point(),
             DetailerMode::Additive,
             CellWeight::ONE,
+            false,
             flat_tile(0), None);
         assert_eq!(
-            stroke.resolve(&fade),
+            stroke.resolve(&fade).map(|(g, _)| g),
             Some('#'),
             "additive resolves against inked candidates only: the blank tile is every sparse mark's nearest neighbor and would make drawn strokes resolve to the invisible space glyph"
         );
@@ -689,7 +730,7 @@ mod tests {
             }
         }
         assert_eq!(
-            stroke.resolve(&fade),
+            stroke.resolve(&fade).map(|(g, _)| g),
             Some('#'),
             "fully inked buffer resolves to the full-coverage glyph"
         );
@@ -703,8 +744,9 @@ mod tests {
             point(),
             DetailerMode::Subtractive,
             CellWeight::ONE,
+            false,
             flat_tile(255), None);
-        assert_eq!(stroke.resolve(&fade), Some('#'));
+        assert_eq!(stroke.resolve(&fade).map(|(g, _)| g), Some('#'));
 
         for y in 0..BUFFER_HEIGHT {
             for x in 0..BUFFER_WIDTH {
@@ -712,7 +754,7 @@ mod tests {
             }
         }
         assert_eq!(
-            stroke.resolve(&fade),
+            stroke.resolve(&fade).map(|(g, _)| g),
             Some(' '),
             "erasing everything is a valid full erase — subtract keeps the blank candidate"
         );
@@ -753,8 +795,9 @@ mod tests {
             point(),
             DetailerMode::Additive,
             CellWeight::ZERO,
+            false,
             flat_tile(128), None);
-        let resolved = stroke.resolve(&fade).unwrap();
+        let resolved = stroke.resolve(&fade).unwrap().0;
         assert_ne!(resolved, 'm', "weight ZERO's graph has no 'm' node to find");
     }
 
@@ -767,30 +810,32 @@ mod tests {
                 point(),
                 DetailerMode::Additive,
                 CellWeight::ONE,
+                false,
                 flat_tile(0),
                 None,
             ),
-            |_| Some('.'),
+            |_| Some(('.', CellWeight::ONE)),
         );
         // A fresh seed has not moved ink: it previews nothing yet, even
         // though its resolve (seed barred) would name some other glyph.
-        assert_eq!(session.pending_graphic_at(&point()), None);
+        assert_eq!(session.pending_at(&point()), None);
         assert_eq!(session.active_hand(), Some(PaintHand::Left));
 
         session.paint_at(point(), 0, 0, 255, |stroke| {
-            (stroke.tile().alpha[0] == 255).then_some('#')
+            (stroke.tile().alpha[0] == 255).then_some(('#', CellWeight::ONE))
         });
-        assert_eq!(session.pending_graphic_at(&point()), Some('#'));
+        assert_eq!(session.pending_at(&point()), Some(('#', CellWeight::ONE)));
 
         session.finish();
         assert!(!session.is_active());
-        assert_eq!(session.pending_graphic_at(&point()), None);
+        assert_eq!(session.pending_at(&point()), None);
         assert_eq!(
             session.take_pending_commits(),
             vec![DetailerCommit {
                 hand: PaintHand::Left,
                 position: point(),
                 graphic: '#',
+                weight: CellWeight::ONE,
             }]
         );
         assert!(session.take_pending_commits().is_empty(), "release queues once");
@@ -805,15 +850,16 @@ mod tests {
                 point(),
                 DetailerMode::Additive,
                 CellWeight::ONE,
+                false,
                 flat_tile(0),
                 None,
             ),
-            |_| Some('.'),
+            |_| Some(('.', CellWeight::ONE)),
         );
         // Paint and then subtract back to the exact seed value: the buffer
         // ends where it began, but the stroke did move ink, so it commits.
-        session.paint_at(point(), 0, 0, 255, |_| Some('.'));
-        session.paint_at(point(), 0, 0, 255, |_| Some('.'));
+        session.paint_at(point(), 0, 0, 255, |_| Some(('.', CellWeight::ONE)));
+        session.paint_at(point(), 0, 0, 255, |_| Some(('.', CellWeight::ONE)));
         session.finish();
         assert_eq!(session.take_pending_commits().len(), 1);
     }
@@ -827,12 +873,13 @@ mod tests {
                 point(),
                 DetailerMode::Additive,
                 CellWeight::ONE,
+                false,
                 flat_tile(0),
                 None,
             ),
-            |_| Some('.'),
+            |_| Some(('.', CellWeight::ONE)),
         );
-        session.paint_at(point(), 0, 0, 120, |_| Some('.'));
+        session.paint_at(point(), 0, 0, 120, |_| Some(('.', CellWeight::ONE)));
         let half_inked = session.strokes[&point()].tile().alpha[0];
 
         // The drag leaves and re-crosses the same cell: its buffer keeps
@@ -843,13 +890,14 @@ mod tests {
                 point(),
                 DetailerMode::Additive,
                 CellWeight::ONE,
+                false,
                 flat_tile(255),
                 None,
             ),
-            |_| Some('.'),
+            |_| Some(('.', CellWeight::ONE)),
         );
         assert_eq!(session.strokes[&point()].tile().alpha[0], half_inked);
-        session.paint_at(point(), 0, 0, 135, |_| Some('.'));
+        session.paint_at(point(), 0, 0, 135, |_| Some(('.', CellWeight::ONE)));
         assert_eq!(session.strokes[&point()].tile().alpha[0], 255);
     }
 
@@ -864,13 +912,14 @@ mod tests {
                 here,
                 DetailerMode::Additive,
                 CellWeight::ONE,
+                false,
                 flat_tile(0),
                 None,
             ),
-            |_| Some('.'),
+            |_| Some(('.', CellWeight::ONE)),
         );
         session.paint_at_cell_local(here, 0.99, 0.99, 1, 255, |stroke| {
-            Some(if stroke.changed() { '#' } else { '.' })
+            Some(if stroke.changed() { ('#', CellWeight::ONE) } else { ('.', CellWeight::ONE) })
         });
         // The drag crosses into a second cell and changes it too.
         session.begin(
@@ -879,13 +928,14 @@ mod tests {
                 there,
                 DetailerMode::Additive,
                 CellWeight::ONE,
+                false,
                 flat_tile(0),
                 None,
             ),
-            |_| Some('.'),
+            |_| Some(('.', CellWeight::ONE)),
         );
         session.paint_at_cell_local(there, 0.5, 0.5, 1, 255, |stroke| {
-            Some(if stroke.changed() { '#' } else { '.' })
+            Some(if stroke.changed() { ('#', CellWeight::ONE) } else { ('.', CellWeight::ONE) })
         });
         assert_eq!(session.pending_previews().len(), 2);
 
@@ -897,11 +947,13 @@ mod tests {
                     hand: PaintHand::Left,
                     position: here,
                     graphic: '#',
+                    weight: CellWeight::ONE,
                 },
                 DetailerCommit {
                     hand: PaintHand::Left,
                     position: there,
                     graphic: '#',
+                    weight: CellWeight::ONE,
                 },
             ],
             "commits come back in cell order, one per changed buffer"
@@ -926,6 +978,7 @@ mod tests {
                 point(),
                 DetailerMode::Additive,
                 CellWeight::ONE,
+                false,
                 blank(), None);
             stroke.paint_footprint(x, y, size, 255);
             stroke.tile()
@@ -1004,10 +1057,11 @@ mod tests {
                     position,
                     DetailerMode::Additive,
                     CellWeight::ONE,
+                    false,
                     flat_tile(0),
                     None,
                 ),
-                |_| Some('.'),
+                |_| Some(('.', CellWeight::ONE)),
             );
         }
         // Size 2 anchored exactly on the shared boundary: one subpixel column
@@ -1019,12 +1073,12 @@ mod tests {
             ],
             2,
             255,
-            |_| Some('#'),
+            |_| Some(('#', CellWeight::ONE)),
         );
-        let left = session.pending_graphic_at(&CellPoint { x: 0, y: 0, z: 0 });
-        let right = session.pending_graphic_at(&CellPoint { x: 1, y: 0, z: 0 });
-        assert_eq!(left, Some('#'), "left cell keeps its half of the footprint");
-        assert_eq!(right, Some('#'), "right cell keeps its half of the footprint");
+        let left = session.pending_at(&CellPoint { x: 0, y: 0, z: 0 });
+        let right = session.pending_at(&CellPoint { x: 1, y: 0, z: 0 });
+        assert_eq!(left, Some(('#', CellWeight::ONE)), "left cell keeps its half of the footprint");
+        assert_eq!(right, Some(('#', CellWeight::ONE)), "right cell keeps its half of the footprint");
         assert_eq!(fade.nearest_glyph_at_weight_excluding(&flat_tile(0), CellWeight::ONE, None).is_some(), true);
     }
 
@@ -1037,15 +1091,16 @@ mod tests {
                 point(),
                 DetailerMode::Additive,
                 CellWeight::ONE,
+                false,
                 flat_tile(0),
                 None,
             ),
-            |_| Some('.'),
+            |_| Some(('.', CellWeight::ONE)),
         );
         session.paint_at_cell_local(point(), 0.99, 0.99, 1, 255, |stroke| {
-            (stroke.tile().alpha[BUFFER_PIXELS - 1] == 255).then_some('#')
+            (stroke.tile().alpha[BUFFER_PIXELS - 1] == 255).then_some(('#', CellWeight::ONE))
         });
-        assert_eq!(session.pending_graphic_at(&point()), Some('#'));
+        assert_eq!(session.pending_at(&point()), Some(('#', CellWeight::ONE)));
     }
 
     #[test]
@@ -1057,10 +1112,11 @@ mod tests {
                 point(),
                 DetailerMode::Additive,
                 CellWeight::ONE,
+                false,
                 flat_tile(0),
                 None,
             ),
-            |_| Some('.'),
+            |_| Some(('.', CellWeight::ONE)),
         );
         session.finish_for_hand(PaintHand::Right);
         assert!(session.is_active());
@@ -1076,6 +1132,7 @@ mod tests {
                 point(),
                 DetailerMode::Subtractive,
                 CellWeight::TWO,
+                false,
                 flat_tile(0),
                 None,
             ),

@@ -90,8 +90,9 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
         // brush_size rides along (J 2026-11-09): the detailer maps the hand's
         // brush footprint down into the subcell buffer, so a bigger size
         // authors a thicker subpixel line and directional buildup lands in
-        // one pass instead of many.
-        property_row_ids: &["detailer_mode", "brush_size"],
+        // one pass instead of many. multi_weight (J 2026-11-09): cross-weight
+        // resolve gated by the hand's weight channel lock.
+        property_row_ids: &["detailer_mode", "multi_weight", "brush_size"],
         select_action: None,
         hotkey: None,
     },

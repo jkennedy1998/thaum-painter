@@ -37,3 +37,4 @@ Register the one Detailer tool and its per-hand add/erase property.
 
 ## notes
 - Add and erase are one per-hand property, never separate registered tools.
+- multi-weight (J 2026-11-09): one per-hand toggle; cross-weight resolve only fires while the hand's weight channel is unlocked — a locked weight keeps the resolve scoped to the cell's own weight.

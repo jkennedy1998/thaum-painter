@@ -204,6 +204,12 @@ pub struct HandState {
     pub pick_opposite_hand: bool,
     /// Detailer add/erase choice, independently selected for each hand.
     pub detailer_mode: DetailerMode,
+    /// Detailer cross-weight toggle (J 2026-11-09): when on and the hand's
+    /// weight channel is unlocked, a stroke resolves across EVERY declared
+    /// render weight and commits the matching glyph's weight onto the cell;
+    /// a locked weight channel keeps the resolve scoped to the cell's own
+    /// weight ("weight lock forces the weight to stay the same as the cell").
+    pub detailer_multi_weight: bool,
     pub edit_channels: EditChannels,
     pub select_channels: SelectChannels,
     pub target: PaintTarget,
@@ -220,6 +226,7 @@ impl Default for HandState {
             fill_3d: false,
             pick_opposite_hand: false,
             detailer_mode: DetailerMode::Additive,
+            detailer_multi_weight: false,
             edit_channels: EditChannels::all(),
             select_channels: SelectChannels::all(),
             target: PaintTarget::Image,
@@ -398,6 +405,11 @@ impl ToolState {
 
     pub fn set_detailer_mode_for_hand(&mut self, hand: PaintHand, mode: DetailerMode) {
         self.hand_state_mut(hand).detailer_mode = mode;
+        self.active_hand = hand;
+    }
+
+    pub fn set_detailer_multi_weight_for_hand(&mut self, hand: PaintHand, multi_weight: bool) {
+        self.hand_state_mut(hand).detailer_multi_weight = multi_weight;
         self.active_hand = hand;
     }
 
