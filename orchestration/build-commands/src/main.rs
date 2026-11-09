@@ -134,6 +134,30 @@ fn detailer_cell_local(surface_units: [f32; 2], cell_clip_size: [f32; 2]) -> [f3
     [u - u.round() + 0.5, 0.5 - (v - v.round())]
 }
 
+/// Builds Detailer's nearest-glyph graph from the exact typeface the canvas
+/// currently renders. The old compatibility loader always selected Thaum
+/// Mono, so Detailer could seed and resolve against a different font than the
+/// visible canvas whenever the file selected another typeface.
+fn build_detailer_shape_fade(state: &BootState) -> Option<Rc<ShapeFade>> {
+    GlyphFontSet::load_selected_from_asset_root(
+        &state.config.asset_root,
+        &state.config.glyph_typeface_id,
+        state.config.glyph_cell_profile,
+        Some(&state.config.glyph_spriteset_id),
+    )
+    .ok()
+    .map(|font_set| Rc::new(ShapeFade::build_weighted(&FontSetTiles { font_set: &font_set })))
+}
+
+fn detailer_shape_fade_profile(state: &BootState) -> (String, usize, usize, String) {
+    (
+        state.config.glyph_typeface_id.clone(),
+        state.config.glyph_cell_profile.width(),
+        state.config.glyph_cell_profile.height(),
+        state.config.glyph_spriteset_id.clone(),
+    )
+}
+
 fn canvas_pointer_context<'a>(
     tool_state: &'a RefCell<ToolState>,
     selection: &'a Rc<RefCell<PainterSelection>>,
@@ -1650,6 +1674,21 @@ mod tests {
     use thaum_renderer_domain::{camera_view_orientation_for_camera, CameraRoll, CameraSwing};
 
     #[test]
+    fn detailer_fade_loads_the_selected_typeface_not_the_legacy_default() {
+        let asset_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../thaum-renderer/orchestration/renderer-assets");
+        let mut config = BootConfig::default();
+        config.asset_root = asset_root;
+        config.glyph_typeface_id = "jetbrains-mono".to_string();
+        config.glyph_cell_profile = GlyphCellProfile::new(12, 16).unwrap();
+        let state = boot_renderer(config).unwrap();
+        let fade = build_detailer_shape_fade(&state).expect("selected bundled font loads");
+        assert!(fade
+            .glyph_tile_at_weight('A', thaum_renderer_domain::CellWeight::ONE)
+            .is_some());
+    }
+
+    #[test]
     fn detailer_cell_local_preserves_cursor_position_inside_a_cell() {
         assert_eq!(detailer_cell_local([0.0, 0.0], [0.1, 0.1]), [0.5, 0.5]);
         // `v` rises in camera surface coordinates, while glyph-tile rows run
@@ -2728,9 +2767,8 @@ fn main() -> Result<()> {
     // loop and injected into the render path so the raster interpolate mode
     // walks matched cells' graphics through the gradient tour instead of the
     // halfway cutoff. `None` (no loadable font set) keeps the cutoff.
-    let shape_fade: Option<Rc<ShapeFade>> = GlyphFontSet::load_from_asset_root(&state.config.asset_root)
-        .ok()
-        .map(|font_set| Rc::new(ShapeFade::build_weighted(&FontSetTiles { font_set: &font_set })));
+    let mut shape_fade = build_detailer_shape_fade(&state);
+    let mut shape_fade_profile = detailer_shape_fade_profile(&state);
     let detailer_session = Rc::new(RefCell::new(DetailerSession::default()));
     if let Some(session) = &persisted_session {
         session.renderer.camera.apply_to_runtime(&mut state.camera);
@@ -3021,6 +3059,13 @@ fn main() -> Result<()> {
             }
             state.config.glyph_typeface_id = profile.typeface_id;
             state.config.glyph_spriteset_id = profile.spriteset_id;
+        }
+        // Rebuild between strokes when the active typeface/profile changes;
+        // an active stroke retains its own captured tile and weight.
+        let current_detailer_profile = detailer_shape_fade_profile(&state);
+        if current_detailer_profile != shape_fade_profile {
+            shape_fade = build_detailer_shape_fade(&state);
+            shape_fade_profile = current_detailer_profile;
         }
         // Demand-driven frame gate: input, animation timers, or a pending
         // session save make the frame dirty; otherwise the last composition
@@ -4177,8 +4222,15 @@ fn main() -> Result<()> {
         // layers-panel drag commits its single timing action (or block swap),
         // so the pending action must be applied right here — waiting for the
         // next click/drag frame would leave the commit stranded in the queue.
-        let left_released = left_pointer_was_down && !frame.input.pointer_down;
-        let right_released = right_pointer_was_down && !frame.input.right_pointer_down;
+        // Winit may deliver a fast mouse click or pen contact's Down and Up
+        // before one render frame snapshots input. Draw still shows because
+        // it mutates its staged canvas on Down, but Detailer intentionally
+        // waits until Up; treat that coalesced click as a release too so its
+        // one graphic-only commit cannot be stranded.
+        let left_released = (left_pointer_was_down && !frame.input.pointer_down)
+            || (frame.input.just_clicked.is_some() && !frame.input.pointer_down);
+        let right_released = (right_pointer_was_down && !frame.input.right_pointer_down)
+            || (frame.input.just_right_clicked.is_some() && !frame.input.right_pointer_down);
         if left_released || right_released {
             let screen = frame
                 .input
