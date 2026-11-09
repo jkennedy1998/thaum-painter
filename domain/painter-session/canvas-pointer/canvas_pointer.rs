@@ -318,7 +318,11 @@ fn detailer_seed_for_position(
     position: CellPoint,
     hand: PaintHand,
     mode: DetailerMode,
-) -> Option<(thaum_renderer_domain::CellWeight, thaum_renderer_domain::GlyphTileRaster)> {
+) -> Option<(
+    thaum_renderer_domain::CellWeight,
+    thaum_renderer_domain::GlyphTileRaster,
+    Option<char>,
+)> {
     let Some(fade) = ctx.graphic_fade else {
         eprintln!("[detailer-debug] seed: no graphic fade built");
         return None;
@@ -337,7 +341,7 @@ fn detailer_seed_for_position(
                 );
                 return None;
             };
-            return Some((weight, seed));
+            return Some((weight, seed, Some(glyph)));
         }
     }
     if mode != DetailerMode::Additive {
@@ -353,7 +357,7 @@ fn detailer_seed_for_position(
         eprintln!("[detailer-debug] seed: no blank tile at weight {weight:?}");
         return None;
     };
-    Some((weight, seed))
+    Some((weight, seed, None))
 }
 
 /// The in-progress pointer strokes across both hands.
@@ -636,17 +640,18 @@ impl CanvasPointerStrokes {
                         eprintln!("[detailer-debug] press: no graphic fade built");
                         return None;
                     };
-                    let Some((weight, seed)) = detailer_seed_for_position(ctx, position, hand, mode)
+                    let Some((weight, seed, seed_glyph)) =
+                        detailer_seed_for_position(ctx, position, hand, mode)
                     else {
                         return None;
                     };
                     eprintln!(
-                        "[detailer-debug] press: seeded at {position:?} tile {}x{} weight {weight:?} mode {mode:?}",
+                        "[detailer-debug] press: seeded at {position:?} tile {}x{} weight {weight:?} mode {mode:?} seed_glyph {seed_glyph:?}",
                         seed.width,
                         seed.height
                     );
                     session.borrow_mut().begin(
-                        DetailerStroke::begin(hand, position, mode, weight, seed),
+                        DetailerStroke::begin(hand, position, mode, weight, seed, seed_glyph),
                         |stroke| stroke.resolve(fade),
                     );
                 }
@@ -861,12 +866,14 @@ impl CanvasPointerStrokes {
             if !target_ok {
                 return;
             }
-            let Some((weight, seed)) = detailer_seed_for_position(ctx, position, hand, mode) else {
+            let Some((weight, seed, seed_glyph)) =
+                detailer_seed_for_position(ctx, position, hand, mode)
+            else {
                 return;
             };
-            eprintln!("[detailer-debug] drag entered {position:?}, seeded {}x{} weight {weight:?} mode {mode:?}", seed.width, seed.height);
+            eprintln!("[detailer-debug] drag entered {position:?}, seeded {}x{} weight {weight:?} mode {mode:?} seed_glyph {seed_glyph:?}", seed.width, seed.height);
             session.borrow_mut().begin(
-                DetailerStroke::begin(hand, position, mode, weight, seed),
+                DetailerStroke::begin(hand, position, mode, weight, seed, seed_glyph),
                 |stroke| stroke.resolve(fade),
             );
         }
@@ -2418,9 +2425,10 @@ mod tests {
                 0,
             );
         }
-        // Seeded from the authored glyph: the empty sweep still resolves to
-        // the cell's own glyph (a valid no-op outcome, never an error).
-        assert_eq!(detailer.borrow().pending_graphic_at(&point(0, 0)), Some('o'));
+        // A fresh press has not moved ink: it previews nothing yet, even
+        // though its resolve (seed glyph barred) would name some other
+        // glyph. Only the sweep's ink puts this cell on the commit track.
+        assert_eq!(detailer.borrow().pending_graphic_at(&point(0, 0)), None);
 
         draw_sweep(
             &mut strokes,
@@ -2617,9 +2625,10 @@ mod tests {
         assert_eq!(painted.graphic, CellGraphic::Glyph('.'));
     }
 
-    /// A stroke whose ink returns to its seed resolves back to the cell's
-    /// own authored glyph — and that resolve must write nothing at all,
-    /// not stage an invisible same-glyph overwrite.
+    /// A stroke that never moves its buffer off the cell's authored glyph
+    /// writes nothing at all — no preview, no staged invisible overwrite.
+    /// (The resolve bars the seed glyph, so the visible-change gate —
+    /// buffer still equal to its seed — is what keeps this a no-op.)
     #[test]
     fn detailer_resolve_landing_back_on_the_authored_glyph_commits_nothing() {
         let mut session = Session::new();
@@ -2671,7 +2680,10 @@ mod tests {
                 1,
             );
         }
-        assert_eq!(detailer.borrow().pending_graphic_at(&point(2, 2)), Some('o'));
+        // The buffer never left its seed ('o''s center was already empty,
+        // so the subtract sweep and the dabs moved no ink): the
+        // visible-change gate previews and stages nothing.
+        assert_eq!(detailer.borrow().pending_graphic_at(&point(2, 2)), None);
 
         strokes
             .finish_detailer_for_hand(&mut session.detailer_ctx(&fade, &detailer), PaintHand::Left);
@@ -2972,8 +2984,11 @@ mod tests {
             &mut session.detailer_ctx(&fade, &detailer),
             &sweep_in_cell(point(0, 0), &CENTER_SWEEP),
         );
-        // The stroke stayed additive on the fully-covered seed: still `#`.
-        assert_eq!(detailer.borrow().pending_graphic_at(&point(0, 0)), Some('#'));
+        // The stroke stayed additive on the fully-covered seed: the sweep
+        // moved no ink, so the buffer is still at its seed and previews
+        // nothing. The captured-mode property is exercised for real in
+        // phase 2 below, which paints with the flipped mode.
+        assert_eq!(detailer.borrow().pending_graphic_at(&point(0, 0)), None);
 
         strokes
             .cancel_detailer_for_hand(&mut session.detailer_ctx(&fade, &detailer), PaintHand::Left);

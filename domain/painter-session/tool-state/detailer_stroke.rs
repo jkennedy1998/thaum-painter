@@ -35,6 +35,22 @@ pub struct DetailerStroke {
     /// True once a paint sample actually moved at least one buffer pixel
     /// off its seed value. A stroke that never moved ink commits nothing.
     changed: bool,
+    /// The glyph this buffer was seeded from, if the cell held one. Barred
+    /// from winning the resolve: a stroke that moves ink must land on a
+    /// different, visible shape, or the edit writes nothing (J 2026-11-09:
+    /// a subtractive line through full cells must author a visible slight
+    /// negative, which snapping back to the seed made impossible).
+    seed_glyph: Option<char>,
+    /// The buffer's seed values, kept for the visible-change gate: a stroke
+    /// that paints and then paints back to exactly its seed has no visible
+    /// change and commits nothing, even though pixels moved along the way.
+    seed_alpha: Vec<u8>,
+    /// The last subcell pixel this stroke painted in this buffer, for
+    /// interpolating between consecutive samples: a drag crossing a cell
+    /// leaves a continuous line, not isolated frames (J 2026-11-09: draw a
+    /// big circle and each cell should resolve to the glyph nearest its own
+    /// segment of the stroke).
+    last_painted: Option<(usize, usize)>,
 }
 
 impl DetailerStroke {
@@ -48,6 +64,7 @@ impl DetailerStroke {
         mode: DetailerMode,
         weight: CellWeight,
         seed: GlyphTileRaster,
+        seed_glyph: Option<char>,
     ) -> Self {
         Self {
             hand,
@@ -56,8 +73,11 @@ impl DetailerStroke {
             weight,
             buffer_width: seed.width,
             buffer_height: seed.height,
+            seed_alpha: seed.alpha.clone(),
             buffer: seed.alpha,
             changed: false,
+            seed_glyph,
+            last_painted: None,
         }
     }
 
@@ -110,6 +130,50 @@ impl DetailerStroke {
         self.changed
     }
 
+    /// Whether the buffer currently differs from its seed at all: the gate
+    /// for resolve, preview, and commit. Pixels may have moved and moved
+    /// back; only the net difference is visible, and only a visible change
+    /// may commit a glyph.
+    pub fn visibly_changed(&self) -> bool {
+        self.buffer != self.seed_alpha
+    }
+
+    /// Paints the brush footprint at `x`,`y` and interpolates from this
+    /// buffer's last painted pixel with a Bresenham line, footprint at
+    /// every step — a drag crossing a cell leaves a continuous stroke
+    /// segment instead of isolated frame dots. Re-crossing a cell picks up
+    /// from where it left, so a line drawn through a cell stays connected.
+    pub fn paint_line_to(&mut self, x: usize, y: usize, size: i32, strength: u8) {
+        let target = (x, y);
+        if let Some((last_x, last_y)) = self.last_painted {
+            let mut from = (last_x as i64, last_y as i64);
+            let to = (target.0 as i64, target.1 as i64);
+            let dx = (to.0 - from.0).abs();
+            let dy = -(to.1 - from.1).abs();
+            let step_x = if to.0 > from.0 { 1 } else { -1 };
+            let step_y = if to.1 > from.1 { 1 } else { -1 };
+            let mut error = dx + dy;
+            loop {
+                self.paint_footprint(from.0 as usize, from.1 as usize, size, strength);
+                if from == to {
+                    break;
+                }
+                let error_twice = 2 * error;
+                if error_twice >= dy {
+                    error += dy;
+                    from.0 += step_x;
+                }
+                if error_twice <= dx {
+                    error += dx;
+                    from.1 += step_y;
+                }
+            }
+        } else {
+            self.paint_footprint(x, y, size, strength);
+        }
+        self.last_painted = Some(target);
+    }
+
     /// The live buffer as a comparison-resolution tile, for resolving a
     /// preview or the final commit.
     pub fn tile(&self) -> GlyphTileRaster {
@@ -128,18 +192,28 @@ impl DetailerStroke {
     /// "ideally snap to nearest which might be the cell that is currently
     /// authored and that's ok").
     pub fn resolve(&self, fade: &ShapeFade) -> Option<char> {
-        // Additive strokes resolve against inked glyphs only (J 2026-11-09:
-        // the GUI resolved sparse additive marks to the invisible space
-        // glyph, so drawn strokes authored "nothing"). Adding ink can never
-        // legitimately produce the blank glyph; subtracting ink to nothing
-        // is a valid full erase, so subtract keeps the blank candidate.
+        // Two resolve bars, both from J 2026-11-09:
+        // - additive strokes resolve against inked glyphs only (the blank
+        //   tile is every sparse mark's nearest neighbor and would make
+        //   drawn strokes resolve to the invisible space glyph); adding ink
+        //   can never legitimately produce the blank glyph. Subtractive
+        //   keeps the blank candidate: erasing to nothing is a valid full
+        //   erase.
+        // - the seed glyph never wins: a stroke that moved ink must resolve
+        //   to a different, visible shape — a line subtracted through a
+        //   full cell lands on the nearest glyph with that negative in it,
+        //   not back on the untouched original.
         match self.mode {
-            DetailerMode::Additive => {
-                fade.nearest_inked_glyph_at_weight(&self.tile(), self.weight)
-            }
-            DetailerMode::Subtractive => {
-                fade.nearest_glyph_at_weight(&self.tile(), self.weight)
-            }
+            DetailerMode::Additive => fade.nearest_inked_glyph_at_weight_excluding(
+                &self.tile(),
+                self.weight,
+                self.seed_glyph,
+            ),
+            DetailerMode::Subtractive => fade.nearest_glyph_at_weight_excluding(
+                &self.tile(),
+                self.weight,
+                self.seed_glyph,
+            ),
         }
         .map(|(glyph, _distance)| glyph)
     }
@@ -193,12 +267,16 @@ impl DetailerSession {
             self.active = Some(stroke.hand);
             self.stroke_mode = Some(stroke.mode);
         }
-        let resolved = resolve(&stroke);
-        let position = stroke.position;
-        if let Some(graphic) = resolved {
-            self.pending.insert(position, graphic);
+        // A freshly seeded buffer has not moved ink yet: it previews and
+        // commits nothing, even though its resolve (seed glyph barred) would
+        // name some other glyph. Only an actual paint puts a cell on the
+        // preview/commit track.
+        if stroke.visibly_changed() {
+            if let Some(graphic) = resolve(&stroke) {
+                self.pending.insert(stroke.position, graphic);
+            }
         }
-        self.strokes.entry(position).or_insert(stroke);
+        self.strokes.entry(stroke.position).or_insert(stroke);
     }
 
     pub fn is_active(&self) -> bool {
@@ -233,7 +311,7 @@ impl DetailerSession {
             .filter(|(position, _)| {
                 self.strokes
                     .get(position)
-                    .is_some_and(|stroke| stroke.changed())
+                    .is_some_and(|stroke| stroke.visibly_changed())
             })
             .map(|(p, g)| (*p, *g))
             .collect()
@@ -286,8 +364,12 @@ impl DetailerSession {
             let Some(stroke) = self.strokes.get_mut(&position) else {
                 return;
             };
-            stroke.paint_footprint(x, y, brush_size, strength);
-            resolve(stroke)
+            stroke.paint_line_to(x, y, brush_size, strength);
+            if stroke.visibly_changed() {
+                resolve(stroke)
+            } else {
+                None
+            }
         };
         match resolved {
             Some(graphic) => {
@@ -324,7 +406,7 @@ impl DetailerSession {
                 "[detailer-debug] finish at {position:?} changed={} -> commit {resolved:?}",
                 stroke.changed()
             );
-            if let (true, Some(graphic)) = (stroke.changed(), resolved) {
+            if let (true, Some(graphic)) = (stroke.visibly_changed(), resolved) {
                 self.pending_commits.insert(
                     position,
                     DetailerCommit {
@@ -379,6 +461,106 @@ mod tests {
         CellPoint { x: 1, y: 1, z: 0 }
     }
 
+    /// Two bars and a dot: enough shape vocabulary that a vertical segment
+    /// and a horizontal segment cannot resolve to the same glyph.
+    struct Bars;
+    impl FadeTileProvider for Bars {
+        fn tiles(&self) -> Vec<(char, GlyphTileRaster)> {
+            let tile = |ones: &[usize]| {
+                let mut alpha = vec![0u8; BUFFER_PIXELS];
+                for &i in ones {
+                    alpha[i] = 255;
+                }
+                GlyphTileRaster {
+                    width: BUFFER_WIDTH,
+                    height: BUFFER_HEIGHT,
+                    alpha,
+                }
+            };
+            vec![
+                ('|', tile(&[5, 9])),
+                ('-', tile(&[5, 6])),
+                ('.', tile(&[5])),
+            ]
+        }
+    }
+
+    fn bar_stroke() -> DetailerStroke {
+        DetailerStroke::begin(
+            PaintHand::Left,
+            point(),
+            DetailerMode::Additive,
+            CellWeight::ONE,
+            flat_tile(0),
+            None,
+        )
+    }
+
+    /// J 2026-11-09: different cells crossed by one stroke must resolve to
+    /// glyphs matching their own segment of the stroke, not one uniform
+    /// glyph everywhere. Interpolation is what deposits a real segment —
+    /// vertical here, horizontal there — instead of isolated frame dots
+    /// that all snap to the same smallest glyph.
+    #[test]
+    fn a_vertical_segment_and_a_horizontal_segment_resolve_to_different_glyphs() {
+        let fade = ShapeFade::build(&Bars);
+
+        let mut vertical = bar_stroke();
+        vertical.paint_line_to(1, 1, 1, 255);
+        vertical.paint_line_to(1, 2, 1, 255);
+        assert_eq!(vertical.resolve(&fade), Some('|'), "vertical segment");
+
+        let mut horizontal = bar_stroke();
+        horizontal.paint_line_to(1, 1, 1, 255);
+        horizontal.paint_line_to(2, 1, 1, 255);
+        assert_eq!(horizontal.resolve(&fade), Some('-'), "horizontal segment");
+
+        assert_ne!(
+            vertical.resolve(&fade),
+            horizontal.resolve(&fade),
+            "segment orientation must decide the resolved glyph"
+        );
+    }
+
+    /// Consecutive samples are connected: one drag paints the whole line
+    /// between them, not just the sample frames.
+    #[test]
+    fn samples_are_interpolated_into_a_continuous_line() {
+        let mut stroke = bar_stroke();
+        stroke.paint_line_to(0, 0, 1, 255);
+        stroke.paint_line_to(3, 3, 1, 255);
+        for i in 0..4 {
+            assert_eq!(stroke.buffer[i * 4 + i], 255, "diagonal pixel ({i},{i})");
+        }
+    }
+
+    /// A stroke that moved ink can never resolve back to the glyph it
+    /// started from: the seed is barred from both resolve lanes, so every
+    /// visible edit lands on a different glyph — the subtractive "slight
+    /// negative" J asked for instead of snapping back to the original.
+    #[test]
+    fn resolve_never_returns_the_seed_glyph() {
+        let fade = ShapeFade::build(&Bars);
+
+        let mut additive = bar_stroke();
+        additive.paint_line_to(1, 1, 1, 255);
+        assert_ne!(additive.resolve(&fade), None);
+        assert_ne!(additive.resolve(&fade), Some(' '));
+
+        let mut subtractive = DetailerStroke::begin(
+            PaintHand::Left,
+            point(),
+            DetailerMode::Subtractive,
+            CellWeight::ONE,
+            flat_tile(255),
+            Some('#'),
+        );
+        subtractive.paint_line_to(1, 1, 1, 255);
+        let resolved = subtractive.resolve(&fade);
+        assert_ne!(resolved, Some('#'), "seed glyph barred");
+        assert_ne!(resolved, None, "a moved buffer resolves to some glyph");
+    }
+
     #[test]
     fn begin_seeds_the_buffer_from_the_current_glyphs_tile() {
         let mut seed = flat_tile(0);
@@ -388,8 +570,7 @@ mod tests {
             point(),
             DetailerMode::Additive,
             CellWeight::ONE,
-            seed.clone(),
-        );
+            seed.clone(), None);
         assert_eq!(stroke.tile(), seed);
         assert_eq!(stroke.buffer_dimensions(), (BUFFER_WIDTH, BUFFER_HEIGHT));
     }
@@ -401,8 +582,7 @@ mod tests {
             point(),
             DetailerMode::Additive,
             CellWeight::ONE,
-            flat_tile(200),
-        );
+            flat_tile(200), None);
         stroke.paint(0, 0, 40);
         assert_eq!(stroke.tile().alpha[0], 240);
         stroke.paint(0, 0, 40);
@@ -416,8 +596,7 @@ mod tests {
             point(),
             DetailerMode::Subtractive,
             CellWeight::ONE,
-            flat_tile(20),
-        );
+            flat_tile(20), None);
         stroke.paint(0, 0, 15);
         assert_eq!(stroke.tile().alpha[0], 5);
         stroke.paint(0, 0, 15);
@@ -431,8 +610,7 @@ mod tests {
             point(),
             DetailerMode::Additive,
             CellWeight::ONE,
-            flat_tile(0),
-        );
+            flat_tile(0), None);
         stroke.paint(BUFFER_WIDTH, 0, 255);
         stroke.paint(0, BUFFER_HEIGHT, 255);
         assert_eq!(stroke.tile(), flat_tile(0));
@@ -453,8 +631,7 @@ mod tests {
             point(),
             DetailerMode::Additive,
             CellWeight::ONE,
-            flat_tile(0),
-        );
+            flat_tile(0), None);
         assert_eq!(
             stroke.resolve(&fade),
             Some('#'),
@@ -481,8 +658,7 @@ mod tests {
             point(),
             DetailerMode::Subtractive,
             CellWeight::ONE,
-            flat_tile(255),
-        );
+            flat_tile(255), None);
         assert_eq!(stroke.resolve(&fade), Some('#'));
 
         for y in 0..BUFFER_HEIGHT {
@@ -532,8 +708,7 @@ mod tests {
             point(),
             DetailerMode::Additive,
             CellWeight::ZERO,
-            flat_tile(128),
-        );
+            flat_tile(128), None);
         let resolved = stroke.resolve(&fade).unwrap();
         assert_ne!(resolved, 'm', "weight ZERO's graph has no 'm' node to find");
     }
@@ -548,10 +723,13 @@ mod tests {
                 DetailerMode::Additive,
                 CellWeight::ONE,
                 flat_tile(0),
+                None,
             ),
             |_| Some('.'),
         );
-        assert_eq!(session.pending_graphic_at(&point()), Some('.'));
+        // A fresh seed has not moved ink: it previews nothing yet, even
+        // though its resolve (seed barred) would name some other glyph.
+        assert_eq!(session.pending_graphic_at(&point()), None);
         assert_eq!(session.active_hand(), Some(PaintHand::Left));
 
         session.paint_at(point(), 0, 0, 255, |stroke| {
@@ -583,6 +761,7 @@ mod tests {
                 DetailerMode::Additive,
                 CellWeight::ONE,
                 flat_tile(0),
+                None,
             ),
             |_| Some('.'),
         );
@@ -604,6 +783,7 @@ mod tests {
                 DetailerMode::Additive,
                 CellWeight::ONE,
                 flat_tile(0),
+                None,
             ),
             |_| Some('.'),
         );
@@ -619,6 +799,7 @@ mod tests {
                 DetailerMode::Additive,
                 CellWeight::ONE,
                 flat_tile(255),
+                None,
             ),
             |_| Some('.'),
         );
@@ -639,6 +820,7 @@ mod tests {
                 DetailerMode::Additive,
                 CellWeight::ONE,
                 flat_tile(0),
+                None,
             ),
             |_| Some('.'),
         );
@@ -653,6 +835,7 @@ mod tests {
                 DetailerMode::Additive,
                 CellWeight::ONE,
                 flat_tile(0),
+                None,
             ),
             |_| Some('.'),
         );
@@ -687,8 +870,7 @@ mod tests {
             point(),
             DetailerMode::Additive,
             CellWeight::ONE,
-            flat_tile(0),
-        );
+            flat_tile(0), None);
         // Size 1 touches exactly one subcell pixel.
         stroke.paint_footprint(1, 1, 1, 255);
         let mut expected = flat_tile(0);
@@ -701,8 +883,7 @@ mod tests {
             point(),
             DetailerMode::Additive,
             CellWeight::ONE,
-            flat_tile(0),
-        );
+            flat_tile(0), None);
         stroke.paint_footprint(1, 1, 3, 255);
         let mut expected = flat_tile(0);
         for y in 0..3 {
@@ -718,8 +899,7 @@ mod tests {
             point(),
             DetailerMode::Additive,
             CellWeight::ONE,
-            flat_tile(0),
-        );
+            flat_tile(0), None);
         stroke.paint_footprint(0, 0, 5, 255);
         assert!(stroke.changed());
     }
@@ -734,6 +914,7 @@ mod tests {
                 DetailerMode::Additive,
                 CellWeight::ONE,
                 flat_tile(0),
+                None,
             ),
             |_| Some('.'),
         );
@@ -753,6 +934,7 @@ mod tests {
                 DetailerMode::Additive,
                 CellWeight::ONE,
                 flat_tile(0),
+                None,
             ),
             |_| Some('.'),
         );
@@ -771,6 +953,7 @@ mod tests {
                 DetailerMode::Subtractive,
                 CellWeight::TWO,
                 flat_tile(0),
+                None,
             ),
             |_| None,
         );
