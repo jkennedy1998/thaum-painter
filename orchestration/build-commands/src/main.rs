@@ -34,12 +34,12 @@ use thaum_painter_domain::{
         sync_canvas_from_active_layer,
     },
     text_entry::{cursor_overlay_group, TextEntryKey, TextEntryOutcome, TextEntryState},
-    Canvas, CanvasBounds, ColorEntryEdit, DetailerSession, DetailerStroke, DrawingSpaceWheelMode, LayerRow, LayersPanelState,
+    Canvas, CanvasBounds, DetailerSession, DetailerStroke, DrawingSpaceWheelMode, LayerRow, LayersPanelState,
     PaintCanvasBoundsModule, PaintHand, PaintTool, PainterSelection, PainterUserSessionState,
     PersistedPainterUiState, SelectionMode, SessionDiscoveredHost, SessionIdentity,
     SessionPanelAction, SessionPanelState, SessionRosterRow, SharedDocumentPaths,
     SharedDocumentRuntime, TimelineState, ToolPreset, ToolState, UnsupportedFileError,
-    DEFAULT_SELECTION_CHANNEL_ID,
+    DEFAULT_SELECTION_CHANNEL_ID, ColorEntryEdit,
 };
 use thaum_renderer_boot::{
     boot_renderer, cell_clip_size_for_state, run_renderer_window_with_state_frame_provider,
@@ -48,14 +48,14 @@ use thaum_renderer_boot::{
 use thaum_renderer_domain::NumberFieldEdit;
 use thaum_renderer_domain::{
     camera_view_orientation_for_camera, effective_bindings,
-    load_typeface_declaration_from_asset_root, remap_surface_units_to_active_plane_world,
-    remap_surface_units_to_flat_2d_local, shape_fade::fade::ShapeFade,
-    shape_fade::font_tiles::FontSetTiles, tooltip_card_group, ActionBindingMap, ActionName,
-    CameraDepthLink, CameraLayersLink, CameraZoomCommand, CameraZoomLink, CellPoint, CommandBar,
-    CommandBarButton, CommandBarClickOutcome, Composition, ControlActionRow, ControlsProfile,
-    GlyphCellProfile, GlyphFontSet, ModulePointerButton, ModulePointerEvent, ModuleRect,
-    ModuleRegistry, PersistedRendererUiSessionState, RawInput, RenderQualityProfile, TooltipState,
-    TypingMode, TypingRoute, UiColorRole, UiGlyphMode, UiPalette, MAX_VISIBLE_PLANE_RADIUS,
+    remap_surface_units_to_active_plane_world, remap_surface_units_to_flat_2d_local,
+    shape_fade::fade::ShapeFade, shape_fade::font_tiles::FontSetTiles, tooltip_card_group,
+    ActionBindingMap, ActionName, CameraDepthLink, CameraLayersLink, CameraZoomCommand,
+    CameraZoomLink, CellPoint, CommandBar, CommandBarButton, CommandBarClickOutcome, Composition,
+    ControlActionRow, ControlsProfile, GlyphFontSet, ModulePointerButton, ModulePointerEvent,
+    ModuleRect, ModuleRegistry, PersistedRendererUiSessionState, RawInput, RenderQualityProfile,
+    TooltipState, TypingMode, TypingRoute, UiColorRole, UiPalette, GlyphCellProfile,
+    MAX_VISIBLE_PLANE_RADIUS,
 };
 use winit::keyboard::KeyCode;
 
@@ -87,19 +87,11 @@ fn apply_glyph_profile_env(config: &mut BootConfig) -> Result<bool> {
     }
     let width = env::var("THAUM_GLYPH_CELL_WIDTH")
         .ok()
-        .map(|value| {
-            value
-                .parse::<usize>()
-                .context("THAUM_GLYPH_CELL_WIDTH must be an integer")
-        })
+        .map(|value| value.parse::<usize>().context("THAUM_GLYPH_CELL_WIDTH must be an integer"))
         .transpose()?;
     let height = env::var("THAUM_GLYPH_CELL_HEIGHT")
         .ok()
-        .map(|value| {
-            value
-                .parse::<usize>()
-                .context("THAUM_GLYPH_CELL_HEIGHT must be an integer")
-        })
+        .map(|value| value.parse::<usize>().context("THAUM_GLYPH_CELL_HEIGHT must be an integer"))
         .transpose()?;
     if width.is_some() || height.is_some() {
         config.glyph_cell_profile = GlyphCellProfile::new(
@@ -598,8 +590,11 @@ fn apply_join_result(
             *shared_document = SharedDocumentRuntime::new(snapshot);
             // The joined snapshot carries the file's background truth: seed
             // the live handle from it so the widget and the window follow.
-            *drawing_space_background.borrow_mut() =
-                shared_document.document.background.as_ref().map(|b| b.rgb);
+            *drawing_space_background.borrow_mut() = shared_document
+                .document
+                .background
+                .as_ref()
+                .map(|b| b.rgb);
             *shared_document_paths =
                 painter_shared_document_paths(&shared_document.document.document_id);
             *active_layer_id =
@@ -1577,17 +1572,6 @@ fn build_user_session_state(
 /// background when it is set (J), the UI palette's background when the file
 /// background is transparent (absent). Synced per frame so the widget's
 /// edits land live.
-/// Mirror the selected typeface's declared UI vocabulary into the one shared
-/// palette handle every Painter module already uses. Invalid/missing
-/// declarations stay visibly on native UI; boot reports the actual selection
-/// load error independently rather than silently changing document glyphs.
-fn sync_ui_glyph_mode(ui_palette: &UiPalette, asset_root: &Path, typeface_id: &str) {
-    let mode = load_typeface_declaration_from_asset_root(asset_root, typeface_id)
-        .map(|declaration| declaration.ui_glyph_mode)
-        .unwrap_or(UiGlyphMode::Native);
-    ui_palette.set_glyph_mode(mode);
-}
-
 fn sync_window_background(state: &mut BootState, ui_palette: &UiPalette) {
     // The window background stays the app's own UI background (J): the
     // drawing file's background color renders only as the drawing space's
@@ -1634,18 +1618,6 @@ mod tests {
             group.world_point_for(thaum_renderer_domain::CellPoint { x: 1, y: 1, z: 0 }),
             thaum_renderer_domain::WorldPoint { x: 6, y: 5, z: 2 }
         );
-    }
-
-    #[test]
-    fn selected_typeface_switches_the_shared_ui_glyph_vocabulary() {
-        let palette = UiPalette::default();
-        let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../thaum-renderer/orchestration/renderer-assets");
-
-        sync_ui_glyph_mode(&palette, &assets, "thaum-mono");
-        assert_eq!(palette.glyph_mode(), UiGlyphMode::Native);
-        sync_ui_glyph_mode(&palette, &assets, "carlito");
-        assert_eq!(palette.glyph_mode(), UiGlyphMode::AsciiSafe);
     }
 
     #[test]
@@ -2159,11 +2131,24 @@ fn handle_number_field_edit_key(
     entry_key: TextEntryKey,
     number_edit: &Rc<RefCell<Option<NumberFieldEdit>>>,
     tool_state: &RefCell<ToolState>,
+    display_profile: &RefCell<thaum_painter_domain::SharedDocumentDisplayProfile>,
 ) {
     match entry_key {
         TextEntryKey::Enter => {
             if let Some(edit) = number_edit.borrow_mut().take() {
-                if let Some(value) = edit.commit(-9, 9) {
+                if edit.row_id == "cell_size" {
+                    if let Some(value) = edit.commit(
+                        thaum_painter_domain::MIN_CELL_DIMENSION,
+                        thaum_painter_domain::MAX_CELL_DIMENSION,
+                    ) {
+                        let mut profile = display_profile.borrow_mut();
+                        if edit.field == 0 {
+                            profile.cell_width = value as u32;
+                        } else {
+                            profile.cell_height = value as u32;
+                        }
+                    }
+                } else if let Some(value) = edit.commit(-9, 9) {
                     let mut tool_state = tool_state.borrow_mut();
                     if edit.row_id == "text_enter_step" {
                         tool_state.set_text_enter_step_axis(edit.field.min(2), value);
@@ -2677,9 +2662,6 @@ fn main() -> Result<()> {
     let shape_fade: Option<Rc<ShapeFade>> = GlyphFontSet::load_from_asset_root(&state.config.asset_root)
         .ok()
         .map(|font_set| Rc::new(ShapeFade::build_weighted(&FontSetTiles { font_set: &font_set })));
-    // Shared across canvas targeting and the captured grid module. The
-    // resolver is typeface-local: it can only choose glyphs loaded in this
-    // boot's active face and in the stroke's captured weight.
     let detailer_session = Rc::new(RefCell::new(DetailerSession::default()));
     let detailer_resolve: Rc<dyn Fn(&DetailerStroke) -> Option<char>> = {
         let shape_fade = shape_fade.clone();
@@ -2762,13 +2744,6 @@ fn main() -> Result<()> {
     // fields (the number-field edit pattern): opened by a strip click, keys
     // route here, Enter or the module's `+` commits the color into the
     // live file palette.
-    sync_ui_glyph_mode(
-        &ui_palette,
-        &asset_root,
-        &display_profile.borrow().typeface_id,
-    );
-    let mut ui_glyph_mode_typeface_id = display_profile.borrow().typeface_id.clone();
-
     let palette_color_entry: Rc<RefCell<Option<ColorEntryEdit>>> = Rc::new(RefCell::new(None));
     // Saved tool presets (J 2026-09-24): loaded from the user session (or
     // the starter presets on first boot), then shared by the presets
@@ -2981,10 +2956,6 @@ fn main() -> Result<()> {
             {
                 state.config.glyph_cell_profile = cell_profile;
             }
-            if ui_glyph_mode_typeface_id != profile.typeface_id {
-                sync_ui_glyph_mode(&ui_palette, &asset_root, &profile.typeface_id);
-                ui_glyph_mode_typeface_id = profile.typeface_id.clone();
-            }
             state.config.glyph_typeface_id = profile.typeface_id;
             state.config.glyph_spriteset_id = profile.spriteset_id;
         }
@@ -3006,11 +2977,9 @@ fn main() -> Result<()> {
         let blink_due =
             typing_mode.is_active() && cursor_blink_at.elapsed() >= CURSOR_BLINK_INTERVAL;
         let picker_blink_due = {
-            let (lit_weight, alt_weight) =
-                thaum_painter_domain::preview_weights(&tool_state.borrow());
+            let (lit_weight, alt_weight) = thaum_painter_domain::preview_weights(&tool_state.borrow());
             alt_weight.is_some_and(|alt| alt != lit_weight)
-                && picker_blink_at.elapsed()
-                    >= thaum_renderer_breath_fallback_clock::FALLBACK_BREATH_TICK_DURATION
+                && picker_blink_at.elapsed() >= thaum_renderer_breath_fallback_clock::FALLBACK_BREATH_TICK_DURATION
         };
         // Multiplayer frame seam: publish this frame's new local records
         // (strokes, undo/redo, selections — everything that appended to the
@@ -3234,7 +3203,12 @@ fn main() -> Result<()> {
                             continue;
                         }
                         if number_edit.borrow().is_some() {
-                            handle_number_field_edit_key(entry_key, &number_edit, &tool_state);
+                            handle_number_field_edit_key(
+                                entry_key,
+                                &number_edit,
+                                &tool_state,
+                                &display_profile,
+                            );
                             if number_edit.borrow().is_none()
                                 && palette_color_entry.borrow().is_none()
                                 && text_entry.is_none()
@@ -4034,7 +4008,7 @@ fn main() -> Result<()> {
                     &mut active_layer_id,
                     persist_to_disk,
                     shape_fade.as_deref(),
-                &detailer_session,
+                    &detailer_session,
                 ),
                 timeline_state.borrow().current_breath,
             );

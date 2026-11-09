@@ -9,36 +9,15 @@ use thaum_painter_domain::{
     DetailerGridModule, DetailerSession, DetailerStroke, DisplayProfileModule, GraphicPickerModule, HandSettingsModule, LayersPanelModule,
     LayersPanelState, MaterialPickerModule, PaintCanvasBoundsModule, PaintColorBlockModule,
     PaintColorPickerModule, PaintTool, PainterSelection, SessionPanelModule, SessionPanelState,
-    SharedDocumentDisplayProfile, ToolDef, ToolPreset, ToolPresetsModule, ToolState, ToolboxModule,
+    SharedDocumentDisplayProfile, ToolDef, ToolPreset, ToolState, ToolboxModule, ToolPresetsModule,
 };
 use thaum_renderer_domain::{
     conflicting_actions, effective_bindings, format_raw_input, list_available_glyph_spriteset_ids,
-    list_available_typeface_ids, load_glyph_sprite_batch_from_asset_root, ActionBindingMap,
-    CameraDepthLink, CameraLayersLink, CameraPerspectiveModule, CameraZoomLink,
-    ControlsPanelModule, ControlsProfile, ModuleRect, ModuleRegistry, NumberFieldEdit,
-    ParallaxProfile, PersistedModuleUiState, PerspectiveProfile, RenderQualityProfile,
-    UiCustomizationModule, UiPalette,
+    list_available_typeface_ids, ActionBindingMap, CameraDepthLink, CameraLayersLink,
+    CameraPerspectiveModule, CameraZoomLink, ControlsPanelModule, ControlsProfile, ModuleRect,
+    ModuleRegistry, NumberFieldEdit, ParallaxProfile, PersistedModuleUiState, PerspectiveProfile,
+    RenderQualityProfile, UiCustomizationModule, UiPalette,
 };
-
-/// Each discovered spriteset's reported native width:height ratio, computed
-/// once at boot (not per frame) for the display-profile module's
-/// ratio-mismatch warning. A spriteset that fails to load is simply omitted
-/// — the module treats an unknown id as never mismatching.
-fn spriteset_native_ratios(
-    asset_root: &std::path::Path,
-    spriteset_ids: &[String],
-) -> Vec<(String, f32)> {
-    spriteset_ids
-        .iter()
-        .filter_map(|id| {
-            let batch = load_glyph_sprite_batch_from_asset_root(asset_root, id).ok()??;
-            Some((
-                id.clone(),
-                batch.native_tile_width as f32 / batch.native_tile_height as f32,
-            ))
-        })
-        .collect()
-}
 
 /// Registers every painter module and returns the registry. Shared handles
 /// are created by the caller so the event loop and the modules both hold
@@ -189,15 +168,17 @@ pub(crate) fn build_painter_modules(
         )
         .with_palette(ui_palette.clone()),
     ));
-    modules.register(Box::new(
-        PaintCanvasBoundsModule::new(
-            "paint_canvas_bounds",
-            paint_canvas_viewport.clone(),
-            drawing_space_wheel_mode.clone(),
-            ui_palette.clone(),
-        )
-        .with_background(drawing_space_background.clone(), tool_state.clone()),
-    ));
+    modules.register(
+        Box::new(
+            PaintCanvasBoundsModule::new(
+                "paint_canvas_bounds",
+                paint_canvas_viewport.clone(),
+                drawing_space_wheel_mode.clone(),
+                ui_palette.clone(),
+            )
+            .with_background(drawing_space_background.clone(), tool_state.clone()),
+        ),
+    );
     modules.register(Box::new(
         LayersPanelModule::new(
             "painter_layers_panel",
@@ -273,28 +254,22 @@ pub(crate) fn build_painter_modules(
             }
         },
     )));
-    modules.register(Box::new({
-        let spriteset_ids = list_available_glyph_spriteset_ids(asset_root);
-        let ratios = spriteset_native_ratios(asset_root, &spriteset_ids);
+    modules.register(Box::new(
         DisplayProfileModule::new(
             "painter_display_profile",
-            // The gap below the toolbox/presets rail and right of the
-            // color-block panel (J 2026-11-06: the x63..80 slot used
-            // before this placed the panel off J's visible camera pan,
-            // past where every other default panel stops around x62).
             ModuleRect {
-                x0: -80,
-                y0: 6,
-                x1: -63,
-                y1: 14,
+                x0: 63,
+                y0: -6,
+                x1: 80,
+                y1: 2,
             },
             display_profile.clone(),
             list_available_typeface_ids(asset_root),
-            spriteset_ids,
-            ratios,
+            list_available_glyph_spriteset_ids(asset_root),
+            number_edit.clone(),
         )
-        .with_palette(ui_palette.clone())
-    }));
+        .with_palette(ui_palette.clone()),
+    ));
     modules.register(Box::new(ControlsPanelModule::new(
         "painter_controls_panel",
         ModuleRect {
@@ -365,7 +340,12 @@ pub(crate) fn default_module_layout() -> Vec<PersistedModuleUiState> {
         y1: i32,
         hidden: bool,
     ) -> PersistedModuleUiState {
-        PersistedModuleUiState::new(module_id, ModuleRect { x0, y0, x1, y1 }, false, hidden)
+        PersistedModuleUiState::new(
+            module_id,
+            ModuleRect { x0, y0, x1, y1 },
+            false,
+            hidden,
+        )
     }
     vec![
         at("painter_toolbox", -80, 14, -65, 24, false),
@@ -380,7 +360,7 @@ pub(crate) fn default_module_layout() -> Vec<PersistedModuleUiState> {
         at("painter_layers_panel", -80, -25, -42, -5, false),
         at("painter_camera_perspective", 8, -25, 36, -11, false),
         at("painter_ui_customization", 37, 6, 62, 19, false),
-        at("painter_display_profile", -80, 6, -63, 14, false),
+        at("painter_display_profile", 63, -6, 80, 2, false),
         at("painter_controls_panel", 8, 14, 36, 34, true),
     ]
 }
