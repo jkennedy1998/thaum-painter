@@ -42,8 +42,8 @@ use thaum_renderer_domain::{
 
 use crate::{
     brush::{self, Canvas, PaintedCell},
-    detailer_stroke::{DetailerSession, DetailerStroke},
     clipboard::WorldCopyData,
+    detailer_stroke::{DetailerSession, DetailerStroke},
     fill::CanvasBounds,
     lasso_stroke::{
         build_lasso_path_cell_group, build_lasso_preview_cell_groups, LassoPreviewCell, LassoStroke,
@@ -568,7 +568,10 @@ impl CanvasPointerStrokes {
                     // the comparison tile through `paint_detailer_at_cell_local`.
                     let (target, mode) = {
                         let state = ctx.tool_state.borrow();
-                        (state.hand_state(hand).target, state.hand_state(hand).detailer_mode)
+                        (
+                            state.hand_state(hand).target,
+                            state.hand_state(hand).detailer_mode,
+                        )
                     };
                     let Some(session) = ctx.detailer_session else {
                         return None;
@@ -585,7 +588,9 @@ impl CanvasPointerStrokes {
                     if target != PaintTarget::Image {
                         return None;
                     }
-                    let weight = thaum_renderer_domain::CellWeight::from_index_clamped(cell.weight_index as i32);
+                    let weight = thaum_renderer_domain::CellWeight::from_index_clamped(
+                        cell.weight_index as i32,
+                    );
                     let Some(seed) = fade.glyph_tile_at_weight(glyph, weight) else {
                         return None;
                     };
@@ -789,12 +794,11 @@ impl CanvasPointerStrokes {
         if session.borrow().active_hand() != Some(hand) {
             return;
         }
-        session.borrow_mut().paint_at_cell_local(
-            cell_local[0],
-            cell_local[1],
-            u8::MAX,
-            |stroke| stroke.resolve(fade),
-        );
+        session
+            .borrow_mut()
+            .paint_at_cell_local(cell_local[0], cell_local[1], u8::MAX, |stroke| {
+                stroke.resolve(fade)
+            });
     }
 
     /// Cancels only the hand that lost direct canvas ownership to chrome.
@@ -1290,6 +1294,19 @@ mod tests {
                 graphic_fade: None,
                 detailer_session: None,
             }
+        }
+
+        /// A ctx with the live fade and detailer session wired, mirroring the
+        /// entrypoint's per-frame context for Detailer interactions.
+        fn detailer_ctx<'a>(
+            &'a mut self,
+            fade: &'a ShapeFade,
+            detailer: &'a Rc<RefCell<DetailerSession>>,
+        ) -> CanvasPointerContext<'a> {
+            let mut ctx = self.ctx();
+            ctx.graphic_fade = Some(fade);
+            ctx.detailer_session = Some(detailer);
+            ctx
         }
     }
 
@@ -2152,5 +2169,455 @@ mod tests {
         );
         let plane: Vec<CellPoint> = session.selection.borrow().plane().iter().collect();
         assert!(plane.contains(&point(3, -2)));
+    }
+
+    // ---- simulated user draws (project 6kbosu52) ------------------------
+    // Each test plays a real pointer interaction through the one seam the
+    // entrypoint uses: press seeds the authored glyph, cell-local drag
+    // samples edit the comparison tile, release commits once.
+
+    /// Three shaped tiles: a near-empty `.`, a ring `o` (border full, center
+    /// empty), and a fully-covered `#`. Nearest-glyph resolution is then
+    /// exact, and a center sweep walks `o` → `#` deterministically.
+    struct DetailerFadeTiles;
+    impl thaum_renderer_domain::shape_fade::neighbor_graph::FadeTileProvider for DetailerFadeTiles {
+        fn tiles(&self) -> Vec<(char, thaum_renderer_domain::GlyphTileRaster)> {
+            let mut tile = |border: u8, center: u8| {
+                let mut alpha = vec![border; 16];
+                for y in 1..3 {
+                    for x in 1..3 {
+                        alpha[y * 4 + x] = center;
+                    }
+                }
+                thaum_renderer_domain::GlyphTileRaster {
+                    width: 4,
+                    height: 4,
+                    alpha,
+                }
+            };
+            vec![
+                ('.', tile(0, 0)),
+                ('o', tile(255, 0)),
+                ('#', tile(255, 255)),
+            ]
+        }
+    }
+
+    /// Cell-local samples covering the tile's four center pixels.
+    const CENTER_SWEEP: [[f32; 2]; 4] = [[0.3, 0.3], [0.7, 0.3], [0.3, 0.7], [0.7, 0.7]];
+
+    fn authored_glyph_cell(graphic: char, color: PaintColor) -> PaintedCell {
+        PaintedCell {
+            facing: CellFacing::PosZ,
+            graphic: CellGraphic::Glyph(graphic),
+            color,
+            weight_index: 0,
+            shader_stack: Vec::new(),
+        }
+    }
+
+    /// Simulates one additive drag sweep across the authored cell: press on
+    /// the glyph, several cell-local samples, release. Returns the resolved
+    /// pending glyph after the sweep.
+    fn draw_sweep(
+        strokes: &mut CanvasPointerStrokes,
+        ctx: &mut CanvasPointerContext<'_>,
+        samples: &[[f32; 2]],
+    ) {
+        for sample in samples {
+            strokes.paint_detailer_at_cell_local(ctx, PaintHand::Left, *sample);
+        }
+    }
+
+    #[test]
+    fn detailer_press_sweep_release_commits_one_graphic_only_nearest_glyph() {
+        let mut session = Session::new();
+        session
+            .tool_state
+            .get_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Detailer);
+        apply_brush(
+            &mut session.canvas,
+            point(0, 0),
+            authored_glyph_cell('o', PaintColor::FlatRgb(10, 20, 30)),
+        );
+        let fade = ShapeFade::build(&DetailerFadeTiles);
+        let detailer = Rc::new(RefCell::new(DetailerSession::default()));
+
+        let mut strokes = CanvasPointerStrokes::new();
+        let bounds = canvas_bounds();
+        {
+            let mut ctx = session.ctx();
+            ctx.graphic_fade = Some(&fade);
+            ctx.detailer_session = Some(&detailer);
+            strokes.begin_press(
+                &mut ctx,
+                PaintHand::Left,
+                point(0, 0),
+                bounds,
+                flat_view(),
+                0,
+            );
+        }
+        // Seeded from the authored glyph: the empty sweep still resolves to
+        // the cell's own glyph (a valid no-op outcome, never an error).
+        assert_eq!(detailer.borrow().pending_graphic(), Some('o'));
+
+        draw_sweep(
+            &mut strokes,
+            &mut session.detailer_ctx(&fade, &detailer),
+            &CENTER_SWEEP,
+        );
+        // The center sweep filled the ring's empty middle: exactly `#`.
+        assert_eq!(detailer.borrow().pending_graphic(), Some('#'));
+
+        // The live preview mirrors exactly what release will paint: one
+        // pending cell at the authored position, no old/new flash pair.
+        let overlay = {
+            let mut ctx = session.ctx();
+            ctx.graphic_fade = Some(&fade);
+            ctx.detailer_session = Some(&detailer);
+            strokes.overlay_cell_groups(
+                &mut ctx,
+                flat_view(),
+                CellColor::Flat([0.5, 1.0, 0.75, 1.0]),
+            )
+        };
+        let overlay_cells: Vec<_> = overlay
+            .iter()
+            .flat_map(|group| group.iter_cells())
+            .collect();
+        assert_eq!(overlay_cells.len(), 1);
+        assert_eq!(overlay_cells[0].position, point(0, 0));
+        assert_eq!(overlay_cells[0].graphic, CellGraphic::Glyph('#'));
+
+        strokes
+            .finish_detailer_for_hand(&mut session.detailer_ctx(&fade, &detailer), PaintHand::Left);
+        let errors = strokes.finish_pointer_stroke(
+            &mut session.detailer_ctx(&fade, &detailer),
+            flat_view(),
+            0,
+            false,
+        );
+        assert!(errors.is_empty());
+
+        // Exactly one document write; color, weight, and facing are
+        // bit-identical to the authored cell.
+        assert_eq!(session.action_counter, 1);
+        let painted = session.canvas.get(&point(0, 0)).unwrap();
+        assert_eq!(painted.graphic, CellGraphic::Glyph('#'));
+        assert_eq!(painted.color, PaintColor::FlatRgb(10, 20, 30));
+        assert_eq!(painted.weight_index, 0);
+        assert_eq!(painted.facing, CellFacing::PosZ);
+        assert!(!detailer.borrow().is_active());
+        assert_eq!(detailer.borrow().pending_graphic(), None);
+    }
+
+    #[test]
+    fn detailer_fast_click_without_painting_releases_the_authored_glyph() {
+        let mut session = Session::new();
+        session
+            .tool_state
+            .get_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Detailer);
+        apply_brush(
+            &mut session.canvas,
+            point(2, 2),
+            authored_glyph_cell('o', PaintColor::FlatRgb(10, 20, 30)),
+        );
+        let fade = ShapeFade::build(&DetailerFadeTiles);
+        let detailer = Rc::new(RefCell::new(DetailerSession::default()));
+
+        let mut strokes = CanvasPointerStrokes::new();
+        let bounds = canvas_bounds();
+        {
+            let mut ctx = session.ctx();
+            ctx.graphic_fade = Some(&fade);
+            ctx.detailer_session = Some(&detailer);
+            strokes.begin_press(
+                &mut ctx,
+                PaintHand::Left,
+                point(2, 2),
+                bounds,
+                flat_view(),
+                0,
+            );
+        }
+        // Press and release with no drag sample in between: the seeded
+        // buffer resolves back to the authored glyph, and the empty diff
+        // stages nothing — no write, no undo step, never stuck active.
+        strokes
+            .finish_detailer_for_hand(&mut session.detailer_ctx(&fade, &detailer), PaintHand::Left);
+        let errors = strokes.finish_pointer_stroke(
+            &mut session.detailer_ctx(&fade, &detailer),
+            flat_view(),
+            0,
+            false,
+        );
+        assert!(errors.is_empty());
+        assert_eq!(session.action_counter, 0);
+        let painted = session.canvas.get(&point(2, 2)).unwrap();
+        assert_eq!(painted.graphic, CellGraphic::Glyph('o'));
+        assert_eq!(painted.color, PaintColor::FlatRgb(10, 20, 30));
+        assert_eq!(painted.weight_index, 0);
+        assert!(!detailer.borrow().is_active());
+        assert_eq!(detailer.borrow_mut().take_pending_commit(), None);
+    }
+
+    #[test]
+    fn chrome_captured_detailer_stroke_cancels_without_committing() {
+        let mut session = Session::new();
+        session
+            .tool_state
+            .get_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Detailer);
+        apply_brush(
+            &mut session.canvas,
+            point(0, 0),
+            authored_glyph_cell('o', PaintColor::FlatRgb(10, 20, 30)),
+        );
+        let fade = ShapeFade::build(&DetailerFadeTiles);
+        let detailer = Rc::new(RefCell::new(DetailerSession::default()));
+
+        let mut strokes = CanvasPointerStrokes::new();
+        let bounds = canvas_bounds();
+        {
+            let mut ctx = session.ctx();
+            ctx.graphic_fade = Some(&fade);
+            ctx.detailer_session = Some(&detailer);
+            strokes.begin_press(
+                &mut ctx,
+                PaintHand::Left,
+                point(0, 0),
+                bounds,
+                flat_view(),
+                0,
+            );
+        }
+        draw_sweep(
+            &mut strokes,
+            &mut session.detailer_ctx(&fade, &detailer),
+            &CENTER_SWEEP,
+        );
+        assert_eq!(detailer.borrow().pending_graphic(), Some('#'));
+
+        // The user's cursor was captured by chrome mid-stroke: the stroke is
+        // cancelled and its release becomes a no-op — no document write.
+        strokes
+            .cancel_detailer_for_hand(&mut session.detailer_ctx(&fade, &detailer), PaintHand::Left);
+        strokes
+            .finish_detailer_for_hand(&mut session.detailer_ctx(&fade, &detailer), PaintHand::Left);
+        let errors = strokes.finish_pointer_stroke(
+            &mut session.detailer_ctx(&fade, &detailer),
+            flat_view(),
+            0,
+            false,
+        );
+        assert!(errors.is_empty());
+        assert_eq!(session.action_counter, 0);
+        let painted = session.canvas.get(&point(0, 0)).unwrap();
+        assert_eq!(painted.graphic, CellGraphic::Glyph('o'));
+        assert_eq!(painted.color, PaintColor::FlatRgb(10, 20, 30));
+    }
+
+    #[test]
+    fn other_hand_cannot_paint_or_release_the_active_detailer_stroke() {
+        let mut session = Session::new();
+        session
+            .tool_state
+            .get_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Detailer);
+        apply_brush(
+            &mut session.canvas,
+            point(0, 0),
+            authored_glyph_cell('o', PaintColor::FlatRgb(10, 20, 30)),
+        );
+        let fade = ShapeFade::build(&DetailerFadeTiles);
+        let detailer = Rc::new(RefCell::new(DetailerSession::default()));
+
+        let mut strokes = CanvasPointerStrokes::new();
+        let bounds = canvas_bounds();
+        {
+            let mut ctx = session.ctx();
+            ctx.graphic_fade = Some(&fade);
+            ctx.detailer_session = Some(&detailer);
+            strokes.begin_press(
+                &mut ctx,
+                PaintHand::Left,
+                point(0, 0),
+                bounds,
+                flat_view(),
+                0,
+            );
+        }
+        // The other hand's samples and release never touch the stroke.
+        strokes.paint_detailer_at_cell_local(
+            &mut session.detailer_ctx(&fade, &detailer),
+            PaintHand::Right,
+            [0.5, 0.5],
+        );
+        strokes.finish_detailer_for_hand(
+            &mut session.detailer_ctx(&fade, &detailer),
+            PaintHand::Right,
+        );
+        assert!(detailer.borrow().is_active());
+
+        // The owning hand paints first, then finishes: exactly one commit,
+        // and the right hand's earlier release attempt committed nothing.
+        draw_sweep(
+            &mut strokes,
+            &mut session.detailer_ctx(&fade, &detailer),
+            &CENTER_SWEEP,
+        );
+        strokes
+            .finish_detailer_for_hand(&mut session.detailer_ctx(&fade, &detailer), PaintHand::Left);
+        let errors = strokes.finish_pointer_stroke(
+            &mut session.detailer_ctx(&fade, &detailer),
+            flat_view(),
+            0,
+            false,
+        );
+        assert!(errors.is_empty());
+        assert_eq!(session.action_counter, 1);
+        assert_eq!(
+            session.canvas.get(&point(0, 0)).unwrap().graphic,
+            CellGraphic::Glyph('#')
+        );
+    }
+
+    #[test]
+    fn detailer_erase_sweep_lowers_ink_and_flipping_mode_mid_stroke_does_not_retarget() {
+        let mut session = Session::new();
+        session
+            .tool_state
+            .get_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Detailer);
+        apply_brush(
+            &mut session.canvas,
+            point(0, 0),
+            authored_glyph_cell('#', PaintColor::FlatRgb(10, 20, 30)),
+        );
+        let fade = ShapeFade::build(&DetailerFadeTiles);
+        let detailer = Rc::new(RefCell::new(DetailerSession::default()));
+
+        let mut strokes = CanvasPointerStrokes::new();
+        let bounds = canvas_bounds();
+        {
+            let mut ctx = session.ctx();
+            ctx.graphic_fade = Some(&fade);
+            ctx.detailer_session = Some(&detailer);
+            strokes.begin_press(
+                &mut ctx,
+                PaintHand::Left,
+                point(0, 0),
+                bounds,
+                flat_view(),
+                0,
+            );
+        }
+        // Mid-stroke mode flip: the stroke captured Additive at begin, so
+        // the hand's add/erase property change cannot retarget the live
+        // stroke — it applies from the next press onward.
+        session.tool_state.get_mut().set_detailer_mode_for_hand(
+            PaintHand::Left,
+            crate::tool_state::DetailerMode::Subtractive,
+        );
+        draw_sweep(
+            &mut strokes,
+            &mut session.detailer_ctx(&fade, &detailer),
+            &CENTER_SWEEP,
+        );
+        // The stroke stayed additive on the fully-covered seed: still `#`.
+        assert_eq!(detailer.borrow().pending_graphic(), Some('#'));
+
+        strokes
+            .cancel_detailer_for_hand(&mut session.detailer_ctx(&fade, &detailer), PaintHand::Left);
+        strokes.finish_pointer_stroke(
+            &mut session.detailer_ctx(&fade, &detailer),
+            flat_view(),
+            0,
+            false,
+        );
+
+        // A fresh press now seeds with the flipped mode: erase lowers the
+        // authored `#`'s center back out — resolving to the ring glyph `o`.
+        {
+            let mut ctx = session.ctx();
+            ctx.graphic_fade = Some(&fade);
+            ctx.detailer_session = Some(&detailer);
+            strokes.begin_press(
+                &mut ctx,
+                PaintHand::Left,
+                point(0, 0),
+                bounds,
+                flat_view(),
+                0,
+            );
+        }
+        draw_sweep(
+            &mut strokes,
+            &mut session.detailer_ctx(&fade, &detailer),
+            &CENTER_SWEEP,
+        );
+        assert_eq!(detailer.borrow().pending_graphic(), Some('o'));
+        strokes
+            .finish_detailer_for_hand(&mut session.detailer_ctx(&fade, &detailer), PaintHand::Left);
+        let errors = strokes.finish_pointer_stroke(
+            &mut session.detailer_ctx(&fade, &detailer),
+            flat_view(),
+            0,
+            false,
+        );
+        assert!(errors.is_empty());
+        let painted = session.canvas.get(&point(0, 0)).unwrap();
+        assert_eq!(painted.graphic, CellGraphic::Glyph('o'));
+        assert_eq!(painted.color, PaintColor::FlatRgb(10, 20, 30));
+        assert_eq!(painted.weight_index, 0);
+    }
+
+    #[test]
+    fn detailer_press_on_a_blank_cell_is_a_no_op() {
+        let mut session = Session::new();
+        session
+            .tool_state
+            .get_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Detailer);
+        let fade = ShapeFade::build(&DetailerFadeTiles);
+        let detailer = Rc::new(RefCell::new(DetailerSession::default()));
+
+        let mut strokes = CanvasPointerStrokes::new();
+        let bounds = canvas_bounds();
+        {
+            let mut ctx = session.ctx();
+            ctx.graphic_fade = Some(&fade);
+            ctx.detailer_session = Some(&detailer);
+            strokes.begin_press(
+                &mut ctx,
+                PaintHand::Left,
+                point(0, 0),
+                bounds,
+                flat_view(),
+                0,
+            );
+        }
+        // Nothing authored under the press: no stroke seeds, samples are
+        // ignored, and release commits nothing.
+        assert!(!detailer.borrow().is_active());
+        draw_sweep(
+            &mut strokes,
+            &mut session.detailer_ctx(&fade, &detailer),
+            &[[0.5, 0.5]],
+        );
+        strokes
+            .finish_detailer_for_hand(&mut session.detailer_ctx(&fade, &detailer), PaintHand::Left);
+        let errors = strokes.finish_pointer_stroke(
+            &mut session.detailer_ctx(&fade, &detailer),
+            flat_view(),
+            0,
+            false,
+        );
+        assert!(errors.is_empty());
+        assert_eq!(session.action_counter, 0);
+        assert!(session.canvas.get(&point(0, 0)).is_none());
     }
 }

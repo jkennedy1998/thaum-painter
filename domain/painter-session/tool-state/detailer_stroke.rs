@@ -8,8 +8,8 @@
 use thaum_renderer_domain::shape_fade::fade::ShapeFade;
 use thaum_renderer_domain::{CellPoint, CellWeight, GlyphTileRaster};
 
-use crate::tool_state::PaintHand;
 pub use crate::tool_state::DetailerMode;
+use crate::tool_state::PaintHand;
 
 /// One in-progress detailer stroke: the acting hand, the cell being
 /// detailed, the render weight the buffer resolves against (captured at
