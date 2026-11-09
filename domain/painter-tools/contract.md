@@ -27,7 +27,9 @@ Own painter tool registration as one encapsulation: a registry of tool descripto
   - painter-tools contract
 - `painter_tools.rs`
   - encapsulation module root
-- `registry.rs`
+- `truth.md`
+  - J's durable tool-registration decisions
+- `registry.rs
   - `ToolDescriptor`, `RegisteredTool`, `ALL_TOOLS`, lookup helpers, registry tests
 - `shared/`
   - cross-tool behavior rules and computations written once

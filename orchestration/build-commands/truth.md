@@ -33,3 +33,7 @@
 
 ### 26-09-10-07-15-59-07
 - settled release ownership: `release-thaum-painter` is the only publisher of the canonical public page's displayed version, GitHub-generated release notes, and verified three-platform download facts after the matching release assets exist.
+
+### 26-11-09-01
+- j-quote: "Jetbrains could be shipped with it along with Carlito.... If allowed by terms of service"
+- interpretation: Ship the unmodified JetBrains Mono files and their license with renderer assets once its license permits bundling.
