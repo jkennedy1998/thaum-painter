@@ -139,14 +139,25 @@ fn detailer_cell_local(surface_units: [f32; 2], cell_clip_size: [f32; 2]) -> [f3
 /// Mono, so Detailer could seed and resolve against a different font than the
 /// visible canvas whenever the file selected another typeface.
 fn build_detailer_shape_fade(state: &BootState) -> Option<Rc<ShapeFade>> {
-    GlyphFontSet::load_selected_from_asset_root(
+    match GlyphFontSet::load_selected_from_asset_root(
         &state.config.asset_root,
         &state.config.glyph_typeface_id,
         state.config.glyph_cell_profile,
         Some(&state.config.glyph_spriteset_id),
-    )
-    .ok()
-    .map(|font_set| Rc::new(ShapeFade::build_weighted(&FontSetTiles { font_set: &font_set })))
+    ) {
+        Ok(font_set) => Some(Rc::new(ShapeFade::build_weighted(&FontSetTiles {
+            font_set: &font_set,
+        }))),
+        Err(error) => {
+            eprintln!(
+                "[detailer-debug] fade build failed: typeface={:?} profile={:?} spriteset={:?}: {error}",
+                state.config.glyph_typeface_id,
+                state.config.glyph_cell_profile,
+                state.config.glyph_spriteset_id,
+            );
+            None
+        }
+    }
 }
 
 fn detailer_shape_fade_profile(state: &BootState) -> (String, usize, usize, String) {

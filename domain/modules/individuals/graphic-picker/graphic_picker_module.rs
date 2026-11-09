@@ -4,7 +4,7 @@ use thaum_renderer_domain::{
     title_hotspot, vivid_flash_is_lit, Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior,
     CellPoint, CellWeight, GizmoBar, GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module,
     ModulePointerButton, ModulePointerEvent, ModuleRect, PanelChrome, PersistedModuleUiState,
-    Scrollbar, ScrollbarSpan, ScrollState, SidedGraphic, SpriteGraphic, UiColorRole, UiPalette,
+    ScrollState, Scrollbar, ScrollbarSpan, SidedGraphic, SpriteGraphic, UiColorRole, UiPalette,
     WorldPoint,
 };
 
@@ -366,7 +366,8 @@ impl GraphicPickerModule {
     /// so row wrapping and the recent row always agree with the bar.
     fn scrollbar_visible(&self) -> bool {
         let (content_width, _) = PanelChrome::content_size(self.rect);
-        self.build_rows_with_columns(content_width.max(1) as usize).len()
+        self.build_rows_with_columns(content_width.max(1) as usize)
+            .len()
             > self.available_scroll_rows()
     }
 
@@ -438,7 +439,9 @@ impl GraphicPickerModule {
         let viewport = self.available_scroll_rows();
         let max = ScrollState::max_offset(content, viewport);
         let mut offset = self.scroll.offset();
-        let consumed = self.scrollbar.on_down(local_x, local_y, content, viewport, &mut offset);
+        let consumed = self
+            .scrollbar
+            .on_down(local_x, local_y, content, viewport, &mut offset);
         self.scroll.set_offset(offset, max);
         consumed
     }
@@ -449,7 +452,9 @@ impl GraphicPickerModule {
         let viewport = self.available_scroll_rows();
         let max = ScrollState::max_offset(content, viewport);
         let mut offset = self.scroll.offset();
-        let moved = self.scrollbar.on_drag(local_x, local_y, content, viewport, &mut offset);
+        let moved = self
+            .scrollbar
+            .on_drag(local_x, local_y, content, viewport, &mut offset);
         self.scroll.set_offset(offset, max);
         moved
     }
@@ -896,7 +901,8 @@ impl Module for GraphicPickerModule {
                     .set_graphic_for_hand(hand, graphic);
             }
             ModulePointerEvent::Move { x, y } => {
-                self.scrollbar.note_pointer(x - self.rect.x0, y - self.rect.y0);
+                self.scrollbar
+                    .note_pointer(x - self.rect.x0, y - self.rect.y0);
                 // A live bar drag owns the pointer: follow the thumb, skip
                 // the gizmo drag path entirely.
                 if self.scrollbar.is_dragging() {
@@ -1422,9 +1428,11 @@ mod tests {
         // bar's column: every character stays reachable without resizing.
         let offenders: Vec<String> = cells
             .iter()
-            .filter(|cell| cell.position.x == span_x(&span)
-                && cell.position.y <= span_y_top(&span)
-                && cell.position.y >= span_y_bottom(&span))
+            .filter(|cell| {
+                cell.position.x == span_x(&span)
+                    && cell.position.y <= span_y_top(&span)
+                    && cell.position.y >= span_y_bottom(&span)
+            })
             .filter(|cell| match cell.graphic {
                 // Bar glyphs win the column; the chrome's blank clears
                 // under the bar are fine — the bar draws over them.

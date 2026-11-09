@@ -44,6 +44,7 @@ use crate::{
     brush::{self, Canvas, PaintedCell},
     clipboard::WorldCopyData,
     detailer_stroke::{DetailerSession, DetailerStroke},
+    tool_state::DetailerMode,
     fill::CanvasBounds,
     lasso_stroke::{
         build_lasso_path_cell_group, build_lasso_preview_cell_groups, LassoPreviewCell, LassoStroke,
@@ -562,38 +563,72 @@ impl CanvasPointerStrokes {
                 // The stamp places the hover preview's payload at the press
                 // cell: changes stage once so release commits one undo step.
                 "detailer" => {
-                    // Detailer is graphic-only and image-only: a press on an
+                    // Detailer is graphic-only and image-only. A press on an
                     // authored glyph seeds its typeface/weight-matched direct
-                    // canvas stroke. Pointer movement inside that cell edits
-                    // the comparison tile through `paint_detailer_at_cell_local`.
-                    let (target, mode) = {
+                    // canvas stroke. An empty cell seeds an empty buffer for
+                    // additive editing only (J: add on an empty cell must be
+                    // able to produce a valid glyph); subtract has nothing to
+                    // erase there. Pointer movement inside that cell edits the
+                    // comparison tile through `paint_detailer_at_cell_local`.
+                    let (target, mode, hand_weight_index) = {
                         let state = ctx.tool_state.borrow();
+                        let hand_state = state.hand_state(hand);
                         (
-                            state.hand_state(hand).target,
-                            state.hand_state(hand).detailer_mode,
+                            hand_state.target,
+                            hand_state.detailer_mode,
+                            hand_state.weight_index,
                         )
                     };
                     let Some(session) = ctx.detailer_session else {
+                        eprintln!("[detailer-debug] press: no detailer session wired");
                         return None;
                     };
                     let Some(fade) = ctx.graphic_fade else {
-                        return None;
-                    };
-                    let Some(cell) = ctx.canvas.get(&position) else {
-                        return None;
-                    };
-                    let CellGraphic::Glyph(glyph) = cell.graphic else {
+                        eprintln!("[detailer-debug] press: no graphic fade built");
                         return None;
                     };
                     if target != PaintTarget::Image {
+                        eprintln!("[detailer-debug] press: target is not Image");
                         return None;
                     }
-                    let weight = thaum_renderer_domain::CellWeight::from_index_clamped(
-                        cell.weight_index as i32,
-                    );
-                    let Some(seed) = fade.glyph_tile_at_weight(glyph, weight) else {
-                        return None;
+                    let (weight, seed) = match ctx.canvas.get(&position) {
+                        Some(cell) => {
+                            let CellGraphic::Glyph(glyph) = cell.graphic else {
+                                eprintln!("[detailer-debug] press: cell at {position:?} is not a glyph");
+                                return None;
+                            };
+                            let weight = thaum_renderer_domain::CellWeight::from_index_clamped(
+                                cell.weight_index as i32,
+                            );
+                            let Some(seed) = fade.glyph_tile_at_weight(glyph, weight) else {
+                                eprintln!(
+                                    "[detailer-debug] press: no comparison tile for {glyph:?} at weight {weight:?}"
+                                );
+                                return None;
+                            };
+                            (weight, seed)
+                        }
+                        None => {
+                            if mode != DetailerMode::Additive {
+                                eprintln!("[detailer-debug] press: empty cell, subtract has nothing to erase");
+                                return None;
+                            }
+                            let weight = thaum_renderer_domain::CellWeight::from_index_clamped(
+                                hand_weight_index as i32,
+                            );
+                            let Some(seed) = fade.blank_tile_at_weight(weight) else {
+                                eprintln!("[detailer-debug] press: no blank tile at weight {weight:?}");
+                                return None;
+                            };
+                            eprintln!("[detailer-debug] press: empty cell, additive blank seed {weight:?}");
+                            (weight, seed)
+                        }
                     };
+                    eprintln!(
+                        "[detailer-debug] press: seeded at {position:?} tile {}x{} weight {weight:?} mode {mode:?}",
+                        seed.width,
+                        seed.height
+                    );
                     session.borrow_mut().begin(
                         DetailerStroke::begin(hand, position, mode, weight, seed),
                         |stroke| stroke.resolve(fade),
@@ -1073,11 +1108,27 @@ impl CanvasPointerStrokes {
             .detailer_session
             .and_then(|session| session.borrow_mut().take_pending_commit())
         {
-            if let (Some(block_id), Some(mut cell)) = (
-                ctx.document
-                    .active_raster_block_id(ctx.active_layer_id, current_breath),
-                ctx.canvas.get(&commit.position).cloned(),
-            ) {
+            eprintln!("[detailer-debug] commit consumed: {:?}", commit);
+            if let Some(block_id) = ctx
+                .document
+                .active_raster_block_id(ctx.active_layer_id, current_breath)
+            {
+                // Graphic-only edit: an authored cell keeps its color, weight,
+                // shaders, and facing exactly; an empty cell is authored fresh
+                // from the committing hand's color and weight.
+                let mut cell = match ctx.canvas.get(&commit.position).cloned() {
+                    Some(cell) => cell,
+                    None => {
+                        let hand_state = ctx.tool_state.borrow().hand_state(commit.hand);
+                        PaintedCell {
+                            facing: CellFacing::PosZ,
+                            graphic: CellGraphic::Glyph(' '),
+                            color: hand_state.color.clone(),
+                            weight_index: hand_state.weight_index,
+                            shader_stack: Vec::new(),
+                        }
+                    }
+                };
                 let start = (ctx.canvas.clone(), block_id.clone());
                 cell.graphic = CellGraphic::Glyph(commit.graphic);
                 stage_painted_cells_chunk(
@@ -1088,6 +1139,10 @@ impl CanvasPointerStrokes {
                     &block_id,
                 );
                 self.set_image_start(commit.hand, start);
+            } else {
+                eprintln!(
+                    "[detailer-debug] commit skipped: no active raster block",
+                );
             }
         }
         for start in [self.left_image_start.take(), self.right_image_start.take()] {
@@ -1125,29 +1180,45 @@ impl CanvasPointerStrokes {
             vivid,
         );
         // Detailer never mutates the canvas until grid release. Overlay its
-        // resolved candidate at the original authored cell so the document
-        // remains the source of truth while the user compares live changes.
+        // resolved candidate at the stroked cell so the document remains the
+        // source of truth while the user compares live changes. Empty-cell
+        // strokes preview with the hand's own color and weight.
         if let Some((position, glyph)) = ctx.detailer_session.and_then(|session| {
             let session = session.borrow();
             Some((session.pending_position()?, session.pending_graphic()?))
         }) {
-            if let Some(existing) = ctx.canvas.get(&position) {
-                let mut preview = CellGroup::new(WorldPoint::origin());
-                preview.insert(Cell {
-                    position,
-                    graphic: CellGraphic::Glyph(glyph),
-                    color: existing.color.to_cell_color(),
-                    weight: thaum_renderer_domain::CellWeight::from_index_clamped(
-                        existing.weight_index as i32,
-                    ),
-                    facing: existing.facing,
-                    // Live renderer shader ids are resolved only in the
-                    // document render bridge; preserve the graphic preview
-                    // rather than inventing an asset-id mapping here.
-                    ..Cell::default()
-                });
-                groups.push(preview);
-            }
+            let existing = ctx.canvas.get(&position);
+            let mut preview = CellGroup::new(WorldPoint::origin());
+            preview.insert(Cell {
+                position,
+                graphic: CellGraphic::Glyph(glyph),
+                color: existing
+                    .map(|cell| cell.color.to_cell_color())
+                    .unwrap_or_else(|| {
+                        ctx.tool_state
+                            .borrow()
+                            .hand_state(PaintHand::Left)
+                            .color
+                            .clone()
+                            .to_cell_color()
+                    }),
+                weight: thaum_renderer_domain::CellWeight::from_index_clamped(
+                    existing
+                        .map(|cell| cell.weight_index)
+                        .unwrap_or_else(|| {
+                            ctx.tool_state
+                                .borrow()
+                                .hand_state(PaintHand::Left)
+                                .weight_index
+                        }) as i32,
+                ),
+                facing: existing.map(|cell| cell.facing).unwrap_or(CellFacing::PosZ),
+                // Live renderer shader ids are resolved only in the
+                // document render bridge; preserve the graphic preview
+                // rather than inventing an asset-id mapping here.
+                ..Cell::default()
+            });
+            groups.push(preview);
         }
         if let Some(stroke) = &self.lasso {
             groups.push(build_lasso_path_cell_group(stroke));
@@ -2313,6 +2384,148 @@ mod tests {
         assert_eq!(detailer.borrow().pending_graphic(), None);
     }
 
+    /// Cell-local samples covering every subpixel of the tests' 4x4 tile:
+    /// one sample per buffer pixel.
+    fn full_sweep() -> Vec<[f32; 2]> {
+        (0..4)
+            .flat_map(|y| {
+                (0..4)
+                    .map(move |x| [(x as f32 + 0.5) / 4.0, (y as f32 + 0.5) / 4.0])
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    fn tile_alpha_sum(fade: &ShapeFade, glyph: char) -> u32 {
+        fade.glyph_tile_at_weight(glyph, thaum_renderer_domain::CellWeight::from_index_clamped(0))
+            .map(|tile| tile.alpha.iter().map(|&a| a as u32).sum())
+            .unwrap_or(0)
+    }
+
+    /// J's first acceptance bar: additive Detailer on an EMPTY cell must
+    /// commit a valid inked glyph — the tool authors new graphics, not only
+    /// edits existing ones.
+    #[test]
+    fn detailer_add_on_an_empty_cell_commits_a_valid_inked_glyph() {
+        let mut session = Session::new();
+        session
+            .tool_state
+            .get_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Detailer);
+        session
+            .tool_state
+            .get_mut()
+            .set_detailer_mode_for_hand(PaintHand::Left, DetailerMode::Additive);
+        let fade = ShapeFade::build(&DetailerFadeTiles);
+        let detailer = Rc::new(RefCell::new(DetailerSession::default()));
+
+        let mut strokes = CanvasPointerStrokes::new();
+        let bounds = canvas_bounds();
+        {
+            let mut ctx = session.ctx();
+            ctx.graphic_fade = Some(&fade);
+            ctx.detailer_session = Some(&detailer);
+            strokes.begin_press(
+                &mut ctx,
+                PaintHand::Left,
+                point(2, 2),
+                bounds,
+                flat_view(),
+                0,
+            );
+        }
+        assert!(detailer.borrow().is_active());
+
+        // Fill every subpixel of the empty buffer with additive ink.
+        draw_sweep(
+            &mut strokes,
+            &mut session.detailer_ctx(&fade, &detailer),
+            &full_sweep(),
+        );
+        assert_eq!(detailer.borrow().pending_graphic(), Some('#'));
+
+        strokes
+            .finish_detailer_for_hand(&mut session.detailer_ctx(&fade, &detailer), PaintHand::Left);
+        let errors = strokes.finish_pointer_stroke(
+            &mut session.detailer_ctx(&fade, &detailer),
+            flat_view(),
+            0,
+            false,
+        );
+        assert!(errors.is_empty());
+
+        // The empty position now holds a real glyph cell with actual ink.
+        assert_eq!(session.action_counter, 1);
+        let painted = session.canvas.get(&point(2, 2)).unwrap();
+        assert_eq!(painted.graphic, CellGraphic::Glyph('#'));
+        assert!(tile_alpha_sum(&fade, '#') > 0);
+        assert!(!detailer.borrow().is_active());
+    }
+
+    /// J's second acceptance bar: subtractive Detailer on an authored glyph
+    /// must commit a graphic that covers strictly LESS alpha.
+    #[test]
+    fn detailer_subtract_on_a_glyph_cell_commits_less_alpha() {
+        let mut session = Session::new();
+        session
+            .tool_state
+            .get_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Detailer);
+        session
+            .tool_state
+            .get_mut()
+            .set_detailer_mode_for_hand(PaintHand::Left, DetailerMode::Subtractive);
+        apply_brush(
+            &mut session.canvas,
+            point(0, 0),
+            authored_glyph_cell('o', PaintColor::FlatRgb(10, 20, 30)),
+        );
+        let fade = ShapeFade::build(&DetailerFadeTiles);
+        let detailer = Rc::new(RefCell::new(DetailerSession::default()));
+        let alpha_before = tile_alpha_sum(&fade, 'o');
+        assert!(alpha_before > 0);
+
+        let mut strokes = CanvasPointerStrokes::new();
+        let bounds = canvas_bounds();
+        {
+            let mut ctx = session.ctx();
+            ctx.graphic_fade = Some(&fade);
+            ctx.detailer_session = Some(&detailer);
+            strokes.begin_press(
+                &mut ctx,
+                PaintHand::Left,
+                point(0, 0),
+                bounds,
+                flat_view(),
+                0,
+            );
+        }
+
+        // Erase every subpixel: the buffer bottoms out empty and resolves
+        // to the empty glyph.
+        draw_sweep(
+            &mut strokes,
+            &mut session.detailer_ctx(&fade, &detailer),
+            &full_sweep(),
+        );
+        assert_eq!(detailer.borrow().pending_graphic(), Some('.'));
+
+        strokes
+            .finish_detailer_for_hand(&mut session.detailer_ctx(&fade, &detailer), PaintHand::Left);
+        let errors = strokes.finish_pointer_stroke(
+            &mut session.detailer_ctx(&fade, &detailer),
+            flat_view(),
+            0,
+            false,
+        );
+        assert!(errors.is_empty());
+
+        let painted = session.canvas.get(&point(0, 0)).unwrap();
+        assert_eq!(painted.graphic, CellGraphic::Glyph('.'));
+        assert_eq!(painted.color, PaintColor::FlatRgb(10, 20, 30));
+        assert!(tile_alpha_sum(&fade, '.') < alpha_before);
+    }
+
     #[test]
     fn detailer_fast_click_without_painting_releases_the_authored_glyph() {
         let mut session = Session::new();
@@ -2576,12 +2789,16 @@ mod tests {
     }
 
     #[test]
-    fn detailer_press_on_a_blank_cell_is_a_no_op() {
+    fn detailer_subtract_press_on_an_empty_cell_is_a_no_op() {
         let mut session = Session::new();
         session
             .tool_state
             .get_mut()
             .set_tool_for_hand(PaintHand::Left, PaintTool::Detailer);
+        session
+            .tool_state
+            .get_mut()
+            .set_detailer_mode_for_hand(PaintHand::Left, DetailerMode::Subtractive);
         let fade = ShapeFade::build(&DetailerFadeTiles);
         let detailer = Rc::new(RefCell::new(DetailerSession::default()));
 
@@ -2600,8 +2817,10 @@ mod tests {
                 0,
             );
         }
-        // Nothing authored under the press: no stroke seeds, samples are
-        // ignored, and release commits nothing.
+        // Nothing authored under the press and subtract has nothing to
+        // erase: no stroke seeds, samples are ignored, and release commits
+        // nothing. (Additive on an empty cell is the accepted seed path —
+        // see `detailer_add_on_an_empty_cell_commits_a_valid_inked_glyph`.)
         assert!(!detailer.borrow().is_active());
         draw_sweep(
             &mut strokes,

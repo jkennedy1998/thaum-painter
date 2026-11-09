@@ -377,7 +377,11 @@ impl ToolState {
         self.active_hand = hand;
     }
 
-    pub fn set_fill_connectivity_for_hand(&mut self, hand: PaintHand, connectivity: FillConnectivity) {
+    pub fn set_fill_connectivity_for_hand(
+        &mut self,
+        hand: PaintHand,
+        connectivity: FillConnectivity,
+    ) {
         self.hand_state_mut(hand).fill_connectivity = connectivity;
         self.active_hand = hand;
     }
@@ -607,10 +611,7 @@ impl ToolState {
     /// interaction plane (J 2026-10-10 — brush adopts depth later).
     fn acts_through_depth_for_hand(&self, hand: PaintHand) -> bool {
         self.hand_state(hand).fill_3d
-            && matches!(
-                self.tool_for_hand(hand),
-                PaintTool::Fill | PaintTool::Lasso
-            )
+            && matches!(self.tool_for_hand(hand), PaintTool::Fill | PaintTool::Lasso)
     }
 
     fn brush_points_for_hand(
@@ -676,13 +677,7 @@ impl ToolState {
             return;
         }
         let hand_state = self.hand_state(hand);
-        let edit_points = self.edit_points_for_hand(
-            canvas,
-            position,
-            hand,
-            bounds,
-            orientation,
-        );
+        let edit_points = self.edit_points_for_hand(canvas, position, hand, bounds, orientation);
         // Through-depth tools edit cells on other depth layers too, so the
         // edit set skips the interaction-plane gate and keeps only the
         // selection-cell gate.
@@ -840,11 +835,10 @@ impl ToolState {
             thaum_renderer_domain::WorldAxis::Y => fill::CanvasPlaneAxis::Y,
             thaum_renderer_domain::WorldAxis::Z => fill::CanvasPlaneAxis::Z,
         };
-        let anchor = path.first().copied().unwrap_or(CellPoint {
-            x: 0,
-            y: 0,
-            z: 0,
-        });
+        let anchor = path
+            .first()
+            .copied()
+            .unwrap_or(CellPoint { x: 0, y: 0, z: 0 });
         let span = fill::depth_span_for_canvas(canvas, depth_axis, anchor);
         crate::lasso::lasso_points_through_depth(path, orientation, span)
     }
@@ -1137,7 +1131,10 @@ mod tests {
     #[test]
     fn each_tool_declares_its_own_property_rows() {
         assert_eq!(PaintTool::Brush.property_row_ids(), &["brush_size"]);
-        assert_eq!(PaintTool::Fill.property_row_ids(), &["fill_connectivity", "fill_3d"]);
+        assert_eq!(
+            PaintTool::Fill.property_row_ids(),
+            &["fill_connectivity", "fill_3d"]
+        );
         assert_eq!(
             PaintTool::Text.property_row_ids(),
             &["text_char_step", "text_enter_step"]
@@ -2199,13 +2196,8 @@ mod tests {
         let mut canvas = Canvas::new();
         let path = [point(0, 0), point(2, 0), point(2, 2), point(0, 2)];
 
-        let points = tool_state.lasso_edit_points(
-            &canvas,
-            &selection,
-            &path,
-            PaintHand::Left,
-            flat_view(),
-        );
+        let points =
+            tool_state.lasso_edit_points(&canvas, &selection, &path, PaintHand::Left, flat_view());
         assert_eq!(points.len(), 9);
         assert!(points.contains(&point(1, 1)));
 
@@ -2215,13 +2207,7 @@ mod tests {
             weight: false,
         };
         assert!(tool_state
-            .lasso_edit_points(
-                &canvas,
-                &selection,
-                &path,
-                PaintHand::Left,
-                flat_view()
-            )
+            .lasso_edit_points(&canvas, &selection, &path, PaintHand::Left, flat_view())
             .is_empty());
     }
 
@@ -2412,12 +2398,8 @@ mod tests {
         let canvas = Canvas::new();
         let path = [point(0, 0), point(2, 0), point(2, 2), point(0, 2)];
 
-        let points = tool_state.lasso_selection_points(
-            &canvas,
-            &path,
-            PaintHand::Left,
-            flat_view(),
-        );
+        let points =
+            tool_state.lasso_selection_points(&canvas, &path, PaintHand::Left, flat_view());
         assert!(points.contains(&point(1, 1)));
         assert_eq!(points.len(), 9);
 

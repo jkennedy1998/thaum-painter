@@ -600,7 +600,8 @@ fn parse_document(value: &Value) -> Result<DocumentContent> {
         .context("invalid document group")?;
     Ok(DocumentContent {
         bounds: parse_document_bounds(field(value, "bounds")?)?,
-        display_profile: parse_display_profile(value).context("invalid document display_profile")?,
+        display_profile: parse_display_profile(value)
+            .context("invalid document display_profile")?,
         group_order: require_string_array(value, "group_order")?,
         groups,
         playback: parse_playback_window(field(value, "playback")?)?,
@@ -749,11 +750,19 @@ mod tests {
     #[test]
     fn display_profile_defaults_legacy_documents_and_rejects_incomplete_or_invalid_profiles() {
         let mut value: serde_json::Value = serde_json::from_str(EXAMPLE_FILE_SCHEMA_JSON).unwrap();
-        value["document"].as_object_mut().unwrap().remove("display_profile");
-        assert_eq!(parse_file_schema(&value).unwrap().document.display_profile, DisplayProfile::default());
+        value["document"]
+            .as_object_mut()
+            .unwrap()
+            .remove("display_profile");
+        assert_eq!(
+            parse_file_schema(&value).unwrap().document.display_profile,
+            DisplayProfile::default()
+        );
 
         value["document"]["display_profile"] = serde_json::json!({ "cell_width": 0, "cell_height": 16, "typeface_id": "jetbrains-mono", "spriteset_id": "monothaum-atlas-v3" });
-        assert!(format!("{:#}", parse_file_schema(&value).unwrap_err()).contains("greater than zero"));
+        assert!(
+            format!("{:#}", parse_file_schema(&value).unwrap_err()).contains("greater than zero")
+        );
 
         value["document"]["display_profile"] = serde_json::json!({ "cell_width": 12, "cell_height": 16, "typeface_id": "", "spriteset_id": "monothaum-atlas-v3" });
         assert!(format!("{:#}", parse_file_schema(&value).unwrap_err()).contains("typeface_id"));

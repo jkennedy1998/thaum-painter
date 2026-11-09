@@ -87,7 +87,10 @@ impl ToolPresetsModule {
             gizmo_state: GizmoState::new(),
             hidden: false,
             hovered: None,
-            capture_keys: HAND_FIELDS.iter().map(|field| field.key.to_string()).collect(),
+            capture_keys: HAND_FIELDS
+                .iter()
+                .map(|field| field.key.to_string())
+                .collect(),
             save_options_open: false,
             rename_double_click: DoubleClick::new(),
             delete_double_click: DoubleClick::new(),
@@ -259,7 +262,15 @@ impl Module for ToolPresetsModule {
             };
             match row {
                 Row::Save => {
-                    push_text_cells(&mut cells, content_x, y, "SAVE", color, CellWeight::THREE, max_x);
+                    push_text_cells(
+                        &mut cells,
+                        content_x,
+                        y,
+                        "SAVE",
+                        color,
+                        CellWeight::THREE,
+                        max_x,
+                    );
                 }
                 Row::SaveOptions => {
                     let mark = if self.save_options_open { '-' } else { '+' };
@@ -277,7 +288,11 @@ impl Module for ToolPresetsModule {
                     let field = &HAND_FIELDS[field_index];
                     let on = self.capture_keys.contains(field.key);
                     let mark = if on { 'x' } else { ' ' };
-                    let color = if on { color } else { self.palette.get(UiColorRole::Medium) };
+                    let color = if on {
+                        color
+                    } else {
+                        self.palette.get(UiColorRole::Medium)
+                    };
                     push_text_cells(
                         &mut cells,
                         content_x,
@@ -318,14 +333,22 @@ impl Module for ToolPresetsModule {
                         CellWeight::TWO
                     };
                     cells.push(Cell {
-                        position: CellPoint { x: content_x, y, z: 0 },
+                        position: CellPoint {
+                            x: content_x,
+                            y,
+                            z: 0,
+                        },
                         graphic: CellGraphic::Glyph(indicator),
                         color: row_color,
                         weight,
                         ..Cell::default()
                     });
                     cells.push(Cell {
-                        position: CellPoint { x: content_x + 1, y, z: 0 },
+                        position: CellPoint {
+                            x: content_x + 1,
+                            y,
+                            z: 0,
+                        },
                         graphic: CellGraphic::Glyph(slot.chars().next().unwrap_or(' ')),
                         color,
                         weight,
@@ -337,15 +360,7 @@ impl Module for ToolPresetsModule {
                         }
                         _ => preset.name.clone(),
                     };
-                    push_text_cells(
-                        &mut cells,
-                        content_x + 3,
-                        y,
-                        &display,
-                        color,
-                        weight,
-                        max_x,
-                    );
+                    push_text_cells(&mut cells, content_x + 3, y, &display, color, weight, max_x);
                 }
             }
         }
@@ -393,15 +408,12 @@ impl Module for ToolPresetsModule {
                     Row::Preset(preset_index) => {
                         let now = Instant::now();
                         if button == ModulePointerButton::Left
-                            && self
-                                .rename_double_click
-                                .note_click(preset_index, now)
+                            && self.rename_double_click.note_click(preset_index, now)
                         {
                             // Double left click: inline rename (J
                             // 2026-09-24). The first click already applied
                             // the preset, the second starts the rename.
-                            let mut field =
-                                TextEntryField::new(RENAME_MAX_CHARS, "name + enter");
+                            let mut field = TextEntryField::new(RENAME_MAX_CHARS, "name + enter");
                             field.focus();
                             self.rename = Some(RenameSession {
                                 index: preset_index,
@@ -410,9 +422,7 @@ impl Module for ToolPresetsModule {
                             return;
                         }
                         if button == ModulePointerButton::Right
-                            && self
-                                .delete_double_click
-                                .note_click(preset_index, now)
+                            && self.delete_double_click.note_click(preset_index, now)
                         {
                             // Double right click: delete (J 2026-09-24).
                             if self.presets.borrow().len() > preset_index {
@@ -426,12 +436,12 @@ impl Module for ToolPresetsModule {
                         };
                         let mut tool_state = self.tool_state.borrow_mut();
                         match button {
-                            ModulePointerButton::Left => {
-                                preset.left.apply_to_runtime(&mut tool_state, PaintHand::Left)
-                            }
-                            ModulePointerButton::Right => {
-                                preset.right.apply_to_runtime(&mut tool_state, PaintHand::Right)
-                            }
+                            ModulePointerButton::Left => preset
+                                .left
+                                .apply_to_runtime(&mut tool_state, PaintHand::Left),
+                            ModulePointerButton::Right => preset
+                                .right
+                                .apply_to_runtime(&mut tool_state, PaintHand::Right),
                             ModulePointerButton::Middle => preset.apply_to_runtime(&mut tool_state),
                         }
                     }
@@ -544,7 +554,13 @@ mod tests {
         click(module, 3, y, ModulePointerButton::Left);
     }
 
-    fn module_with(presets: Vec<ToolPreset>) -> (Rc<RefCell<ToolState>>, Rc<RefCell<Vec<ToolPreset>>>, ToolPresetsModule) {
+    fn module_with(
+        presets: Vec<ToolPreset>,
+    ) -> (
+        Rc<RefCell<ToolState>>,
+        Rc<RefCell<Vec<ToolPreset>>>,
+        ToolPresetsModule,
+    ) {
         let tool_state = tool_state();
         let store = Rc::new(RefCell::new(presets));
         let module =
@@ -716,10 +732,7 @@ mod tests {
         open_save_options(&mut presets);
         assert!(presets.save_options_open);
         // Expanded: every registry toggle row joins the stack.
-        assert_eq!(
-            presets.row_heights().count(),
-            2 + 2 + HAND_FIELDS.len()
-        );
+        assert_eq!(presets.row_heights().count(), 2 + 2 + HAND_FIELDS.len());
         open_save_options(&mut presets);
         assert!(!presets.save_options_open);
         assert_eq!(presets.row_heights().count(), 2 + 2);
@@ -743,11 +756,20 @@ mod tests {
     #[test]
     fn draw_at_a_negative_x_panel_still_lays_out_full_text_runs() {
         let (tool_state, store, mut presets) = module_with(crate::tool_presets::starter_presets());
-        presets.rect = ModuleRect { x0: -41, y0: 36, x1: -26, y1: 56 };
+        presets.rect = ModuleRect {
+            x0: -41,
+            y0: 36,
+            x1: -26,
+            y1: 56,
+        };
         // Make the live tools match starter preset 0 so the row paints its
         // indicator, digit, and name like the real first-boot view.
-        tool_state.borrow_mut().set_tool_for_hand(PaintHand::Left, PaintTool::Lasso);
-        tool_state.borrow_mut().set_tool_for_hand(PaintHand::Right, PaintTool::Move);
+        tool_state
+            .borrow_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Lasso);
+        tool_state
+            .borrow_mut()
+            .set_tool_for_hand(PaintHand::Right, PaintTool::Move);
         let group = presets.draw();
         let glyphs: String = group
             .cells
@@ -770,9 +792,7 @@ mod tests {
     fn hotspots_cover_the_save_row_and_each_preset_row() {
         let presets = module_with(crate::tool_presets::starter_presets()).2;
         let hotspots = presets.hotspots();
-        assert!(hotspots
-            .iter()
-            .any(|hotspot| hotspot.title == "SAVE"));
+        assert!(hotspots.iter().any(|hotspot| hotspot.title == "SAVE"));
         assert!(hotspots
             .iter()
             .any(|hotspot| hotspot.title == "select + move"));

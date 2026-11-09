@@ -4,12 +4,13 @@ use thaum_renderer_domain::{
     title_hotspot, Cell, CellGraphic, CellGroup, CellGroupIntakeBehavior, CellPoint, CellWeight,
     GizmoBar, GizmoClickOutcome, GizmoKind, GizmoState, Hotspot, Module, ModulePointerButton,
     ModulePointerEvent, ModuleRect, NumberFieldEdit, PanelChrome, PersistedModuleUiState,
-    PropertyHit, PropertyMatrixColumn, PropertyMatrixSide, PropertyRow, PropertyRows, Scrollbar,
-    ScrollbarSpan, ScrollState, UiPalette, WorldPoint,
+    PropertyHit, PropertyMatrixColumn, PropertyMatrixSide, PropertyRow, PropertyRows, ScrollState,
+    Scrollbar, ScrollbarSpan, UiPalette, WorldPoint,
 };
 
 use crate::{
-    fill::FillConnectivity, selection_state::{PainterSelection, SelectionMode},
+    fill::FillConnectivity,
+    selection_state::{PainterSelection, SelectionMode},
     tool_state::{DetailerMode, PaintChannel, PaintHand, PaintTarget, PaintTool, ToolState},
 };
 
@@ -208,7 +209,8 @@ impl HandSettingsModule {
             column.left_value = left.detailer_mode == mode;
             column.right_value = right.detailer_mode == mode;
             column.left_enabled = Self::hand_declares_row(&state, PaintHand::Left, "detailer_mode");
-            column.right_enabled = Self::hand_declares_row(&state, PaintHand::Right, "detailer_mode");
+            column.right_enabled =
+                Self::hand_declares_row(&state, PaintHand::Right, "detailer_mode");
             detailer_mode_columns.push(column);
         }
 
@@ -368,7 +370,9 @@ impl HandSettingsModule {
         let viewport = self.visible_row_count();
         let max = ScrollState::max_offset(content, viewport);
         let mut offset = self.scroll.offset();
-        let consumed = self.scrollbar.on_down(local_x, local_y, content, viewport, &mut offset);
+        let consumed = self
+            .scrollbar
+            .on_down(local_x, local_y, content, viewport, &mut offset);
         self.scroll.set_offset(offset, max);
         consumed
     }
@@ -379,7 +383,9 @@ impl HandSettingsModule {
         let viewport = self.visible_row_count();
         let max = ScrollState::max_offset(content, viewport);
         let mut offset = self.scroll.offset();
-        let moved = self.scrollbar.on_drag(local_x, local_y, content, viewport, &mut offset);
+        let moved = self
+            .scrollbar
+            .on_drag(local_x, local_y, content, viewport, &mut offset);
         self.scroll.set_offset(offset, max);
         moved
     }
@@ -719,7 +725,8 @@ impl Module for HandSettingsModule {
                 }
             }
             ModulePointerEvent::Move { x, y } => {
-                self.scrollbar.note_pointer(x - self.rect.x0, y - self.rect.y0);
+                self.scrollbar
+                    .note_pointer(x - self.rect.x0, y - self.rect.y0);
                 // A live bar drag owns the pointer: follow the thumb, skip
                 // the gizmo drag path entirely.
                 if self.scrollbar.is_dragging() {

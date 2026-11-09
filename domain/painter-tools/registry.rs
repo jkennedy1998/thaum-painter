@@ -164,10 +164,10 @@ mod tests {
     }
 
     use crate::painter_tools::brush::BrushTool;
+    use crate::painter_tools::detailer::DetailerTool;
     use crate::painter_tools::fill::FillTool;
     use crate::painter_tools::lasso::LassoTool;
     use crate::painter_tools::move_tool::MoveTool;
-    use crate::painter_tools::detailer::DetailerTool;
     use crate::painter_tools::picker::PickerTool;
     use crate::painter_tools::stamp::StampTool;
     use crate::painter_tools::text::TextTool;

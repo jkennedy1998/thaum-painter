@@ -257,7 +257,11 @@ impl PaintColorPickerModule {
         };
 
         let (hex_text, edit_open) = self.hex_display();
-        let text_color = if edit_open { vivid.clone() } else { bright.clone() };
+        let text_color = if edit_open {
+            vivid.clone()
+        } else {
+            bright.clone()
+        };
         let has_selection = self.inner.borrow().selected_rgb().is_some();
         push(
             STRIP_HEX_ROW,
@@ -532,7 +536,11 @@ mod tests {
         let mut this = module(&tool_state);
 
         // display position 2, top content row
-        click(&mut this, click_x_for_display_position(2), click_y_for_top_row());
+        click(
+            &mut this,
+            click_x_for_display_position(2),
+            click_y_for_top_row(),
+        );
 
         let state = tool_state.borrow();
         let expected = legacy_indexed_palette()[this.inner.borrow().display_order()[2]];
@@ -604,7 +612,10 @@ mod tests {
         click(&mut this, rect().x0 + STRIP_PLUS, rect().y0 + STRIP_HEX_ROW);
 
         assert!(!this.color_entry_is_open());
-        assert!(tool_state.borrow().file_palette.contains(&[0x07, 0x70, 0xaa]));
+        assert!(tool_state
+            .borrow()
+            .file_palette
+            .contains(&[0x07, 0x70, 0xaa]));
     }
 
     #[test]
@@ -613,7 +624,11 @@ mod tests {
         let entry: Rc<RefCell<Option<ColorEntryEdit>>> = Rc::new(RefCell::new(None));
         let mut this = module_with_entry(&tool_state, entry.clone());
 
-        click(&mut this, rect().x0 + STRIP_RGB_START, rect().y0 + STRIP_RGB_ROW);
+        click(
+            &mut this,
+            rect().x0 + STRIP_RGB_START,
+            rect().y0 + STRIP_RGB_ROW,
+        );
         assert!(this.color_entry_is_open());
         {
             let mut edit = entry.borrow_mut();
@@ -671,11 +686,23 @@ mod tests {
         let tool_state = Rc::new(RefCell::new(ToolState::default()));
         let mut this = module(&tool_state);
         // Click display position 2, which also makes it the active hand color.
-        click(&mut this, click_x_for_display_position(2), click_y_for_top_row());
-        let selected = this.inner.borrow().selected_rgb().expect("a swatch was clicked");
+        click(
+            &mut this,
+            click_x_for_display_position(2),
+            click_y_for_top_row(),
+        );
+        let selected = this
+            .inner
+            .borrow()
+            .selected_rgb()
+            .expect("a swatch was clicked");
         let before = tool_state.borrow().file_palette.len();
 
-        click(&mut this, rect().x0 + STRIP_MINUS, rect().y0 + STRIP_HEX_ROW);
+        click(
+            &mut this,
+            rect().x0 + STRIP_MINUS,
+            rect().y0 + STRIP_HEX_ROW,
+        );
 
         let state = tool_state.borrow();
         assert_eq!(state.file_palette.len(), before - 1);
@@ -691,21 +718,37 @@ mod tests {
     fn minus_carries_the_selection_to_the_color_taking_the_removed_slot() {
         let tool_state = Rc::new(RefCell::new(ToolState::default()));
         let mut this = module(&tool_state);
-        click(&mut this, click_x_for_display_position(2), click_y_for_top_row());
-        let removed = this.inner.borrow().selected_rgb().expect("a swatch was clicked");
+        click(
+            &mut this,
+            click_x_for_display_position(2),
+            click_y_for_top_row(),
+        );
+        let removed = this
+            .inner
+            .borrow()
+            .selected_rgb()
+            .expect("a swatch was clicked");
         let successor = {
             let inner = this.inner.borrow();
             let order = inner.display_order();
             inner.indexed_palette()[order[3]]
         };
 
-        click(&mut this, rect().x0 + STRIP_MINUS, rect().y0 + STRIP_HEX_ROW);
+        click(
+            &mut this,
+            rect().x0 + STRIP_MINUS,
+            rect().y0 + STRIP_HEX_ROW,
+        );
 
         assert!(!tool_state.borrow().file_palette.contains(&removed));
         // The color that took display position 2 is now the selection, so
         // pressing - again removes it (wipe without re-clicking a swatch).
         assert_eq!(this.inner.borrow().selected_rgb(), Some(successor));
-        click(&mut this, rect().x0 + STRIP_MINUS, rect().y0 + STRIP_HEX_ROW);
+        click(
+            &mut this,
+            rect().x0 + STRIP_MINUS,
+            rect().y0 + STRIP_HEX_ROW,
+        );
         assert!(!tool_state.borrow().file_palette.contains(&successor));
     }
 
@@ -720,10 +763,18 @@ mod tests {
         }
         this.draw();
         let last = tool_state.borrow().file_palette[0];
-        click(&mut this, click_x_for_display_position(0), click_y_for_top_row());
+        click(
+            &mut this,
+            click_x_for_display_position(0),
+            click_y_for_top_row(),
+        );
         assert_eq!(this.inner.borrow().selected_rgb(), Some(last));
 
-        click(&mut this, rect().x0 + STRIP_MINUS, rect().y0 + STRIP_HEX_ROW);
+        click(
+            &mut this,
+            rect().x0 + STRIP_MINUS,
+            rect().y0 + STRIP_HEX_ROW,
+        );
 
         // The palette never empties: the last color is refused and stays
         // selected, so nearest-indexed resolution and the saved palette
@@ -778,7 +829,11 @@ mod tests {
             [rgb.0, rgb.1, rgb.2]
         };
 
-        click(&mut this, rect().x0 + STRIP_RGB_START, rect().y0 + STRIP_RGB_ROW);
+        click(
+            &mut this,
+            rect().x0 + STRIP_RGB_START,
+            rect().y0 + STRIP_RGB_ROW,
+        );
 
         let edit = entry.borrow().clone().expect("edit opened");
         assert_eq!(edit.field, ColorEntryField::Rgb);
@@ -803,7 +858,11 @@ mod tests {
             }
         }
         // Switch to the rgb field; the typed value stays.
-        click(&mut this, rect().x0 + STRIP_RGB_START, rect().y0 + STRIP_RGB_ROW);
+        click(
+            &mut this,
+            rect().x0 + STRIP_RGB_START,
+            rect().y0 + STRIP_RGB_ROW,
+        );
 
         let edit = entry.borrow().clone().expect("edit still open");
         assert_eq!(edit.field, ColorEntryField::Rgb);
@@ -843,7 +902,10 @@ mod tests {
         // Hex row text begins at the '-' gizmo on row 2; rgb text on row 1;
         // row 0 is the single chrome bottom border the inner picker owns.
         let glyph_at = |x: i32, y: i32| group.cells[&CellPoint { x, y, z: 0 }].graphic.clone();
-        assert_eq!(glyph_at(STRIP_MINUS, STRIP_HEX_ROW), CellGraphic::Glyph('-'));
+        assert_eq!(
+            glyph_at(STRIP_MINUS, STRIP_HEX_ROW),
+            CellGraphic::Glyph('-')
+        );
         assert_eq!(glyph_at(STRIP_PLUS, STRIP_HEX_ROW), CellGraphic::Glyph('+'));
         let expected_rgb: Vec<char> = rgb_color_string(hand).chars().collect();
         for (index, offset) in (STRIP_RGB_START..=STRIP_RGB_END).enumerate() {

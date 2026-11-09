@@ -116,8 +116,7 @@ impl PaintCanvasBoundsModule {
     /// color fills it; the clear hand — the blank-graphic hand, painter's
     /// own clear semantics — sets the background transparent.
     fn apply_hand_to_background(&self, hand: PaintHand) {
-        let (Some(background), Some(tool_state)) = (&self.background, &self.tool_state)
-        else {
+        let (Some(background), Some(tool_state)) = (&self.background, &self.tool_state) else {
             return;
         };
         let state = tool_state.borrow();
@@ -590,8 +589,7 @@ mod tests {
         assert_eq!(*wheel_mode.borrow(), DrawingSpaceWheelMode::Pan);
     }
 
-    fn background_fixture()
-    -> (
+    fn background_fixture() -> (
         PaintCanvasBoundsModule,
         Rc<RefCell<Option<[u8; 3]>>>,
         Rc<RefCell<ToolState>>,
@@ -614,9 +612,10 @@ mod tests {
         // last row.
         let rect = viewport();
         (
-            rect.x0 + PaintCanvasBoundsModule::background_local_x_for(
-                GizmoBar::standard().title_start_x(),
-            ),
+            rect.x0
+                + PaintCanvasBoundsModule::background_local_x_for(
+                    GizmoBar::standard().title_start_x(),
+                ),
             rect.y1 - 1,
         )
     }
@@ -639,7 +638,11 @@ mod tests {
         let group = module.draw();
         let cell = group
             .cells
-            .get(&CellPoint { x: x - viewport().x0, y: 9, z: 0 })
+            .get(&CellPoint {
+                x: x - viewport().x0,
+                y: 9,
+                z: 0,
+            })
             .expect("background widget cell");
         assert_eq!(cell.graphic, CellGraphic::Glyph('B'));
         assert_eq!(cell.color, UiPalette::default().get(UiColorRole::Medium));
@@ -654,7 +657,11 @@ mod tests {
         let group = module.draw();
         let cell = group
             .cells
-            .get(&CellPoint { x: x - viewport().x0, y: 9, z: 0 })
+            .get(&CellPoint {
+                x: x - viewport().x0,
+                y: 9,
+                z: 0,
+            })
             .expect("background widget cell");
         assert_eq!(cell.color, UiPalette::default().get(UiColorRole::Vivid));
     }
@@ -695,13 +702,17 @@ mod tests {
         );
         // The rim is real: one cell past the padded edge on every side is
         // uncovered UI background.
-        assert!(group
-            .world_point_for(CellPoint { x: width - 1, y: height - 1, z: 0 })
-            == WorldPoint {
+        assert!(
+            group.world_point_for(CellPoint {
+                x: width - 1,
+                y: height - 1,
+                z: 0
+            }) == WorldPoint {
                 x: rect.x1 - 1 - INSET,
                 y: rect.y1 - 1 - INSET,
                 z: 0,
-            });
+            }
+        );
     }
 
     #[test]
@@ -733,8 +744,11 @@ mod tests {
         assert_eq!(moved_group.cells.len(), group.cells.len());
         let width = rect.x1 - rect.x0 - 4;
         let height = rect.y1 - rect.y0 - 4;
-        let world = moved_group
-            .world_point_for(CellPoint { x: width - 1, y: height - 1, z: 0 });
+        let world = moved_group.world_point_for(CellPoint {
+            x: width - 1,
+            y: height - 1,
+            z: 0,
+        });
         assert_eq!(
             (world.x, world.y),
             (moved.x1 - 1 - 2, moved.y1 - 1 - 2),
@@ -761,7 +775,11 @@ mod tests {
         let group = module.draw();
         let cell = group
             .cells
-            .get(&CellPoint { x: x - viewport().x0, y: 9, z: 0 })
+            .get(&CellPoint {
+                x: x - viewport().x0,
+                y: 9,
+                z: 0,
+            })
             .expect("background widget cell");
         assert_eq!(cell.graphic, CellGraphic::Glyph('B'));
         assert_eq!(cell.color, UiPalette::default().get(UiColorRole::Medium));

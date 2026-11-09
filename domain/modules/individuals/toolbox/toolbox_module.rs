@@ -115,7 +115,9 @@ impl ToolboxModule {
         let viewport = self.visible_row_count();
         let max = ScrollState::max_offset(content, viewport);
         let mut offset = self.scroll.offset();
-        let consumed = self.scrollbar.on_down(local_x, local_y, content, viewport, &mut offset);
+        let consumed = self
+            .scrollbar
+            .on_down(local_x, local_y, content, viewport, &mut offset);
         self.scroll.set_offset(offset, max);
         consumed
     }
@@ -126,7 +128,9 @@ impl ToolboxModule {
         let viewport = self.visible_row_count();
         let max = ScrollState::max_offset(content, viewport);
         let mut offset = self.scroll.offset();
-        let moved = self.scrollbar.on_drag(local_x, local_y, content, viewport, &mut offset);
+        let moved = self
+            .scrollbar
+            .on_drag(local_x, local_y, content, viewport, &mut offset);
         self.scroll.set_offset(offset, max);
         moved
     }
@@ -242,8 +246,8 @@ impl Module for ToolboxModule {
         // bar-aware rule from the graphic picker): no text under the bar.
         let (content_x, _) = PanelChrome::content_origin();
         let (content_width, _) = PanelChrome::content_size(self.rect);
-        let label_max_x = content_x + content_width - 1
-            - if self.scrollbar_visible() { 1 } else { 0 };
+        let label_max_x =
+            content_x + content_width - 1 - if self.scrollbar_visible() { 1 } else { 0 };
         for slot in 0..self.visible_row_count() {
             let index = self.scroll.offset() + slot;
             let Some(def) = self.tool_defs.get(index) else {
@@ -370,7 +374,8 @@ impl Module for ToolboxModule {
                 }
             }
             ModulePointerEvent::Move { x, y } => {
-                self.scrollbar.note_pointer(x - self.rect.x0, y - self.rect.y0);
+                self.scrollbar
+                    .note_pointer(x - self.rect.x0, y - self.rect.y0);
                 // A live bar drag owns the pointer: follow the thumb, skip
                 // the gizmo drag path entirely.
                 if self.scrollbar.is_dragging() {
@@ -709,7 +714,9 @@ mod tests {
         };
         assert_eq!((top - bottom + 1) as usize, toolbox.visible_row_count());
         for y in bottom..=top {
-            let graphic = group.cells[&CellPoint { x: bar_x, y, z: 0 }].graphic.clone();
+            let graphic = group.cells[&CellPoint { x: bar_x, y, z: 0 }]
+                .graphic
+                .clone();
             assert!(
                 matches!(graphic, CellGraphic::Glyph('┳' | '┻' | '┃' | '║')),
                 "non-bar cell at y {y}: {graphic:?}"
@@ -734,12 +741,22 @@ mod tests {
         let group = toolbox.draw();
         let stamp_y = toolbox.row_y(2);
         assert_eq!(
-            group.cells[&CellPoint { x: 15, y: stamp_y, z: 0 }].graphic,
+            group.cells[&CellPoint {
+                x: 15,
+                y: stamp_y,
+                z: 0
+            }]
+                .graphic,
             CellGraphic::Glyph('l'),
             "the label fills up to the bar column"
         );
         assert!(!matches!(
-            group.cells[&CellPoint { x: bar_x, y: stamp_y, z: 0 }].graphic,
+            group.cells[&CellPoint {
+                x: bar_x,
+                y: stamp_y,
+                z: 0
+            }]
+                .graphic,
             CellGraphic::Glyph('T')
         ));
     }
@@ -747,7 +764,8 @@ mod tests {
     #[test]
     fn wheel_scrolls_the_tool_rows_and_click_selects_the_scrolled_tool() {
         let state = tool_state();
-        let mut toolbox = ToolboxModule::new("toolbox", rect(), state.clone(), overflowing_tool_defs());
+        let mut toolbox =
+            ToolboxModule::new("toolbox", rect(), state.clone(), overflowing_tool_defs());
         // Wheel down one row: Brush crops off the top, Fill lands in the
         // first visible slot.
         assert!(toolbox.on_wheel(0, 0, 0.0, -1.0));
@@ -779,7 +797,8 @@ mod tests {
 
     #[test]
     fn thumb_drag_walks_the_tool_rows_to_both_edges() {
-        let mut toolbox = ToolboxModule::new("toolbox", rect(), tool_state(), overflowing_tool_defs());
+        let mut toolbox =
+            ToolboxModule::new("toolbox", rect(), tool_state(), overflowing_tool_defs());
         let (bar_x, top, bottom) = match toolbox.scrollbar_span() {
             ScrollbarSpan::Vertical { x, top, bottom } => (x, top, bottom),
             ScrollbarSpan::Horizontal { .. } => unreachable!(),

@@ -388,7 +388,10 @@ mod tests {
         assert_eq!(render_space.composition.groups.len(), 1);
         assert_eq!(render_space.data_lanes.breath(), Some(4));
         assert_eq!(render_space.display_profile.typeface_id, "thaum-mono");
-        assert_eq!(render_space.display_profile.spriteset_id, "monothaum-atlas-v3");
+        assert_eq!(
+            render_space.display_profile.spriteset_id,
+            "monothaum-atlas-v3"
+        );
     }
 
     #[test]

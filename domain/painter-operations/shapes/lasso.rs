@@ -443,7 +443,10 @@ mod tests {
     fn through_depth_spans_outside_the_anchor_still_cover_the_anchor() {
         // The anchor sits at z=5; the span -1..=1 is absolute world depth,
         // so the copies land on those layers — never re-anchored to 5.
-        let path = [CellPoint { x: 0, y: 0, z: 5 }, CellPoint { x: 2, y: 2, z: 5 }];
+        let path = [
+            CellPoint { x: 0, y: 0, z: 5 },
+            CellPoint { x: 2, y: 2, z: 5 },
+        ];
         let points = lasso_points_through_depth(&path, flat_view(), (-1, 1));
         assert!(points.iter().all(|p| p.z == -1 || p.z == 0 || p.z == 1));
     }

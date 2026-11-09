@@ -181,7 +181,11 @@ pub struct ToolPresetHand {
 impl ToolPresetHand {
     /// Capture one hand's snapshot: its tool plus only the field keys in
     /// `capture_keys`.
-    pub fn capture(tool: PaintTool, hand: &HandState, capture_keys: &std::collections::BTreeSet<String>) -> Self {
+    pub fn capture(
+        tool: PaintTool,
+        hand: &HandState,
+        capture_keys: &std::collections::BTreeSet<String>,
+    ) -> Self {
         let persisted = PersistedHandState::from_runtime(hand);
         let fields = HAND_FIELDS
             .iter()
@@ -246,7 +250,11 @@ impl ToolPreset {
     ) -> Self {
         Self {
             name: name.into(),
-            left: ToolPresetHand::capture(tool_state.left_tool, &tool_state.left_hand, capture_keys),
+            left: ToolPresetHand::capture(
+                tool_state.left_tool,
+                &tool_state.left_hand,
+                capture_keys,
+            ),
             right: ToolPresetHand::capture(
                 tool_state.right_tool,
                 &tool_state.right_hand,
@@ -275,10 +283,7 @@ impl ToolPreset {
 /// appearance).
 pub fn starter_presets() -> Vec<ToolPreset> {
     let mut pick_opposite = BTreeMap::new();
-    pick_opposite.insert(
-        "pick_opposite_hand".to_string(),
-        serde_json::json!(true),
-    );
+    pick_opposite.insert("pick_opposite_hand".to_string(), serde_json::json!(true));
     vec![
         ToolPreset {
             name: "select + move".to_string(),
@@ -435,8 +440,14 @@ mod tests {
     #[test]
     fn number_slots_resolve_one_based_and_stop_at_nine() {
         let starters = starter_presets();
-        assert_eq!(preset_for_number_slot(&starters, 1).map(|p| p.name.as_str()), Some("select + move"));
-        assert_eq!(preset_for_number_slot(&starters, 2).map(|p| p.name.as_str()), Some("paint + pick"));
+        assert_eq!(
+            preset_for_number_slot(&starters, 1).map(|p| p.name.as_str()),
+            Some("select + move")
+        );
+        assert_eq!(
+            preset_for_number_slot(&starters, 2).map(|p| p.name.as_str()),
+            Some("paint + pick")
+        );
         assert!(preset_for_number_slot(&starters, 3).is_none());
         assert!(preset_for_number_slot(&starters, 0).is_none());
         assert!(preset_for_number_slot(&starters, 10).is_none());

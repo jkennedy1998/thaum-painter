@@ -3668,11 +3668,13 @@ mod tests {
         ));
 
         // Default palette: the save omits the section entirely.
-        runtime.document.palette.colors =
-            crate::legacy_indexed_palette::default_file_palette();
+        runtime.document.palette.colors = crate::legacy_indexed_palette::default_file_palette();
         save_shared_document_snapshot(&paths, &mut runtime).unwrap();
         let text = fs::read_to_string(&paths.document_file_path).unwrap();
-        assert!(!text.contains("\"palette\""), "default palette must not be written");
+        assert!(
+            !text.contains("\"palette\""),
+            "default palette must not be written"
+        );
 
         // An edited palette round-trips verbatim.
         let edited = vec![[1, 2, 3], [250, 100, 5]];
@@ -3702,14 +3704,16 @@ mod tests {
         // Transparent (absent) background: the save omits the section.
         save_shared_document_snapshot(&paths, &mut runtime).unwrap();
         let text = fs::read_to_string(&paths.document_file_path).unwrap();
-        assert!(!text.contains("\"background\""), "transparent background must not be written");
+        assert!(
+            !text.contains("\"background\""),
+            "transparent background must not be written"
+        );
         let reloaded = load_document_file(&paths.document_file_path).unwrap();
         assert_eq!(reloaded.background, None);
 
         // A set background round-trips verbatim.
-        runtime.document.background = Some(crate::storage::SharedDocumentBackground {
-            rgb: [12, 34, 56],
-        });
+        runtime.document.background =
+            Some(crate::storage::SharedDocumentBackground { rgb: [12, 34, 56] });
         save_shared_document_snapshot(&paths, &mut runtime).unwrap();
         let reloaded = load_document_file(&paths.document_file_path).unwrap();
         assert_eq!(reloaded.background.map(|b| b.rgb), Some([12, 34, 56]));
@@ -4536,7 +4540,10 @@ mod tests {
         }"#;
         let document: SharedDocumentFile = serde_json::from_str(legacy_json).unwrap();
 
-        assert_eq!(document.display_profile, SharedDocumentDisplayProfile::default());
+        assert_eq!(
+            document.display_profile,
+            SharedDocumentDisplayProfile::default()
+        );
     }
 
     #[test]

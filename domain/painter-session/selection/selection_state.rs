@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet};
+use std::collections::BTreeSet;
 
 use thaum_renderer_domain::CellFacing;
 use thaum_renderer_domain::CellPoint;
@@ -177,11 +177,7 @@ impl PlaneSelection {
         I: IntoIterator<Item = CellPoint>,
     {
         let incoming: BTreeSet<CellPoint> = points.into_iter().collect();
-        self.cells = self
-            .cells
-            .intersection(&incoming)
-            .copied()
-            .collect();
+        self.cells = self.cells.intersection(&incoming).copied().collect();
     }
 
     pub fn iter(&self) -> impl Iterator<Item = CellPoint> + '_ {
@@ -324,11 +320,8 @@ impl PainterSelection {
     /// gate. Replace swaps the whole selection for the incoming 3D region —
     /// the through-depth analog of a plane Replace, which also swaps the whole
     /// plane selection and preserves only out-of-bounds cells.
-    pub fn apply_plane_points_through_depth_with_mode<I>(
-        &mut self,
-        points: I,
-        mode: SelectionMode,
-    ) where
+    pub fn apply_plane_points_through_depth_with_mode<I>(&mut self, points: I, mode: SelectionMode)
+    where
         I: IntoIterator<Item = CellPoint>,
     {
         let incoming: BTreeSet<CellPoint> = points.into_iter().collect();

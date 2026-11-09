@@ -144,7 +144,10 @@ impl DisplayProfileModule {
             "spriteset" => profile.spriteset_id.clone(),
             _ => return,
         };
-        let current_index = options.iter().position(|option| *option == current).unwrap_or(0);
+        let current_index = options
+            .iter()
+            .position(|option| *option == current)
+            .unwrap_or(0);
         let next_index = if forward {
             (current_index + 1) % options.len()
         } else {
@@ -291,8 +294,7 @@ impl Module for DisplayProfileModule {
             return true;
         }
         let rows = self.build_rows();
-        let Some((row_id, field)) = PropertyRows::number_field_at(self.rect, &rows, x, y, 0)
-        else {
+        let Some((row_id, field)) = PropertyRows::number_field_at(self.rect, &rows, x, y, 0) else {
             return false;
         };
         if row_id != "cell_size" {
@@ -308,10 +310,12 @@ impl Module for DisplayProfileModule {
         let mut profile = self.profile.borrow_mut();
         if field == 0 {
             profile.cell_width = (profile.cell_width as i32 + delta)
-                .clamp(MIN_CELL_DIMENSION, MAX_CELL_DIMENSION) as u32;
+                .clamp(MIN_CELL_DIMENSION, MAX_CELL_DIMENSION)
+                as u32;
         } else {
             profile.cell_height = (profile.cell_height as i32 + delta)
-                .clamp(MIN_CELL_DIMENSION, MAX_CELL_DIMENSION) as u32;
+                .clamp(MIN_CELL_DIMENSION, MAX_CELL_DIMENSION)
+                as u32;
         }
         true
     }

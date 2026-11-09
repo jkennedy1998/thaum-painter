@@ -88,8 +88,24 @@ fn resolve_block(
         return canvas_of(block);
     }
     match crate::interp_mode::resolve_mode(block.interpretation.as_deref()) {
-        "loop_out" => resolve_loop(blocks, index, breath, false, canvas_of, graphic_fade, palette),
-        "loop_in" => resolve_loop(blocks, index, breath, true, canvas_of, graphic_fade, palette),
+        "loop_out" => resolve_loop(
+            blocks,
+            index,
+            breath,
+            false,
+            canvas_of,
+            graphic_fade,
+            palette,
+        ),
+        "loop_in" => resolve_loop(
+            blocks,
+            index,
+            breath,
+            true,
+            canvas_of,
+            graphic_fade,
+            palette,
+        ),
         "hold" => solid_canvas_before(blocks, index, &canvas_of)
             .or_else(|| solid_canvas_after(blocks, index, &canvas_of)),
         "smear" => resolve_smear(blocks, index, breath, canvas_of, graphic_fade, palette),
@@ -208,7 +224,14 @@ fn resolve_loop(
     let mapped_index = blocks.iter().position(|block| {
         crate::properties::breath_in_span(mapped, block.start_breath, block.length_breaths)
     })?;
-    resolve_block(blocks, mapped_index, mapped, canvas_of, graphic_fade, palette)
+    resolve_block(
+        blocks,
+        mapped_index,
+        mapped,
+        canvas_of,
+        graphic_fade,
+        palette,
+    )
 }
 
 /// Blends two keyframe canvases at `progress` (0 = fully `from`, 1 = fully
@@ -653,7 +676,10 @@ mod tests {
         // supplied list, never to the legacy 37's nearest gray.
         let palette = vec![[10u8, 10, 10], [200, 200, 200]];
         let from = canvas_with(&[(point(1, 1), cell('a', PaintColor::flat_rgb(0, 0, 0), 2))]);
-        let to = canvas_with(&[(point(1, 1), cell('b', PaintColor::flat_rgb(255, 255, 255), 2))]);
+        let to = canvas_with(&[(
+            point(1, 1),
+            cell('b', PaintColor::flat_rgb(255, 255, 255), 2),
+        )]);
 
         let mid = crate::interp_raster::blend_canvases(&from, &to, 0.5, None, &palette);
         assert_eq!(

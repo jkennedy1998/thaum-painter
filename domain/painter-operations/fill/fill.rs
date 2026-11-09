@@ -335,8 +335,11 @@ fn matching_region_points(
                         bounds.plane_point(plane_x, plane_y),
                         depth_value,
                     );
-                    if cells_match_on_mask(effective_cell(canvas.get(&point)).cloned(), target.clone(), mask)
-                    {
+                    if cells_match_on_mask(
+                        effective_cell(canvas.get(&point)).cloned(),
+                        target.clone(),
+                        mask,
+                    ) {
                         points.push(point);
                     }
                 }
@@ -404,9 +407,7 @@ pub fn flood_fill_points_with(
 
     let depth_span = match depth {
         FillDepthMode::Plane => (bounds.z, bounds.z),
-        FillDepthMode::ThroughDepth => {
-            depth_span_for_canvas(canvas, bounds.plane_axis, start)
-        }
+        FillDepthMode::ThroughDepth => depth_span_for_canvas(canvas, bounds.plane_axis, start),
     };
     if !region_contains(bounds, depth, depth_span, start) {
         return Vec::new();
@@ -685,10 +686,7 @@ mod tests {
         );
 
         assert_eq!(plane, vec![point(0, 0)]);
-        assert_eq!(
-            through,
-            vec![point(0, 0), CellPoint { x: 0, y: 0, z: 1 }]
-        );
+        assert_eq!(through, vec![point(0, 0), CellPoint { x: 0, y: 0, z: 1 }]);
     }
 
     #[test]

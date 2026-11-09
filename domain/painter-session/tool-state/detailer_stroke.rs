@@ -180,7 +180,18 @@ impl DetailerSession {
             return;
         };
         stroke.paint(x, y, strength);
-        self.pending_graphic = resolve(stroke);
+        let resolved = resolve(stroke);
+        if resolved != self.pending_graphic {
+            eprintln!(
+                "[detailer-debug] paint ({x},{y}) -> resolve {:?} (was {:?}) buffer {}x{} mode {:?}",
+                resolved,
+                self.pending_graphic,
+                stroke.buffer_width,
+                stroke.buffer_height,
+                stroke.mode,
+            );
+        }
+        self.pending_graphic = resolved;
     }
 
     /// Ends the active direct-canvas stroke for `hand`. Another hand's
@@ -198,6 +209,10 @@ impl DetailerSession {
         let Some(stroke) = self.stroke.take() else {
             return;
         };
+        eprintln!(
+            "[detailer-debug] finish at {:?} -> commit {:?}",
+            stroke.position, self.pending_graphic
+        );
         self.pending_commit = self.pending_graphic.map(|graphic| DetailerCommit {
             hand: stroke.hand,
             position: stroke.position,

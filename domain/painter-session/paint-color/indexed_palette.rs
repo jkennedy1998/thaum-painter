@@ -102,11 +102,7 @@ pub fn parse_hex_color(text: &str) -> Option<[u8; 3]> {
         return None;
     }
     let channel = |range: std::ops::Range<usize>| u8::from_str_radix(&text[range], 16).ok();
-    Some([
-        channel(0..2)?,
-        channel(2..4)?,
-        channel(4..6)?,
-    ])
+    Some([channel(0..2)?, channel(2..4)?, channel(4..6)?])
 }
 
 /// Parses a typed color entry as decimal rgb: three channels 0..=255
@@ -130,7 +126,10 @@ pub fn parse_rgb_color(text: &str) -> Option<[u8; 3]> {
             .map(|index| u8::from_str_radix(&digits[index * 3..index * 3 + 3], 10).ok())
             .collect()
     } else {
-        let tokens: Vec<&str> = text.split([' ', ',']).filter(|token| !token.is_empty()).collect();
+        let tokens: Vec<&str> = text
+            .split([' ', ','])
+            .filter(|token| !token.is_empty())
+            .collect();
         if tokens.len() != 3 || tokens.iter().any(|token| token.len() > 3) {
             return None;
         }
@@ -139,11 +138,7 @@ pub fn parse_rgb_color(text: &str) -> Option<[u8; 3]> {
             .map(|token| token.parse::<u8>().ok())
             .collect()
     };
-    Some([
-        channel_values[0]?,
-        channel_values[1]?,
-        channel_values[2]?,
-    ])
+    Some([channel_values[0]?, channel_values[1]?, channel_values[2]?])
 }
 
 /// The canonical display form of one palette color: uppercase hex with the

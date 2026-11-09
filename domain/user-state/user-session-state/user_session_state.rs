@@ -224,8 +224,8 @@ impl PersistedHandState {
         hand.color = self.color.to_runtime();
         hand.weight_index = self.weight_index.clamp(0, 3);
         hand.brush_size = self.brush_size.clamp(1, 5);
-        hand.fill_connectivity = FillConnectivity::from_id(&self.fill_connectivity)
-            .unwrap_or_default();
+        hand.fill_connectivity =
+            FillConnectivity::from_id(&self.fill_connectivity).unwrap_or_default();
         hand.fill_3d = self.fill_3d;
         hand.pick_opposite_hand = self.pick_opposite_hand;
         hand.edit_channels = self.edit_channels.to_mask();

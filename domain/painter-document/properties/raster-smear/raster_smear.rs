@@ -68,21 +68,26 @@ pub fn smear_canvases(
         unmatched_from.remove(&pair.source);
         unmatched_to.remove(&pair.target);
     }
-    let mut splats: BTreeMap<CellPoint, Splat> =
-        blend_canvases(&unmatched_from, &unmatched_to, progress, graphic_fade, palette)
-            .into_iter()
-            .map(|(position, cell)| {
-                (
-                    position,
-                    Splat {
-                        cell,
-                        is_head: true,
-                        score: 0,
-                        distance_to_head: 0,
-                    },
-                )
-            })
-            .collect();
+    let mut splats: BTreeMap<CellPoint, Splat> = blend_canvases(
+        &unmatched_from,
+        &unmatched_to,
+        progress,
+        graphic_fade,
+        palette,
+    )
+    .into_iter()
+    .map(|(position, cell)| {
+        (
+            position,
+            Splat {
+                cell,
+                is_head: true,
+                score: 0,
+                distance_to_head: 0,
+            },
+        )
+    })
+    .collect();
 
     let exposure_start = (progress - trail_window(progress)).max(0.0);
     for pair in correspondences {

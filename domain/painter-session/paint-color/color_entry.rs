@@ -37,10 +37,7 @@ impl ColorEntryEdit {
     /// so the user can tweak what is already selected rather than typing
     /// from scratch), typing into `field`.
     pub fn begin(rgb: [u8; 3], field: ColorEntryField) -> Self {
-        let hex: String = rgb
-            .iter()
-            .map(|channel| format!("{channel:02X}"))
-            .collect();
+        let hex: String = rgb.iter().map(|channel| format!("{channel:02X}")).collect();
         Self {
             field,
             hex,
