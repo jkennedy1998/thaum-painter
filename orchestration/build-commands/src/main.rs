@@ -748,6 +748,7 @@ fn begin_canvas_press_if_eligible(
         *text_stroke_start = Some(typing.stroke_start);
         typing_mode.begin(typing_reserved_inputs(bindings));
     }
+    let detailer_brush_size = tool_state.borrow().hand_state(hand).brush_size;
     pointer_strokes.paint_detailer_at_cell_local(
         &mut canvas_pointer_context(
             tool_state, selection, canvas, shared_document, shared_document_paths,
@@ -755,7 +756,9 @@ fn begin_canvas_press_if_eligible(
             graphic_fade, detailer_session,
         ),
         hand,
+        position,
         detailer_cell_local,
+        detailer_brush_size,
     );
 }
 
@@ -822,6 +825,7 @@ fn continue_canvas_drag_if_eligible(
                 bounds,
                 view_orientation,
             );
+            let detailer_brush_size = tool_state.borrow().hand_state(hand).brush_size;
             pointer_strokes.paint_detailer_at_cell_local(
                 &mut canvas_pointer_context(
                     tool_state, selection, canvas, shared_document, shared_document_paths,
@@ -829,7 +833,9 @@ fn continue_canvas_drag_if_eligible(
                     graphic_fade, detailer_session,
                 ),
                 hand,
+                position,
                 detailer_cell_local,
+                detailer_brush_size,
             );
         }
         DragRoute::Ignored => {}

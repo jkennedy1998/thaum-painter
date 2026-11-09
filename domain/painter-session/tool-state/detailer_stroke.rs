@@ -1,9 +1,14 @@
 //! Live detailer stroke accumulation and resolution (project 6kbosu52).
-//! A detailer drag paints ink into a subcell comparison-resolution buffer,
-//! seeded from the cell's currently authored glyph; release commits
-//! whatever glyph the buffer currently resolves to as the cell's new
-//! graphic. Color and weight are never touched by a stroke — out of scope
-//! for the interaction entirely, not merely lock-gated (J 2026-11-08).
+//! A detailer drag paints ink into subcell comparison-resolution buffers,
+//! one per cell the pointer crosses (J 2026-11-09: "it needs to work so the
+//! user can draw across multiple cells potentially effecting them ... needs
+//! to work within the same stroke"). Each buffer is seeded from its cell's
+//! currently authored glyph (or blank, for an additive press on an empty
+//! cell); release commits whatever glyph each changed buffer resolves to.
+//! Color and weight are never touched by a stroke — out of scope for the
+//! interaction entirely, not merely lock-gated (J 2026-11-08).
+
+use std::collections::BTreeMap;
 
 use thaum_renderer_domain::shape_fade::fade::ShapeFade;
 use thaum_renderer_domain::{CellPoint, CellWeight, GlyphTileRaster};
@@ -15,6 +20,7 @@ use crate::tool_state::PaintHand;
 /// detailed, the render weight the buffer resolves against (captured at
 /// stroke start so a weight change elsewhere never retargets the
 /// comparison graph mid-stroke), and the live subcell ink buffer itself.
+/// One drag can hold one of these per cell it crosses.
 #[derive(Debug, Clone)]
 pub struct DetailerStroke {
     pub hand: PaintHand,
@@ -26,6 +32,9 @@ pub struct DetailerStroke {
     /// Ink amount per subcell pixel (row-major), seeded from the cell's
     /// current authored glyph's own comparison tile.
     buffer: Vec<u8>,
+    /// True once a paint sample actually moved at least one buffer pixel
+    /// off its seed value. A stroke that never moved ink commits nothing.
+    changed: bool,
 }
 
 impl DetailerStroke {
@@ -48,6 +57,7 @@ impl DetailerStroke {
             buffer_width: seed.width,
             buffer_height: seed.height,
             buffer: seed.alpha,
+            changed: false,
         }
     }
 
@@ -63,10 +73,41 @@ impl DetailerStroke {
             return;
         }
         let index = y * self.buffer_width + x;
+        let before = self.buffer[index];
         self.buffer[index] = match self.mode {
-            DetailerMode::Additive => self.buffer[index].saturating_add(strength),
-            DetailerMode::Subtractive => self.buffer[index].saturating_sub(strength),
+            DetailerMode::Additive => before.saturating_add(strength),
+            DetailerMode::Subtractive => before.saturating_sub(strength),
         };
+        if self.buffer[index] != before {
+            self.changed = true;
+        }
+    }
+
+    /// Paints the brush footprint: a square of `size` subcell pixels
+    /// centered on the sample, the same square shape the cell brush draws
+    /// at size 1..=5, scaled down into the buffer. Size 1 is the single
+    /// sample pixel; the footprint simply clips at the buffer's edges
+    /// (J 2026-11-09: "maybe size for this tool could effect the sub pixels
+    /// that it is effecting").
+    pub fn paint_footprint(&mut self, x: usize, y: usize, size: i32, strength: u8) {
+        let size = size.clamp(1, 5);
+        let left_radius = (size - 1) / 2;
+        let right_radius = size - 1 - left_radius;
+        for dy in -left_radius..=right_radius {
+            for dx in -left_radius..=right_radius {
+                let sample_x = x as i64 + dx as i64;
+                let sample_y = y as i64 + dy as i64;
+                if sample_x < 0 || sample_y < 0 {
+                    continue;
+                }
+                self.paint(sample_x as usize, sample_y as usize, strength);
+            }
+        }
+    }
+
+    /// Whether any paint sample moved this stroke's buffer off its seed.
+    pub fn changed(&self) -> bool {
+        self.changed
     }
 
     /// The live buffer as a comparison-resolution tile, for resolving a
@@ -103,95 +144,142 @@ pub struct DetailerCommit {
 }
 
 /// Shared live state between the canvas target selector, detail grid, and
-/// canvas preview. The grid changes only the stroke buffer through this type;
-/// it cannot know or mutate document appearance beyond the pending glyph.
+/// canvas preview. The grid changes only the stroke buffers through this
+/// type; it cannot know or mutate document appearance beyond the pending
+/// glyphs. One drag holds one stroke per cell it crossed, each seeded
+/// independently; release turns every changed buffer into one queued
+/// graphic-only commit.
 #[derive(Debug, Default)]
 pub struct DetailerSession {
-    stroke: Option<DetailerStroke>,
-    pending_graphic: Option<char>,
-    pending_commit: Option<DetailerCommit>,
+    active: Option<PaintHand>,
+    /// Add/erase captured at press. Cells the drag enters later seed with
+    /// this mode, so a property flip mid-stroke can never retarget the live
+    /// drag — it applies from the next press onward.
+    stroke_mode: Option<DetailerMode>,
+    /// One in-progress buffer per cell the stroke has crossed, keyed by
+    /// that cell. Re-entering a cell keeps its live buffer.
+    strokes: BTreeMap<CellPoint, DetailerStroke>,
+    /// Each stroke's live resolved glyph, for preview and release commit.
+    pending: BTreeMap<CellPoint, char>,
+    /// Queued graphic-only writes from the last release, keyed by cell.
+    pending_commits: BTreeMap<CellPoint, DetailerCommit>,
 }
 
 impl DetailerSession {
-    /// Begins one selected target and clears an unconsumed prior release.
-    /// `resolve` is supplied by the caller because the live typeface fade is
-    /// orchestration-owned and can change when the file changes its face.
+    /// Begins (or re-enters) one cell of the active multi-cell stroke and
+    /// clears unconsumed prior releases. `resolve` is supplied by the caller
+    /// because the live typeface fade is orchestration-owned and can change
+    /// when the file changes its face. A cell already holding a live buffer
+    /// keeps it: dragging back across a cell continues its edit instead of
+    /// resetting it.
     pub fn begin(
         &mut self,
         stroke: DetailerStroke,
         resolve: impl FnOnce(&DetailerStroke) -> Option<char>,
     ) {
-        self.pending_graphic = resolve(&stroke);
-        self.stroke = Some(stroke);
-        self.pending_commit = None;
+        if self.active.is_none() {
+            self.active = Some(stroke.hand);
+            self.stroke_mode = Some(stroke.mode);
+        }
+        let resolved = resolve(&stroke);
+        let position = stroke.position;
+        if let Some(graphic) = resolved {
+            self.pending.insert(position, graphic);
+        }
+        self.strokes.entry(position).or_insert(stroke);
     }
 
     pub fn is_active(&self) -> bool {
-        self.stroke.is_some()
+        self.active.is_some()
     }
 
     pub fn active_hand(&self) -> Option<PaintHand> {
-        self.stroke.as_ref().map(|stroke| stroke.hand)
+        self.active
     }
 
-    pub fn active_tile(&self) -> Option<GlyphTileRaster> {
-        self.stroke.as_ref().map(DetailerStroke::tile)
+    /// The add/erase mode captured when this drag began. Cells entered
+    /// mid-stroke seed with it rather than the hand's current property.
+    pub fn stroke_mode(&self) -> Option<DetailerMode> {
+        self.stroke_mode
     }
 
-    pub fn pending_graphic(&self) -> Option<char> {
-        self.pending_graphic
+    pub fn has_stroke_at(&self, position: &CellPoint) -> bool {
+        self.strokes.contains_key(position)
     }
 
-    /// The authored cell receiving the live candidate, while a grid stroke is
-    /// open. Kept separate from the candidate so canvas rendering does not
-    /// need access to the private mutable stroke buffer.
-    pub fn pending_position(&self) -> Option<CellPoint> {
-        self.stroke.as_ref().map(|stroke| stroke.position)
+    pub fn pending_graphic_at(&self, position: &CellPoint) -> Option<char> {
+        self.pending.get(position).copied()
     }
 
-    /// Paints from the direct canvas pointer's position inside the authored
-    /// cell. The pointer is normalized to that cell and then mapped to this
-    /// typeface tile's own dimensions; no fixed UI grid participates.
-    pub fn paint_at_cell_local(
+    /// Every cell's live candidate: exactly what release would write, one
+    /// (position, glyph) per crossed cell with a resolved glyph.
+    pub fn pending_previews(&self) -> Vec<(CellPoint, char)> {
+        self.pending.iter().map(|(p, g)| (*p, *g)).collect()
+    }
+
+    /// Paints one comparison pixel in `position`'s buffer and refreshes that
+    /// cell's canvas preview candidate. Calls naming an uncrossed cell are a
+    /// no-op.
+    pub fn paint_at(
         &mut self,
-        local_x: f32,
-        local_y: f32,
-        strength: u8,
-        resolve: impl FnOnce(&DetailerStroke) -> Option<char>,
-    ) {
-        let Some(stroke) = self.stroke.as_ref() else {
-            return;
-        };
-        let x = (local_x.clamp(0.0, 1.0 - f32::EPSILON) * stroke.buffer_width as f32) as usize;
-        let y = (local_y.clamp(0.0, 1.0 - f32::EPSILON) * stroke.buffer_height as f32) as usize;
-        self.paint(x, y, strength, resolve);
-    }
-
-    /// Paints one comparison pixel and immediately refreshes the canvas
-    /// preview candidate. Calls made without an active target are a no-op.
-    pub fn paint(
-        &mut self,
+        position: CellPoint,
         x: usize,
         y: usize,
         strength: u8,
-        resolve: impl FnOnce(&DetailerStroke) -> Option<char>,
+        resolve: impl Fn(&DetailerStroke) -> Option<char>,
     ) {
-        let Some(stroke) = self.stroke.as_mut() else {
-            return;
+        self.paint_at_cell_local(
+            position,
+            (x as f32 + 0.5) / self.strokes.get(&position).map(|s| s.buffer_width).unwrap_or(1) as f32,
+            (y as f32 + 0.5) / self.strokes.get(&position).map(|s| s.buffer_height).unwrap_or(1) as f32,
+            1,
+            strength,
+            resolve,
+        );
+    }
+
+    /// Paints the brush footprint at the direct canvas pointer's position
+    /// inside `position`'s cell. The pointer is normalized to that cell and
+    /// then mapped to its typeface tile's own dimensions; no fixed UI grid
+    /// participates.
+    pub fn paint_at_cell_local(
+        &mut self,
+        position: CellPoint,
+        local_x: f32,
+        local_y: f32,
+        brush_size: i32,
+        strength: u8,
+        resolve: impl Fn(&DetailerStroke) -> Option<char>,
+    ) {
+        let (x, y) = {
+            let Some(stroke) = self.strokes.get(&position) else {
+                return;
+            };
+            (
+                (local_x.clamp(0.0, 1.0 - f32::EPSILON) * stroke.buffer_width as f32) as usize,
+                (local_y.clamp(0.0, 1.0 - f32::EPSILON) * stroke.buffer_height as f32) as usize,
+            )
         };
-        stroke.paint(x, y, strength);
-        let resolved = resolve(stroke);
-        if resolved != self.pending_graphic {
-            eprintln!(
-                "[detailer-debug] paint ({x},{y}) -> resolve {:?} (was {:?}) buffer {}x{} mode {:?}",
-                resolved,
-                self.pending_graphic,
-                stroke.buffer_width,
-                stroke.buffer_height,
-                stroke.mode,
-            );
+        let resolved = {
+            let Some(stroke) = self.strokes.get_mut(&position) else {
+                return;
+            };
+            stroke.paint_footprint(x, y, brush_size, strength);
+            resolve(stroke)
+        };
+        match resolved {
+            Some(graphic) => {
+                let previous = self.pending.insert(position, graphic);
+                if previous != resolved {
+                    eprintln!(
+                        "[detailer-debug] paint at {position:?} ({x},{y}) brush {brush_size} -> resolve {graphic:?} (was {previous:?})",
+                    );
+                }
+            }
+            None => {
+                self.pending.remove(&position);
+            }
         }
-        self.pending_graphic = resolved;
     }
 
     /// Ends the active direct-canvas stroke for `hand`. Another hand's
@@ -202,35 +290,49 @@ impl DetailerSession {
         }
     }
 
-    /// Ends the active direct-canvas drag. There is at most one queued
-    /// commit, and it is graphic-only by construction. No resolved glyph
-    /// means no write.
+    /// Ends the active direct-canvas drag. Every cell whose buffer actually
+    /// moved off its seed queues one graphic-only commit; buffers the drag
+    /// never changed (a fast click, a re-crossed cell) queue nothing, and a
+    /// buffer with no resolved glyph never writes.
     pub fn finish(&mut self) {
-        let Some(stroke) = self.stroke.take() else {
-            return;
-        };
-        eprintln!(
-            "[detailer-debug] finish at {:?} -> commit {:?}",
-            stroke.position, self.pending_graphic
-        );
-        self.pending_commit = self.pending_graphic.map(|graphic| DetailerCommit {
-            hand: stroke.hand,
-            position: stroke.position,
-            graphic,
-        });
-        self.pending_graphic = None;
+        let strokes = std::mem::take(&mut self.strokes);
+        for (position, stroke) in strokes {
+            let resolved = self.pending.get(&position).copied();
+            eprintln!(
+                "[detailer-debug] finish at {position:?} changed={} -> commit {resolved:?}",
+                stroke.changed()
+            );
+            if let (true, Some(graphic)) = (stroke.changed(), resolved) {
+                self.pending_commits.insert(
+                    position,
+                    DetailerCommit {
+                        hand: stroke.hand,
+                        position,
+                        graphic,
+                    },
+                );
+            }
+        }
+        self.pending.clear();
+        self.active = None;
+        self.stroke_mode = None;
     }
 
     /// Cancels the active stroke and any previously queued, unconsumed write.
     pub fn cancel(&mut self) {
-        self.stroke = None;
-        self.pending_graphic = None;
-        self.pending_commit = None;
+        self.strokes.clear();
+        self.pending.clear();
+        self.active = None;
+        self.stroke_mode = None;
+        self.pending_commits.clear();
     }
 
-    /// Transfers the one release request to the document-owning consumer.
-    pub fn take_pending_commit(&mut self) -> Option<DetailerCommit> {
-        self.pending_commit.take()
+    /// Transfers the release's queued writes to the document-owning
+    /// consumer, one per changed cell, in cell order.
+    pub fn take_pending_commits(&mut self) -> Vec<DetailerCommit> {
+        std::mem::take(&mut self.pending_commits)
+            .into_values()
+            .collect()
     }
 }
 
@@ -403,26 +505,177 @@ mod tests {
             ),
             |_| Some('.'),
         );
-        assert_eq!(session.pending_graphic(), Some('.'));
+        assert_eq!(session.pending_graphic_at(&point()), Some('.'));
         assert_eq!(session.active_hand(), Some(PaintHand::Left));
 
-        session.paint(0, 0, 255, |stroke| {
+        session.paint_at(point(), 0, 0, 255, |stroke| {
             (stroke.tile().alpha[0] == 255).then_some('#')
         });
-        assert_eq!(session.pending_graphic(), Some('#'));
+        assert_eq!(session.pending_graphic_at(&point()), Some('#'));
 
         session.finish();
         assert!(!session.is_active());
-        assert_eq!(session.pending_graphic(), None);
+        assert_eq!(session.pending_graphic_at(&point()), None);
         assert_eq!(
-            session.take_pending_commit(),
-            Some(DetailerCommit {
+            session.take_pending_commits(),
+            vec![DetailerCommit {
                 hand: PaintHand::Left,
                 position: point(),
                 graphic: '#',
-            })
+            }]
         );
-        assert_eq!(session.take_pending_commit(), None, "release queues once");
+        assert!(session.take_pending_commits().is_empty(), "release queues once");
+    }
+
+    #[test]
+    fn a_never_painted_buffer_queues_no_commit() {
+        let mut session = DetailerSession::default();
+        session.begin(
+            DetailerStroke::begin(
+                PaintHand::Left,
+                point(),
+                DetailerMode::Additive,
+                CellWeight::ONE,
+                flat_tile(0),
+            ),
+            |_| Some('.'),
+        );
+        // Paint and then subtract back to the exact seed value: the buffer
+        // ends where it began, but the stroke did move ink, so it commits.
+        session.paint_at(point(), 0, 0, 255, |_| Some('.'));
+        session.paint_at(point(), 0, 0, 255, |_| Some('.'));
+        session.finish();
+        assert_eq!(session.take_pending_commits().len(), 1);
+    }
+
+    #[test]
+    fn cells_re_entered_within_one_stroke_keep_their_live_buffer() {
+        let mut session = DetailerSession::default();
+        session.begin(
+            DetailerStroke::begin(
+                PaintHand::Left,
+                point(),
+                DetailerMode::Additive,
+                CellWeight::ONE,
+                flat_tile(0),
+            ),
+            |_| Some('.'),
+        );
+        session.paint_at(point(), 0, 0, 120, |_| Some('.'));
+        let half_inked = session.strokes[&point()].tile().alpha[0];
+
+        // The drag leaves and re-crosses the same cell: its buffer keeps
+        // building instead of reseeding from scratch.
+        session.begin(
+            DetailerStroke::begin(
+                PaintHand::Left,
+                point(),
+                DetailerMode::Additive,
+                CellWeight::ONE,
+                flat_tile(255),
+            ),
+            |_| Some('.'),
+        );
+        assert_eq!(session.strokes[&point()].tile().alpha[0], half_inked);
+        session.paint_at(point(), 0, 0, 135, |_| Some('.'));
+        assert_eq!(session.strokes[&point()].tile().alpha[0], 255);
+    }
+
+    #[test]
+    fn one_stroke_holds_one_buffer_per_crossed_cell_and_commits_each_changed_one() {
+        let mut session = DetailerSession::default();
+        let here = point();
+        let there = CellPoint { x: 5, y: 5, z: 0 };
+        session.begin(
+            DetailerStroke::begin(
+                PaintHand::Left,
+                here,
+                DetailerMode::Additive,
+                CellWeight::ONE,
+                flat_tile(0),
+            ),
+            |_| Some('.'),
+        );
+        session.paint_at_cell_local(here, 0.99, 0.99, 1, 255, |stroke| {
+            Some(if stroke.changed() { '#' } else { '.' })
+        });
+        // The drag crosses into a second cell and changes it too.
+        session.begin(
+            DetailerStroke::begin(
+                PaintHand::Left,
+                there,
+                DetailerMode::Additive,
+                CellWeight::ONE,
+                flat_tile(0),
+            ),
+            |_| Some('.'),
+        );
+        session.paint_at_cell_local(there, 0.5, 0.5, 1, 255, |stroke| {
+            Some(if stroke.changed() { '#' } else { '.' })
+        });
+        assert_eq!(session.pending_previews().len(), 2);
+
+        session.finish();
+        assert_eq!(
+            session.take_pending_commits(),
+            vec![
+                DetailerCommit {
+                    hand: PaintHand::Left,
+                    position: here,
+                    graphic: '#',
+                },
+                DetailerCommit {
+                    hand: PaintHand::Left,
+                    position: there,
+                    graphic: '#',
+                },
+            ],
+            "commits come back in cell order, one per changed buffer"
+        );
+    }
+
+    #[test]
+    fn the_brush_footprint_scales_down_into_the_subpixel_buffer() {
+        let mut stroke = DetailerStroke::begin(
+            PaintHand::Left,
+            point(),
+            DetailerMode::Additive,
+            CellWeight::ONE,
+            flat_tile(0),
+        );
+        // Size 1 touches exactly one subcell pixel.
+        stroke.paint_footprint(1, 1, 1, 255);
+        let mut expected = flat_tile(0);
+        expected.alpha[1 * BUFFER_WIDTH + 1] = 255;
+        assert_eq!(stroke.tile(), expected);
+
+        // Size 3 paints the centered 3x3 block.
+        let mut stroke = DetailerStroke::begin(
+            PaintHand::Left,
+            point(),
+            DetailerMode::Additive,
+            CellWeight::ONE,
+            flat_tile(0),
+        );
+        stroke.paint_footprint(1, 1, 3, 255);
+        let mut expected = flat_tile(0);
+        for y in 0..3 {
+            for x in 0..3 {
+                expected.alpha[y * BUFFER_WIDTH + x] = 255;
+            }
+        }
+        assert_eq!(stroke.tile(), expected);
+
+        // The footprint clips at the buffer's edge instead of panicking.
+        let mut stroke = DetailerStroke::begin(
+            PaintHand::Left,
+            point(),
+            DetailerMode::Additive,
+            CellWeight::ONE,
+            flat_tile(0),
+        );
+        stroke.paint_footprint(0, 0, 5, 255);
+        assert!(stroke.changed());
     }
 
     #[test]
@@ -438,10 +691,10 @@ mod tests {
             ),
             |_| Some('.'),
         );
-        session.paint_at_cell_local(0.99, 0.99, 255, |stroke| {
+        session.paint_at_cell_local(point(), 0.99, 0.99, 1, 255, |stroke| {
             (stroke.tile().alpha[BUFFER_PIXELS - 1] == 255).then_some('#')
         });
-        assert_eq!(session.pending_graphic(), Some('#'));
+        assert_eq!(session.pending_graphic_at(&point()), Some('#'));
     }
 
     #[test]
@@ -459,7 +712,7 @@ mod tests {
         );
         session.finish_for_hand(PaintHand::Right);
         assert!(session.is_active());
-        assert_eq!(session.take_pending_commit(), None);
+        assert!(session.take_pending_commits().is_empty());
     }
 
     #[test]
@@ -476,6 +729,6 @@ mod tests {
             |_| None,
         );
         session.finish();
-        assert_eq!(session.take_pending_commit(), None);
+        assert!(session.take_pending_commits().is_empty());
     }
 }
