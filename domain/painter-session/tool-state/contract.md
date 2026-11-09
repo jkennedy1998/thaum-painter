@@ -38,6 +38,8 @@ Own live tool settings and active authoring-hand state for the painter session.
   - in-progress lasso bound accumulation (`LassoStroke`) and its overlay preview cell group (path only, never the interior)
 - `detailer_stroke.rs`
   - `DetailerStroke` subcell buffer plus shared `DetailerSession` preview/release lifecycle
+- `truth.md`
+  - J's typeface-local detailer decision
 
 ## dependencies
 - `thaum-painter/domain/painter-operations/`
