@@ -10,7 +10,7 @@ use thaum_renderer_domain::{
 
 use crate::{
     fill::FillConnectivity, selection_state::{PainterSelection, SelectionMode},
-    tool_state::{PaintChannel, PaintHand, PaintTarget, PaintTool, ToolState},
+    tool_state::{DetailerMode, PaintChannel, PaintHand, PaintTarget, PaintTool, ToolState},
 };
 
 /// Rows reserved at the top of the content area for the two 3x3 hand
@@ -199,6 +199,19 @@ impl HandSettingsModule {
             picker_opp_columns.push(column);
         }
 
+        let mut detailer_mode_columns = Vec::new();
+        for (id, label, mode) in [
+            ("add", "add", DetailerMode::Additive),
+            ("erase", "erase", DetailerMode::Subtractive),
+        ] {
+            let mut column = PropertyMatrixColumn::new(id, label);
+            column.left_value = left.detailer_mode == mode;
+            column.right_value = right.detailer_mode == mode;
+            column.left_enabled = Self::hand_declares_row(&state, PaintHand::Left, "detailer_mode");
+            column.right_enabled = Self::hand_declares_row(&state, PaintHand::Right, "detailer_mode");
+            detailer_mode_columns.push(column);
+        }
+
         let char_step = state.text_options.char_step;
         let enter_step = state.text_options.enter_step;
 
@@ -278,6 +291,14 @@ impl HandSettingsModule {
         // Text typing geometry: per-character and per-Enter 3D cursor steps,
         // shared across hands. Left-click a number to type a value in; scroll
         // a number to nudge it by one.
+        if Self::tool_row_used(&state, "detailer_mode") {
+            rows.push(PropertyRow::Matrix {
+                id: "detailer_mode".into(),
+                label: "detail".into(),
+                columns: detailer_mode_columns,
+                token_width: 6,
+            });
+        }
         if Self::tool_row_used(&state, "text_char_step") {
             rows.push(PropertyRow::NumberRow {
                 id: "text_char_step".into(),
@@ -492,6 +513,14 @@ impl HandSettingsModule {
                     _ => return,
                 };
                 state.set_pick_opposite_hand_for_hand(hand, pick_opposite_hand);
+            }
+            "detailer_mode" => {
+                let mode = match column_id.as_str() {
+                    "add" => DetailerMode::Additive,
+                    "erase" => DetailerMode::Subtractive,
+                    _ => return,
+                };
+                state.set_detailer_mode_for_hand(hand, mode);
             }
             _ => {}
         }

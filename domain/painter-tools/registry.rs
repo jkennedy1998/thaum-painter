@@ -83,6 +83,15 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
         hotkey: None,
     },
     ToolDescriptor {
+        id: "detailer",
+        label: "Detailer",
+        icon: '░',
+        description: "redraw a glyph at subcell resolution",
+        property_row_ids: &["detailer_mode"],
+        select_action: None,
+        hotkey: None,
+    },
+    ToolDescriptor {
         id: "picker",
         label: "Picker",
         icon: 'V',
@@ -150,13 +159,15 @@ mod tests {
         assert_eq!(PickerTool::descriptor().id, "picker");
         assert_eq!(StampTool::descriptor().id, "stamp");
         assert_eq!(MoveTool::descriptor().id, "move");
-        assert_eq!(all().len(), 7);
+        assert_eq!(DetailerTool::descriptor().id, "detailer");
+        assert_eq!(all().len(), 8);
     }
 
     use crate::painter_tools::brush::BrushTool;
     use crate::painter_tools::fill::FillTool;
     use crate::painter_tools::lasso::LassoTool;
     use crate::painter_tools::move_tool::MoveTool;
+    use crate::painter_tools::detailer::DetailerTool;
     use crate::painter_tools::picker::PickerTool;
     use crate::painter_tools::stamp::StampTool;
     use crate::painter_tools::text::TextTool;

@@ -28,4 +28,7 @@ pub mod text;
 #[path = "individuals/picker/picker_tool.rs"]
 pub mod picker;
 
+#[path = "individuals/detailer/detailer_tool.rs"]
+pub mod detailer;
+
 pub use registry::{all, by_id, require_by_id, RegisteredTool, ToolDescriptor};

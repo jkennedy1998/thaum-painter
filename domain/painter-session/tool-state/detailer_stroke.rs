@@ -9,14 +9,7 @@ use thaum_renderer_domain::shape_fade::fade::ShapeFade;
 use thaum_renderer_domain::{CellPoint, CellWeight, GlyphTileRaster};
 
 use crate::tool_state::PaintHand;
-
-/// Additive paints ink in; subtractive erases ink out. Two variants of the
-/// same subcell drawing interaction — a stroke's mode never changes mid-drag.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DetailerMode {
-    Additive,
-    Subtractive,
-}
+pub use crate::tool_state::DetailerMode;
 
 /// One in-progress detailer stroke: the acting hand, the cell being
 /// detailed, the render weight the buffer resolves against (captured at

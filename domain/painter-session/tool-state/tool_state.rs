@@ -58,12 +58,22 @@ pub enum PaintTool {
     /// the canvas-pointer move-stroke dispatch, never through
     /// `apply_at_for_hand`.
     Move,
+    /// Subcell glyph-shape editing; its add/erase mode is a per-hand tool
+    /// property, rather than separate toolbox registrations.
+    Detailer,
+}
+
+/// Which direction an equipped Detailer hand edits its comparison tile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailerMode {
+    Additive,
+    Subtractive,
 }
 
 impl PaintTool {
     /// Every live tool, in toolbox order. Drift-tested against the
     /// painter-tools registry.
-    pub fn all() -> [PaintTool; 7] {
+    pub fn all() -> [PaintTool; 8] {
         [
             PaintTool::Brush,
             PaintTool::Fill,
@@ -72,6 +82,7 @@ impl PaintTool {
             PaintTool::Picker,
             PaintTool::Stamp,
             PaintTool::Move,
+            PaintTool::Detailer,
         ]
     }
 
@@ -87,6 +98,7 @@ impl PaintTool {
             PaintTool::Picker => "picker",
             PaintTool::Stamp => "stamp",
             PaintTool::Move => "move",
+            PaintTool::Detailer => "detailer",
         }
     }
 
@@ -99,6 +111,7 @@ impl PaintTool {
             "picker" => Some(PaintTool::Picker),
             "stamp" => Some(PaintTool::Stamp),
             "move" => Some(PaintTool::Move),
+            "detailer" => Some(PaintTool::Detailer),
             _ => None,
         }
     }
@@ -189,6 +202,8 @@ pub struct HandState {
     /// channels to the opposite hand instead of itself. Per-hand toggle,
     /// independent per J.
     pub pick_opposite_hand: bool,
+    /// Detailer add/erase choice, independently selected for each hand.
+    pub detailer_mode: DetailerMode,
     pub edit_channels: EditChannels,
     pub select_channels: SelectChannels,
     pub target: PaintTarget,
@@ -204,6 +219,7 @@ impl Default for HandState {
             fill_connectivity: FillConnectivity::Adjacent,
             fill_3d: false,
             pick_opposite_hand: false,
+            detailer_mode: DetailerMode::Additive,
             edit_channels: EditChannels::all(),
             select_channels: SelectChannels::all(),
             target: PaintTarget::Image,
@@ -373,6 +389,11 @@ impl ToolState {
 
     pub fn set_pick_opposite_hand_for_hand(&mut self, hand: PaintHand, pick_opposite_hand: bool) {
         self.hand_state_mut(hand).pick_opposite_hand = pick_opposite_hand;
+        self.active_hand = hand;
+    }
+
+    pub fn set_detailer_mode_for_hand(&mut self, hand: PaintHand, mode: DetailerMode) {
+        self.hand_state_mut(hand).detailer_mode = mode;
         self.active_hand = hand;
     }
 
