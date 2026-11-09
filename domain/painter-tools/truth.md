@@ -89,3 +89,43 @@
 ### 2026-11-09-detailer-shape-differentiated-segments
 - j-quote: "i notice that we now draw everywhere, but its the same glyph. we need to be able to draw a small shape / build up some shapes in the cells authoring with the detailer, and different cells should... drawing a line through full cell graphics should produce a visible slight negative line in the authored glyphs (not full negative)."
 - interpretation: Every cell resolving to the same glyph had two roots, both fixed: (1) sparse un-interpolated marks are shapeless, so they all snap to the same smallest glyph — consecutive drag samples are now Bresenham-interpolated with the brush footprint at every step, so each crossed cell deposits its own stroke segment (vertical bar, arc piece) and resolves to the glyph nearest that segment; (2) a stroke whose ink moved could still snap back to the cell's seed glyph (nearest-neighbor to "full block minus a line" is the full block), which made subtractive negatives invisible — the seed glyph is now barred from winning the resolve on both lanes, so any visible edit lands on a different glyph (the slight-negative representation), while a buffer that ends exactly at its seed commits nothing (visible-change gate compares the buffer to its stored seed alpha).
+
+### 2026-11-09-vector-stroke-is-per-cell-with-shared-size-row
+- j-quote: "i imagine it was actually per cell not on a subcell level. 2 size should use the same cell as brush for the stroke size and the other brush sizes should match ideally. That gives this tool use for the size property row that brush and the detailer use. Lasso doesn't use this now but once it uses stroke and fill instead of its current it will use the size for the stroke ideally."
+- interpretation: Vector stroke renders at whole-cell resolution (no subcell sampling), and its width is the shared brush `size` row (1..=5 cells) — the same row brush and detailer already use. Lasso consumes the same size for its stroke once it carries stroke/fill.
+
+### 2026-11-09-vector-fill-boundary-only-stroke-centered-band
+- j-quote: "fill does the boundary only. Stroke does the boundary edge + size. Stoke should be on / centered on the vector line."
+- interpretation: Fill paints only the shape's boundary cells; stroke paints a band of `size` width centered on the vector line. (Supersedes the earlier even-odd interior-fill reading — see 2026-11-09-vector-default-inert-ok-and-live-hand-swap-and-even-odd-fill; centerline ownership when both are set is pending one confirm with J.)
+
+### 2026-11-09-vector-backspace-deletes-selected-point
+- j-quote: "Backspace can delete selected point and make the user select a connecting point, or the end / random point on another shape if multiple lines exist. If no more points exist > tool can cancel and exit the authoring shape mode."
+- interpretation: Backspace deletes the selected point and clears the selection — the user then selects any remaining point (a connecting point, or a tail/point on another subpath). Deleting the last remaining point cancels the session and exits authoring mode without committing; this is the session's cancel path.
+
+### 2026-11-09-vector-z-during-construction-is-delete
+- j-quote: "z during construction can be the same as backspace I think..... If that's what the type tool does? If we can override undo per tool active mode type that could be useful. Then we could do undo for text tool as well sub text. That feels most ux friendly."
+- interpretation: While a construction session is open, Z acts as delete-selected-point (same as Backspace) — per-tool key ownership over global undo, the same ownership model the typing session already uses (it consumes chars as text). A future text-tool undo can reuse the same per-tool override pattern.
+
+### 2026-11-09-vector-geometry-snaps-to-whole-cells
+- j-quote: "yes they are at whole cell coordinates. It's pixelated like that and i think will feel good. Like a nice vector grid which is great to have when in low resolutions. It's just always on by default bc it should just use the cell grid we already have."
+- interpretation: All vector geometry — anchors and handle offsets — snaps to whole cells of the existing cell grid, always on, no subcell positions.
+
+### 2026-11-09-vector-handle-dragged-into-anchor-collapses
+- j-quote: "collapse to hard corner yes."
+- interpretation: Dragging a handle onto (or past) its own anchor collapses the point to a hard corner (zero-magnitude handles).
+
+### 2026-11-09-vector-after-close-selects-the-last-point
+- j-quote: "nothing happens. The user can then author a commit or backspace the connection. Ideally select the last vector I think, not what it connected to. Then someone could backspace it and redo that last point."
+- interpretation: Closing a subpath triggers no extra action; the just-closed subpath's LAST placed point (the former open tail, not the first point it connected to) becomes the selected point, so backspacing it removes the tail and reopens the subpath for a redo.
+
+### 2026-11-09-vector-reactivating-older-subpaths
+- j-quote: "use most straight forwards behavior you can think of."
+- interpretation: (model resolution of an open chart case) Selecting a point of any subpath makes that subpath the active one; an empty-cell press then continues from the selected point when it is that subpath's open tail, or branches a new subpath when it is fully interior — selection defines the active subpath, not recency.
+
+### 2026-11-09-vector-handle-expansion-direction
+- j-quote: "1 sure"
+- interpretation: (confirming the model's recommendation) Double-click handle expansion points the new magnitude-1 handles along the subpath's neighbor tangent — mirrored ±1 cell along the line to the adjacent point; a point with no neighbor (single-point subpath) expands on a fixed axis instead.
+
+### 2026-11-09-lasso-gains-stroke-fill-source-row
+- j-quote: "lasso today is essentially only fill with the selected hand color...... It will gain the ability to change fill to none or to the other hand as well ideally by calling out left none and right as the toggle ables per hand for a new property row that lasso and this new vector tool can use."
+- interpretation: The shared stroke/fill source row is a per-hand tri-state Left/None/Right toggle (like fill_3d's boolean matrix row, one state wider). Default preserves today's behavior: each hand's fill source is its own content; None is the explicit opt-out; the other hand's content is the explicit cross-hand choice.
