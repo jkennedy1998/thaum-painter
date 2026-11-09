@@ -295,8 +295,8 @@ pub struct CanvasPointerContext<'a> {
     /// sampling (the picker's blended size pick). `None` keeps the halfway
     /// cutoff.
     pub graphic_fade: Option<&'a ShapeFade>,
-    /// Shared typeface-local detail grid state; document writes stay in this
-    /// canvas-owner seam and are consumed only after grid release.
+    /// Shared typeface-local direct-canvas Detailer state; document writes
+    /// stay in this canvas-owner seam and are consumed only on pointer release.
     pub detailer_session: Option<&'a Rc<RefCell<DetailerSession>>>,
 }
 
@@ -563,9 +563,9 @@ impl CanvasPointerStrokes {
                 // cell: changes stage once so release commits one undo step.
                 "detailer" => {
                     // Detailer is graphic-only and image-only: a press on an
-                    // authored glyph seeds the typeface/weight-matched grid.
-                    // The grid owns subcell dragging; this canvas seam merely
-                    // chooses the target and starts its live preview session.
+                    // authored glyph seeds its typeface/weight-matched direct
+                    // canvas stroke. Pointer movement inside that cell edits
+                    // the comparison tile through `paint_detailer_at_cell_local`.
                     let (target, mode) = {
                         let state = ctx.tool_state.borrow();
                         (state.hand_state(hand).target, state.hand_state(hand).detailer_mode)
@@ -769,6 +769,59 @@ impl CanvasPointerStrokes {
     #[cfg(test)]
     fn pending_pivot_flash(&self) -> Option<WorldPoint> {
         self.pivot_flash.as_ref().map(|flash| flash.pivot)
+    }
+
+    /// Applies one direct-canvas Detailer sample. The entrypoint owns the
+    /// continuous surface-to-cell-local mapping; this seam owns the selected
+    /// stroke, typeface-local resolve, and eventual document commit.
+    pub fn paint_detailer_at_cell_local(
+        &mut self,
+        ctx: &mut CanvasPointerContext<'_>,
+        hand: PaintHand,
+        cell_local: [f32; 2],
+    ) {
+        let Some(session) = ctx.detailer_session else {
+            return;
+        };
+        let Some(fade) = ctx.graphic_fade else {
+            return;
+        };
+        if session.borrow().active_hand() != Some(hand) {
+            return;
+        }
+        session.borrow_mut().paint_at_cell_local(
+            cell_local[0],
+            cell_local[1],
+            u8::MAX,
+            |stroke| stroke.resolve(fade),
+        );
+    }
+
+    /// Cancels only the hand that lost direct canvas ownership to chrome.
+    /// A cancelled Detailer stroke never becomes a release commit.
+    pub fn cancel_detailer_for_hand(
+        &mut self,
+        ctx: &mut CanvasPointerContext<'_>,
+        hand: PaintHand,
+    ) {
+        let Some(session) = ctx.detailer_session else {
+            return;
+        };
+        if session.borrow().active_hand() == Some(hand) {
+            session.borrow_mut().cancel();
+        }
+    }
+
+    /// Ends only the released hand's direct-canvas Detailer stroke. The
+    /// normal release path below consumes its queued graphic-only commit.
+    pub fn finish_detailer_for_hand(
+        &mut self,
+        ctx: &mut CanvasPointerContext<'_>,
+        hand: PaintHand,
+    ) {
+        if let Some(session) = ctx.detailer_session {
+            session.borrow_mut().finish_for_hand(hand);
+        }
     }
 
     /// Continues the in-progress stroke for `hand` with a canvas drag.

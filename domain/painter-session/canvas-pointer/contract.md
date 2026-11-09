@@ -8,6 +8,7 @@ session-owned, per-hand pointer stroke lifecycle on the paint canvas: press disp
 - per-tool dispatch across the three pointer phases (press begins, drag continues, release commits) for both selection-target and image-target hands
 - the text tool's press-to-typing-session handoff (`TypingSessionBegin`); typing-session keyboard ownership stays with the entrypoint
 - the stamp tool's click-only dispatch: a press stages the hover payload's resolved changes (one stamp per click, one undo step on release, drags never stamp), and the live `StampHover` drives the two-phase paste preview in `overlay_cell_groups`
+- Detailer's canvas lifecycle: after a canvas press seeds an authored glyph, direct cell-local pointer samples edit its typeface-derived comparison tile, preview its nearest glyph over that cell, and the releasing hand queues one graphic-only document edit
 - the move tool's selection-move dispatch: a press captures the active plane selection's points and non-blank content under them (`MoveStroke`), drags accumulate the offset in view space, release stages the whole move — clear the origin area, paste at the translated position, re-anchor the selection there — through the same staged-commit seam (one bounded undo step), with the two-phase move preview in `overlay_cell_groups`
 - the vector move dispatch: a no-selection move press begins a `VectorMoveStroke` for the active layer instead; same drag machinery, and release commits the whole world delta onto the active layer's `move` property block through `commit_move_offset` (document snapshot, not the per-cell undo log — property-offset edits persist like the other property-track metadata edits). The live preview flows through the render path (`pending_move_offset`) rather than a flash overlay
 - the move stroke's 3D drag model: each drag frame folds its world delta into a view-space offset; when a frame reports a changed camera orientation the offset rebases into the new view basis and the anchor resets (a still cursor's world point jumps on re-basing — noise, not motion). So a mid-drag swing/roll re-aims the displacement with the view, a mid-drag focus-depth scroll carries the landing plane with it, and the commit translates content and re-anchors the selection as an exact 3D set (`replace_plane_points_exact`, never plane-filtered)
@@ -27,7 +28,7 @@ session-owned, per-hand pointer stroke lifecycle on the paint canvas: press disp
 
 ## contents
 - `canvas_pointer.rs`
-  - `CanvasPointerStrokes` (state + `begin_press` / `continue_drag` / `finish_selection_stroke` / `finish_pointer_stroke` / `cancel` / `set_stamp_hover` / `fold_move_release` / `pending_move_offset` / accessors), `CanvasPointerContext`, `TypingSessionBegin`, `StrokeStart`, `StampHover`, `DragOffset`, `MoveStroke`, `VectorMoveStroke`
+  - `CanvasPointerStrokes` (state + `begin_press` / `paint_detailer_at_cell_local` / `finish_detailer_for_hand` / `cancel_detailer_for_hand` / `continue_drag` / `finish_selection_stroke` / `finish_pointer_stroke` / `cancel` / `set_stamp_hover` / `fold_move_release` / `pending_move_offset` / accessors), `CanvasPointerContext`, `TypingSessionBegin`, `StrokeStart`, `StampHover`, `DragOffset`, `MoveStroke`, `VectorMoveStroke`
 
 ## dependencies
 - painter-session/tool-state: ToolState, PaintHand, PaintTarget, PaintTool, LassoStroke
@@ -45,6 +46,24 @@ session-owned, per-hand pointer stroke lifecycle on the paint canvas: press disp
 send: { ctx: &mut CanvasPointerContext, hand: PaintHand, position: CellPoint, bounds: CanvasBounds, orientation: CameraViewOrientation, current_breath: u32 }
 returns: Option<TypingSessionBegin>
 effects: mutates in-progress stroke state, stages image edits, reads document blocks
+
+### CanvasPointerStrokes::paint_detailer_at_cell_local — apply one direct canvas subcell sample
+send: { ctx: &mut CanvasPointerContext, hand: PaintHand, cell_local: [f32; 2] }
+returns: ()
+effects: mutates live detailer stroke
+via: rpc `CanvasPointerStrokes::paint_detailer_at_cell_local`
+
+### CanvasPointerStrokes::cancel_detailer_for_hand — cancel a Detailer stroke that loses canvas ownership
+send: { ctx: &mut CanvasPointerContext, hand: PaintHand }
+returns: ()
+effects: mutates live detailer stroke
+via: rpc `CanvasPointerStrokes::cancel_detailer_for_hand`
+
+### CanvasPointerStrokes::finish_detailer_for_hand — finish only the released hand's Detailer stroke
+send: { ctx: &mut CanvasPointerContext, hand: PaintHand }
+returns: ()
+effects: mutates live detailer stroke
+via: rpc `CanvasPointerStrokes::finish_detailer_for_hand`
 
 ### CanvasPointerStrokes::continue_drag — continue the owning hand's stroke
 send: { ctx: &mut CanvasPointerContext, hand: PaintHand, position: CellPoint, bounds: CanvasBounds, orientation: CameraViewOrientation }

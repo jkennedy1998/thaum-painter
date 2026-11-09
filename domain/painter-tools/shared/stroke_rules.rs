@@ -33,8 +33,8 @@ pub fn drag_behavior(tool_id: &str) -> DragBehavior {
         "text" => DragBehavior::TypingSession,
         "picker" => DragBehavior::ClickOnly,
         "stamp" => DragBehavior::ClickOnly,
-        // The canvas press selects/seeds one glyph; the captured detail-grid
-        // module owns its subcell drag and release.
+        // Detailer seeds through its click dispatch; canvas-pointer then
+        // applies its separate cell-local subcell samples across the drag.
         "detailer" => DragBehavior::ClickOnly,
         "move" => DragBehavior::MoveSelection,
         // Unknown registrations behave as ordinary per-position paint tools.

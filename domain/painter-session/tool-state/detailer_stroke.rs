@@ -149,6 +149,24 @@ impl DetailerSession {
         self.stroke.as_ref().map(|stroke| stroke.position)
     }
 
+    /// Paints from the direct canvas pointer's position inside the authored
+    /// cell. The pointer is normalized to that cell and then mapped to this
+    /// typeface tile's own dimensions; no fixed UI grid participates.
+    pub fn paint_at_cell_local(
+        &mut self,
+        local_x: f32,
+        local_y: f32,
+        strength: u8,
+        resolve: impl FnOnce(&DetailerStroke) -> Option<char>,
+    ) {
+        let Some(stroke) = self.stroke.as_ref() else {
+            return;
+        };
+        let x = (local_x.clamp(0.0, 1.0 - f32::EPSILON) * stroke.buffer_width as f32) as usize;
+        let y = (local_y.clamp(0.0, 1.0 - f32::EPSILON) * stroke.buffer_height as f32) as usize;
+        self.paint(x, y, strength, resolve);
+    }
+
     /// Paints one comparison pixel and immediately refreshes the canvas
     /// preview candidate. Calls made without an active target are a no-op.
     pub fn paint(
@@ -165,8 +183,17 @@ impl DetailerSession {
         self.pending_graphic = resolve(stroke);
     }
 
-    /// Ends the active grid drag. There is at most one queued commit, and it
-    /// is graphic-only by construction. No resolved glyph means no write.
+    /// Ends the active direct-canvas stroke for `hand`. Another hand's
+    /// release cannot commit or cancel it.
+    pub fn finish_for_hand(&mut self, hand: PaintHand) {
+        if self.active_hand() == Some(hand) {
+            self.finish();
+        }
+    }
+
+    /// Ends the active direct-canvas drag. There is at most one queued
+    /// commit, and it is graphic-only by construction. No resolved glyph
+    /// means no write.
     pub fn finish(&mut self) {
         let Some(stroke) = self.stroke.take() else {
             return;
@@ -381,6 +408,43 @@ mod tests {
             })
         );
         assert_eq!(session.take_pending_commit(), None, "release queues once");
+    }
+
+    #[test]
+    fn cell_local_canvas_coordinates_map_to_the_typeface_tile() {
+        let mut session = DetailerSession::default();
+        session.begin(
+            DetailerStroke::begin(
+                PaintHand::Left,
+                point(),
+                DetailerMode::Additive,
+                CellWeight::ONE,
+                flat_tile(0),
+            ),
+            |_| Some('.'),
+        );
+        session.paint_at_cell_local(0.99, 0.99, 255, |stroke| {
+            (stroke.tile().alpha[BUFFER_PIXELS - 1] == 255).then_some('#')
+        });
+        assert_eq!(session.pending_graphic(), Some('#'));
+    }
+
+    #[test]
+    fn other_hand_cannot_finish_the_active_canvas_stroke() {
+        let mut session = DetailerSession::default();
+        session.begin(
+            DetailerStroke::begin(
+                PaintHand::Left,
+                point(),
+                DetailerMode::Additive,
+                CellWeight::ONE,
+                flat_tile(0),
+            ),
+            |_| Some('.'),
+        );
+        session.finish_for_hand(PaintHand::Right);
+        assert!(session.is_active());
+        assert_eq!(session.take_pending_commit(), None);
     }
 
     #[test]

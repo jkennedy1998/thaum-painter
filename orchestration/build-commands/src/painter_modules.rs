@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use thaum_painter_domain::{
-    DetailerGridModule, DetailerSession, DetailerStroke, DisplayProfileModule, GraphicPickerModule, HandSettingsModule, LayersPanelModule,
+    DisplayProfileModule, GraphicPickerModule, HandSettingsModule, LayersPanelModule,
     LayersPanelState, MaterialPickerModule, PaintCanvasBoundsModule, PaintColorBlockModule,
     PaintColorPickerModule, PaintTool, PainterSelection, SessionPanelModule, SessionPanelState,
     SharedDocumentDisplayProfile, ToolDef, ToolPreset, ToolState, ToolboxModule, ToolPresetsModule,
@@ -47,8 +47,6 @@ pub(crate) fn build_painter_modules(
     picker_breath: &Rc<std::cell::Cell<i32>>,
     drawing_space_background: &Rc<RefCell<Option<[u8; 3]>>>,
     display_profile: &Rc<RefCell<SharedDocumentDisplayProfile>>,
-    detailer_session: &Rc<RefCell<DetailerSession>>,
-    detailer_resolve: Rc<dyn Fn(&DetailerStroke) -> Option<char>>,
 ) -> ModuleRegistry {
     let mut modules = ModuleRegistry::new();
     modules.register(Box::new(
@@ -72,15 +70,6 @@ pub(crate) fn build_painter_modules(
                     })
                 })
                 .collect(),
-        )
-        .with_palette(ui_palette.clone()),
-    ));
-    modules.register(Box::new(
-        DetailerGridModule::new(
-            "painter_detailer_grid",
-            ModuleRect { x0: -25, y0: 2, x1: -7, y1: 25 },
-            detailer_session.clone(),
-            detailer_resolve,
         )
         .with_palette(ui_palette.clone()),
     ));

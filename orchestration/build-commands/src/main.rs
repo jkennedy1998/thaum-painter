@@ -34,7 +34,7 @@ use thaum_painter_domain::{
         sync_canvas_from_active_layer,
     },
     text_entry::{cursor_overlay_group, TextEntryKey, TextEntryOutcome, TextEntryState},
-    Canvas, CanvasBounds, DetailerSession, DetailerStroke, DrawingSpaceWheelMode, LayerRow, LayersPanelState,
+    Canvas, CanvasBounds, DetailerSession, DrawingSpaceWheelMode, LayerRow, LayersPanelState,
     PaintCanvasBoundsModule, PaintHand, PaintTool, PainterSelection, PainterUserSessionState,
     PersistedPainterUiState, SelectionMode, SessionDiscoveredHost, SessionIdentity,
     SessionPanelAction, SessionPanelState, SessionRosterRow, SharedDocumentPaths,
@@ -124,6 +124,16 @@ fn resolve_asset_root() -> PathBuf {
 
 /// Assembles the canvas-pointer seam's session context from the event loop's
 /// live locals. Built per pointer event; borrows never outlive the event.
+/// Converts a continuous surface cursor to the position inside the cell that
+/// `to_world` selected. `WorldPoint` is deliberately integral, so Detailer
+/// receives this companion fraction before the normal mapping rounds it.
+/// Glyph tiles are top-to-bottom while camera surface `v` increases upward.
+fn detailer_cell_local(surface_units: [f32; 2], cell_clip_size: [f32; 2]) -> [f32; 2] {
+    let u = surface_units[0] / cell_clip_size[0];
+    let v = surface_units[1] / cell_clip_size[1];
+    [u - u.round() + 0.5, 0.5 - (v - v.round())]
+}
+
 fn canvas_pointer_context<'a>(
     tool_state: &'a RefCell<ToolState>,
     selection: &'a Rc<RefCell<PainterSelection>>,
@@ -651,6 +661,7 @@ fn begin_canvas_press_if_eligible(
     hand: PaintHand,
     world: thaum_renderer_domain::WorldPoint,
     screen: CellPoint,
+    detailer_cell_local: [f32; 2],
     paint_surface: ModuleRect,
     paint_viewport: ModuleRect,
     bounds: CanvasBounds,
@@ -702,6 +713,15 @@ fn begin_canvas_press_if_eligible(
         *text_stroke_start = Some(typing.stroke_start);
         typing_mode.begin(typing_reserved_inputs(bindings));
     }
+    pointer_strokes.paint_detailer_at_cell_local(
+        &mut canvas_pointer_context(
+            tool_state, selection, canvas, shared_document, shared_document_paths,
+            shared_action_counter, session_user_id, active_layer_id, persist_to_disk,
+            graphic_fade, detailer_session,
+        ),
+        hand,
+        detailer_cell_local,
+    );
 }
 
 /// Routes one hand's held-pointer frame through the shared seam when the
@@ -722,6 +742,7 @@ fn continue_canvas_drag_if_eligible(
     hand: PaintHand,
     world: thaum_renderer_domain::WorldPoint,
     screen: CellPoint,
+    detailer_cell_local: [f32; 2],
     paint_surface: ModuleRect,
     bounds: CanvasBounds,
     view_orientation: thaum_renderer_domain::CameraViewOrientation,
@@ -743,26 +764,39 @@ fn continue_canvas_drag_if_eligible(
         bounds,
         typing_owns_input,
     ) {
-        DragRoute::Chrome => pointer_strokes.cancel(hand),
-        DragRoute::Canvas(position) => pointer_strokes.continue_drag(
-            &mut canvas_pointer_context(
-                tool_state,
-                selection,
-                canvas,
-                shared_document,
-                shared_document_paths,
-                shared_action_counter,
-                session_user_id,
-                active_layer_id,
-                persist_to_disk,
-                graphic_fade,
-                detailer_session,
-            ),
-            hand,
-            position,
-            bounds,
-            view_orientation,
-        ),
+        DragRoute::Chrome => {
+            pointer_strokes.cancel(hand);
+            pointer_strokes.cancel_detailer_for_hand(
+                &mut canvas_pointer_context(
+                    tool_state, selection, canvas, shared_document, shared_document_paths,
+                    shared_action_counter, session_user_id, active_layer_id, persist_to_disk,
+                    graphic_fade, detailer_session,
+                ),
+                hand,
+            );
+        }
+        DragRoute::Canvas(position) => {
+            pointer_strokes.continue_drag(
+                &mut canvas_pointer_context(
+                    tool_state, selection, canvas, shared_document, shared_document_paths,
+                    shared_action_counter, session_user_id, active_layer_id, persist_to_disk,
+                    graphic_fade, detailer_session,
+                ),
+                hand,
+                position,
+                bounds,
+                view_orientation,
+            );
+            pointer_strokes.paint_detailer_at_cell_local(
+                &mut canvas_pointer_context(
+                    tool_state, selection, canvas, shared_document, shared_document_paths,
+                    shared_action_counter, session_user_id, active_layer_id, persist_to_disk,
+                    graphic_fade, detailer_session,
+                ),
+                hand,
+                detailer_cell_local,
+            );
+        }
         DragRoute::Ignored => {}
     }
 }
@@ -793,12 +827,34 @@ fn finish_canvas_release(
     persist_to_disk: bool,
     graphic_fade: Option<&ShapeFade>,
     detailer_session: &Rc<RefCell<DetailerSession>>,
+    left_released: bool,
+    right_released: bool,
 ) {
     // Broadcast the release to every module, not just the captured one: a
     // drag that never requested capture (or lost it) would otherwise keep
     // following the pointer through hover moves forever, since its Up
     // never arrived.
     modules.dispatch_pointer_up_all(screen.x, screen.y);
+    if left_released {
+        pointer_strokes.finish_detailer_for_hand(
+            &mut canvas_pointer_context(
+                tool_state, selection, canvas, shared_document, shared_document_paths,
+                shared_action_counter, session_user_id, active_layer_id, persist_to_disk,
+                graphic_fade, detailer_session,
+            ),
+            PaintHand::Left,
+        );
+    }
+    if right_released {
+        pointer_strokes.finish_detailer_for_hand(
+            &mut canvas_pointer_context(
+                tool_state, selection, canvas, shared_document, shared_document_paths,
+                shared_action_counter, session_user_id, active_layer_id, persist_to_disk,
+                graphic_fade, detailer_session,
+            ),
+            PaintHand::Right,
+        );
+    }
     // One committed action per stroke: the drag's staged patches become a
     // single CellPatchSet record, written once on release (one undo per
     // stroke). Hands that didn't paint are no-ops. A lasso bound closes
@@ -1592,6 +1648,19 @@ mod tests {
     use thaum_painter_domain::text_entry::TextEntryState;
 
     use thaum_renderer_domain::{camera_view_orientation_for_camera, CameraRoll, CameraSwing};
+
+    #[test]
+    fn detailer_cell_local_preserves_cursor_position_inside_a_cell() {
+        assert_eq!(detailer_cell_local([0.0, 0.0], [0.1, 0.1]), [0.5, 0.5]);
+        // `v` rises in camera surface coordinates, while glyph-tile rows run
+        // top to bottom.
+        let top_right = detailer_cell_local([0.049, 0.049], [0.1, 0.1]);
+        assert!((top_right[0] - 0.99).abs() < 0.001);
+        assert!((top_right[1] - 0.01).abs() < 0.001);
+        let bottom_left = detailer_cell_local([-0.049, -0.049], [0.1, 0.1]);
+        assert!((bottom_left[0] - 0.01).abs() < 0.001);
+        assert!((bottom_left[1] - 0.99).abs() < 0.001);
+    }
 
     #[test]
     fn overlay_groups_shift_by_the_active_layers_move_offset() {
@@ -2663,10 +2732,6 @@ fn main() -> Result<()> {
         .ok()
         .map(|font_set| Rc::new(ShapeFade::build_weighted(&FontSetTiles { font_set: &font_set })));
     let detailer_session = Rc::new(RefCell::new(DetailerSession::default()));
-    let detailer_resolve: Rc<dyn Fn(&DetailerStroke) -> Option<char>> = {
-        let shape_fade = shape_fade.clone();
-        Rc::new(move |stroke| shape_fade.as_ref().and_then(|fade| stroke.resolve(fade)))
-    };
     if let Some(session) = &persisted_session {
         session.renderer.camera.apply_to_runtime(&mut state.camera);
     } else {
@@ -2802,8 +2867,6 @@ fn main() -> Result<()> {
         &picker_breath,
         &drawing_space_background,
         &display_profile,
-        &detailer_session,
-        detailer_resolve,
     );
 
     if let Some(session) = &persisted_session {
@@ -3835,6 +3898,15 @@ fn main() -> Result<()> {
             );
             if handled_command_bar || handled_module || modules.is_pointer_captured() {
                 pointer_strokes.cancel(PaintHand::Left);
+                pointer_strokes.cancel_detailer_for_hand(
+                    &mut canvas_pointer_context(
+                        &tool_state, &selection, &mut canvas, &mut shared_document,
+                        &shared_document_paths, &mut shared_action_counter, &session_user_id,
+                        &mut active_layer_id, persist_to_disk, shape_fade.as_deref(),
+                        &detailer_session,
+                    ),
+                    PaintHand::Left,
+                );
             } else {
                 begin_canvas_press_if_eligible(
                     &mut pointer_strokes,
@@ -3849,6 +3921,7 @@ fn main() -> Result<()> {
                     PaintHand::Left,
                     world,
                     screen,
+                    detailer_cell_local(click, cell_clip_size),
                     paint_surface,
                     paint_viewport,
                     *paint_canvas_bounds.borrow(),
@@ -3903,6 +3976,15 @@ fn main() -> Result<()> {
             );
             if handled_command_bar || handled_module || modules.is_pointer_captured() {
                 pointer_strokes.cancel(PaintHand::Right);
+                pointer_strokes.cancel_detailer_for_hand(
+                    &mut canvas_pointer_context(
+                        &tool_state, &selection, &mut canvas, &mut shared_document,
+                        &shared_document_paths, &mut shared_action_counter, &session_user_id,
+                        &mut active_layer_id, persist_to_disk, shape_fade.as_deref(),
+                        &detailer_session,
+                    ),
+                    PaintHand::Right,
+                );
             } else {
                 begin_canvas_press_if_eligible(
                     &mut pointer_strokes,
@@ -3917,6 +3999,7 @@ fn main() -> Result<()> {
                     PaintHand::Right,
                     world,
                     screen,
+                    detailer_cell_local(click, cell_clip_size),
                     paint_surface,
                     paint_viewport,
                     *paint_canvas_bounds.borrow(),
@@ -3980,6 +4063,7 @@ fn main() -> Result<()> {
                     hand,
                     world,
                     screen,
+                    detailer_cell_local(cursor, cell_clip_size),
                     paint_surface,
                     *paint_canvas_bounds.borrow(),
                     view_orientation,
@@ -4152,6 +4236,8 @@ fn main() -> Result<()> {
                 persist_to_disk,
                 shape_fade.as_deref(),
                 &detailer_session,
+                left_released,
+                right_released,
             );
         }
         left_pointer_was_down = frame.input.pointer_down;
