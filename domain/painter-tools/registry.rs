@@ -51,7 +51,9 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
         label: "Lasso",
         icon: 'Q',
         description: "select cells by drawing around them",
-        property_row_ids: &["fill_3d"],
+        // stroke/fill (J 2026-11-09): the shared per-hand authoring-source
+        // pair rides the lasso alongside its depth toggle.
+        property_row_ids: &["fill_3d", "stroke", "fill"],
         select_action: Some("painter_select_lasso"),
         hotkey: Some("L"),
     },
@@ -95,6 +97,15 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
         property_row_ids: &["detailer_mode", "multi_weight", "brush_size"],
         select_action: None,
         hotkey: None,
+    },
+    ToolDescriptor {
+        id: "vector",
+        label: "Vector",
+        icon: '/',
+        description: "draw cell shapes from points and handles",
+        property_row_ids: &["stroke", "fill", "brush_size"],
+        select_action: Some("painter_select_vector"),
+        hotkey: Some("H"),
     },
     ToolDescriptor {
         id: "picker",
@@ -165,11 +176,13 @@ mod tests {
         assert_eq!(StampTool::descriptor().id, "stamp");
         assert_eq!(MoveTool::descriptor().id, "move");
         assert_eq!(DetailerTool::descriptor().id, "detailer");
-        assert_eq!(all().len(), 8);
+        assert_eq!(VectorTool::descriptor().id, "vector");
+        assert_eq!(all().len(), 9);
     }
 
     use crate::painter_tools::brush::BrushTool;
     use crate::painter_tools::detailer::DetailerTool;
+    use crate::painter_tools::vector::VectorTool;
     use crate::painter_tools::fill::FillTool;
     use crate::painter_tools::lasso::LassoTool;
     use crate::painter_tools::move_tool::MoveTool;

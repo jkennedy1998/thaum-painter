@@ -47,7 +47,7 @@ via: `lasso_points(path)`
 - none
 
 ## tests
-- inline `#[cfg(test)]` in `lasso.rs`
+- inline `#[cfg(test)]` in `lasso.rs`, `vector.rs`
   - light
   - validates closed-square interiors, concave notch exclusion, degenerate single-point/empty paths, two-point lines, and plane (z) preservation
 

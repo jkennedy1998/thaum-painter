@@ -31,4 +31,7 @@ pub mod picker;
 #[path = "individuals/detailer/detailer_tool.rs"]
 pub mod detailer;
 
+#[path = "individuals/vector/vector_tool.rs"]
+pub mod vector;
+
 pub use registry::{all, by_id, require_by_id, RegisteredTool, ToolDescriptor};

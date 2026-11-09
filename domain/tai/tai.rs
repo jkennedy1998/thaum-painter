@@ -47,6 +47,11 @@ pub fn painter_bindings() -> ActionBindingMap {
         ActionName::new("painter_select_move"),
         RawInput::Key("M".to_string()),
     );
+    // Vector tool (placeholder key, J expects to revisit hotkeys later).
+    map.bind(
+        ActionName::new("painter_select_vector"),
+        RawInput::Key("H".to_string()),
+    );
     // Drawing-space pan (context decides 3D focus pan vs HUD pan).
     map.bind(
         ActionName::new("painter_pan_left"),
