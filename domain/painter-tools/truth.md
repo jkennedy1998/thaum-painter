@@ -96,7 +96,7 @@
 
 ### 2026-11-09-vector-fill-boundary-only-stroke-centered-band
 - j-quote: "fill does the boundary only. Stroke does the boundary edge + size. Stoke should be on / centered on the vector line."
-- interpretation: Fill paints only the shape's boundary cells; stroke paints a band of `size` width centered on the vector line. (Supersedes the earlier even-odd interior-fill reading — see 2026-11-09-vector-default-inert-ok-and-live-hand-swap-and-even-odd-fill; centerline ownership when both are set is pending one confirm with J.)
+- interpretation: Fill paints only the shape's boundary cells; stroke paints a band of `size` width centered on the vector line. (Supersedes the earlier even-odd interior-fill reading, confirmed by J — see 2026-11-09-vector-fill-is-boundary-only-and-stroke-wins-the-centerline; the stroke band owns the centerline cells when both are set.)
 
 ### 2026-11-09-vector-backspace-deletes-selected-point
 - j-quote: "Backspace can delete selected point and make the user select a connecting point, or the end / random point on another shape if multiple lines exist. If no more points exist > tool can cancel and exit the authoring shape mode."
@@ -129,3 +129,7 @@
 ### 2026-11-09-lasso-gains-stroke-fill-source-row
 - j-quote: "lasso today is essentially only fill with the selected hand color...... It will gain the ability to change fill to none or to the other hand as well ideally by calling out left none and right as the toggle ables per hand for a new property row that lasso and this new vector tool can use."
 - interpretation: The shared stroke/fill source row is a per-hand tri-state Left/None/Right toggle (like fill_3d's boolean matrix row, one state wider). Default preserves today's behavior: each hand's fill source is its own content; None is the explicit opt-out; the other hand's content is the explicit cross-hand choice.
+
+### 2026-11-09-vector-fill-is-boundary-only-and-stroke-wins-the-centerline
+- j-quote: "1 yes" / "2 stroke wins"
+- interpretation: Confirming the clarification pass: interiors are never painted (boundary-only fill supersedes the earlier even-odd interior rule — donut/counter holes come from the boundary lines themselves), and when both stroke and fill are set on the same shape, the stroke band owns the centerline cells over fill's boundary ring.
