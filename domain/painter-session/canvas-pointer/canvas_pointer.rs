@@ -1157,29 +1157,48 @@ impl CanvasPointerStrokes {
             .unwrap_or_default();
         if !commits.is_empty() {
             eprintln!("[detailer-debug] commit consumed: {} cell(s)", commits.len());
-            if let Some(block_id) = ctx
+            // No-op guard: a resolve that landed back on the cell's own
+            // authored glyph writes nothing visible, so it must not author
+            // (or overwrite) the cell at all.
+            let mut changes = Vec::with_capacity(commits.len());
+            let committing_hand = commits[0].hand;
+            for commit in commits {
+                if ctx
+                    .canvas
+                    .get(&commit.position)
+                    .is_some_and(|cell| cell.graphic == CellGraphic::Glyph(commit.graphic))
+                {
+                    eprintln!(
+                        "[detailer-debug] commit skipped (no-op, already {:?}): {:?}",
+                        commit.graphic, commit.position
+                    );
+                    continue;
+                }
+                // Graphic-only edit: an authored cell keeps its color,
+                // weight, shaders, and facing exactly; an empty cell is
+                // authored fresh from the committing hand's color and weight.
+                let mut cell = match ctx.canvas.get(&commit.position).cloned() {
+                    Some(cell) => cell,
+                    None => {
+                        let hand_state = ctx.tool_state.borrow().hand_state(commit.hand);
+                        PaintedCell {
+                            facing: CellFacing::PosZ,
+                            graphic: CellGraphic::Glyph(' '),
+                            color: hand_state.color.clone(),
+                            weight_index: hand_state.weight_index,
+                            shader_stack: Vec::new(),
+                        }
+                    }
+                };
+                cell.graphic = CellGraphic::Glyph(commit.graphic);
+                changes.push((commit.position, Some(cell)));
+            }
+            if changes.is_empty() {
+                eprintln!("[detailer-debug] commit consumed: nothing visible to write");
+            } else if let Some(block_id) = ctx
                 .document
                 .active_raster_block_id(ctx.active_layer_id, current_breath)
             {
-                let mut changes = Vec::with_capacity(commits.len());
-                let committing_hand = commits[0].hand;
-                for commit in commits {
-                    let mut cell = match ctx.canvas.get(&commit.position).cloned() {
-                        Some(cell) => cell,
-                        None => {
-                            let hand_state = ctx.tool_state.borrow().hand_state(commit.hand);
-                            PaintedCell {
-                                facing: CellFacing::PosZ,
-                                graphic: CellGraphic::Glyph(' '),
-                                color: hand_state.color.clone(),
-                                weight_index: hand_state.weight_index,
-                                shader_stack: Vec::new(),
-                            }
-                        }
-                    };
-                    cell.graphic = CellGraphic::Glyph(commit.graphic);
-                    changes.push((commit.position, Some(cell)));
-                }
                 let start = (ctx.canvas.clone(), block_id.clone());
                 stage_painted_cells_chunk(
                     ctx.document,
@@ -2317,8 +2336,20 @@ mod tests {
                     alpha,
                 }
             };
+            // The space glyph's all-zero tile is a real GUI candidate: it
+            // must lose to inked candidates for additive resolves and win
+            // only for subtractive erase. '.' is the smallest real ink mark
+            // (one subpixel), the additive resolve's floor.
+            let mut dot = vec![0u8; 16];
+            dot[2 * 4 + 2] = 255;
+            let dot = thaum_renderer_domain::GlyphTileRaster {
+                width: 4,
+                height: 4,
+                alpha: dot,
+            };
             vec![
-                ('.', tile(0, 0)),
+                (' ', tile(0, 0)),
+                ('.', dot),
                 ('o', tile(255, 0)),
                 ('#', tile(255, 255)),
             ]
@@ -2519,6 +2550,147 @@ mod tests {
         assert!(!detailer.borrow().is_active());
     }
 
+    /// J's 2026-11-09 GUI failure: sparse additive marks (a fast drag gives
+    /// each crossed cell only a pixel or two of ink) resolved to the blank
+    /// space glyph, so the commit wrote invisible cells and the canvas
+    /// looked untouched. Additive resolve now excludes the blank candidate,
+    /// so even the sparsest mark commits a real inked glyph.
+    #[test]
+    fn detailer_sparse_additive_mark_commits_a_real_inked_glyph_not_the_blank() {
+        let mut session = Session::new();
+        session
+            .tool_state
+            .get_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Detailer);
+        session
+            .tool_state
+            .get_mut()
+            .set_detailer_mode_for_hand(PaintHand::Left, DetailerMode::Additive);
+        let fade = ShapeFade::build(&DetailerFadeTiles);
+        let detailer = Rc::new(RefCell::new(DetailerSession::default()));
+
+        let mut strokes = CanvasPointerStrokes::new();
+        let bounds = canvas_bounds();
+        {
+            let mut ctx = session.ctx();
+            ctx.graphic_fade = Some(&fade);
+            ctx.detailer_session = Some(&detailer);
+            strokes.begin_press(
+                &mut ctx,
+                PaintHand::Left,
+                point(2, 2),
+                bounds,
+                flat_view(),
+                0,
+            );
+        }
+
+        // One subpixel of ink — the sparsest mark a drag can leave.
+        draw_sweep(
+            &mut strokes,
+            &mut session.detailer_ctx(&fade, &detailer),
+            &sweep_in_cell(point(2, 2), &[[0.05, 0.05]]),
+        );
+        assert_eq!(
+            detailer.borrow().pending_graphic_at(&point(2, 2)),
+            Some('.'),
+            "the sparsest additive mark resolves to the smallest inked glyph, never the blank"
+        );
+
+        strokes
+            .finish_detailer_for_hand(&mut session.detailer_ctx(&fade, &detailer), PaintHand::Left);
+        let errors = strokes.finish_pointer_stroke(
+            &mut session.detailer_ctx(&fade, &detailer),
+            flat_view(),
+            0,
+            false,
+        );
+        assert!(errors.is_empty());
+
+        assert_eq!(session.action_counter, 1, "a real mark commits");
+        let painted = session.canvas.get(&point(2, 2)).unwrap();
+        assert_ne!(
+            painted.graphic,
+            CellGraphic::Glyph(' '),
+            "the blank glyph is never an additive commit"
+        );
+        assert_eq!(painted.graphic, CellGraphic::Glyph('.'));
+    }
+
+    /// A stroke whose ink returns to its seed resolves back to the cell's
+    /// own authored glyph — and that resolve must write nothing at all,
+    /// not stage an invisible same-glyph overwrite.
+    #[test]
+    fn detailer_resolve_landing_back_on_the_authored_glyph_commits_nothing() {
+        let mut session = Session::new();
+        session
+            .tool_state
+            .get_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Detailer);
+        session
+            .tool_state
+            .get_mut()
+            .set_detailer_mode_for_hand(PaintHand::Left, DetailerMode::Subtractive);
+        apply_brush(
+            &mut session.canvas,
+            point(2, 2),
+            authored_glyph_cell('o', PaintColor::FlatRgb(10, 20, 30)),
+        );
+        let fade = ShapeFade::build(&DetailerFadeTiles);
+        let detailer = Rc::new(RefCell::new(DetailerSession::default()));
+
+        let mut strokes = CanvasPointerStrokes::new();
+        let bounds = canvas_bounds();
+        {
+            let mut ctx = session.ctx();
+            ctx.graphic_fade = Some(&fade);
+            ctx.detailer_session = Some(&detailer);
+            strokes.begin_press(
+                &mut ctx,
+                PaintHand::Left,
+                point(2, 2),
+                bounds,
+                flat_view(),
+                0,
+            );
+        }
+
+        // Subtract ink out and add it back: the buffer ends exactly at its
+        // seed, the stroke did move ink, but the resolve lands back on 'o'.
+        draw_sweep(
+            &mut strokes,
+            &mut session.detailer_ctx(&fade, &detailer),
+            &sweep_in_cell(point(2, 2), &CENTER_SWEEP),
+        );
+        for _ in 0..255 {
+            strokes.paint_detailer_at_cell_local(
+                &mut session.detailer_ctx(&fade, &detailer),
+                PaintHand::Left,
+                point(2, 2),
+                [0.3, 0.3],
+                1,
+            );
+        }
+        assert_eq!(detailer.borrow().pending_graphic_at(&point(2, 2)), Some('o'));
+
+        strokes
+            .finish_detailer_for_hand(&mut session.detailer_ctx(&fade, &detailer), PaintHand::Left);
+        let errors = strokes.finish_pointer_stroke(
+            &mut session.detailer_ctx(&fade, &detailer),
+            flat_view(),
+            0,
+            false,
+        );
+        assert!(errors.is_empty());
+
+        assert_eq!(
+            session.action_counter, 0,
+            "a resolve that lands back on the authored glyph stages no write"
+        );
+        let painted = session.canvas.get(&point(2, 2)).unwrap();
+        assert_eq!(painted.graphic, CellGraphic::Glyph('o'));
+    }
+
     /// J's second acceptance bar: subtractive Detailer on an authored glyph
     /// must commit a graphic that covers strictly LESS alpha.
     #[test]
@@ -2559,13 +2731,14 @@ mod tests {
         }
 
         // Erase every subpixel: the buffer bottoms out empty and resolves
-        // to the empty glyph.
+        // to the blank glyph (a valid full erase — subtract keeps the blank
+        // candidate, unlike additive).
         draw_sweep(
             &mut strokes,
             &mut session.detailer_ctx(&fade, &detailer),
             &sweep_in_cell(point(0, 0), &full_sweep()),
         );
-        assert_eq!(detailer.borrow().pending_graphic_at(&point(0, 0)), Some('.'));
+        assert_eq!(detailer.borrow().pending_graphic_at(&point(0, 0)), Some(' '));
 
         strokes
             .finish_detailer_for_hand(&mut session.detailer_ctx(&fade, &detailer), PaintHand::Left);
@@ -2578,9 +2751,9 @@ mod tests {
         assert!(errors.is_empty());
 
         let painted = session.canvas.get(&point(0, 0)).unwrap();
-        assert_eq!(painted.graphic, CellGraphic::Glyph('.'));
+        assert_eq!(painted.graphic, CellGraphic::Glyph(' '));
         assert_eq!(painted.color, PaintColor::FlatRgb(10, 20, 30));
-        assert!(tile_alpha_sum(&fade, '.') < alpha_before);
+        assert!(tile_alpha_sum(&fade, ' ') < alpha_before);
     }
 
     #[test]

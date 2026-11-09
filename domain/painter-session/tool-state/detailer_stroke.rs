@@ -128,8 +128,20 @@ impl DetailerStroke {
     /// "ideally snap to nearest which might be the cell that is currently
     /// authored and that's ok").
     pub fn resolve(&self, fade: &ShapeFade) -> Option<char> {
-        fade.nearest_glyph_at_weight(&self.tile(), self.weight)
-            .map(|(glyph, _distance)| glyph)
+        // Additive strokes resolve against inked glyphs only (J 2026-11-09:
+        // the GUI resolved sparse additive marks to the invisible space
+        // glyph, so drawn strokes authored "nothing"). Adding ink can never
+        // legitimately produce the blank glyph; subtracting ink to nothing
+        // is a valid full erase, so subtract keeps the blank candidate.
+        match self.mode {
+            DetailerMode::Additive => {
+                fade.nearest_inked_glyph_at_weight(&self.tile(), self.weight)
+            }
+            DetailerMode::Subtractive => {
+                fade.nearest_glyph_at_weight(&self.tile(), self.weight)
+            }
+        }
+        .map(|(glyph, _distance)| glyph)
     }
 }
 
@@ -211,10 +223,20 @@ impl DetailerSession {
         self.pending.get(position).copied()
     }
 
-    /// Every cell's live candidate: exactly what release would write, one
-    /// (position, glyph) per crossed cell with a resolved glyph.
+    /// Every changed cell's live candidate: exactly what release would
+    /// write, one (position, glyph) per crossed cell whose buffer actually
+    /// moved ink and resolved. Untouched cells preview nothing — a buffer
+    /// still at its seed has nothing to show yet.
     pub fn pending_previews(&self) -> Vec<(CellPoint, char)> {
-        self.pending.iter().map(|(p, g)| (*p, *g)).collect()
+        self.pending
+            .iter()
+            .filter(|(position, _)| {
+                self.strokes
+                    .get(position)
+                    .is_some_and(|stroke| stroke.changed())
+            })
+            .map(|(p, g)| (*p, *g))
+            .collect()
     }
 
     /// Paints one comparison pixel in `position`'s buffer and refreshes that
@@ -424,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_follows_the_live_buffer_as_it_is_painted() {
+    fn additive_resolve_never_lands_on_the_blank_glyph() {
         let fade = ShapeFade::build_weighted(&SingleWeight);
         let mut stroke = DetailerStroke::begin(
             PaintHand::Left,
@@ -435,8 +457,8 @@ mod tests {
         );
         assert_eq!(
             stroke.resolve(&fade),
-            Some(' '),
-            "starts at the seeded empty glyph"
+            Some('#'),
+            "additive resolves against inked candidates only: the blank tile is every sparse mark's nearest neighbor and would make drawn strokes resolve to the invisible space glyph"
         );
 
         for y in 0..BUFFER_HEIGHT {
@@ -448,6 +470,30 @@ mod tests {
             stroke.resolve(&fade),
             Some('#'),
             "fully inked buffer resolves to the full-coverage glyph"
+        );
+    }
+
+    #[test]
+    fn subtractive_resolve_keeps_the_blank_glyph_for_full_erases() {
+        let fade = ShapeFade::build_weighted(&SingleWeight);
+        let mut stroke = DetailerStroke::begin(
+            PaintHand::Left,
+            point(),
+            DetailerMode::Subtractive,
+            CellWeight::ONE,
+            flat_tile(255),
+        );
+        assert_eq!(stroke.resolve(&fade), Some('#'));
+
+        for y in 0..BUFFER_HEIGHT {
+            for x in 0..BUFFER_WIDTH {
+                stroke.paint(x, y, 255);
+            }
+        }
+        assert_eq!(
+            stroke.resolve(&fade),
+            Some(' '),
+            "erasing everything is a valid full erase — subtract keeps the blank candidate"
         );
     }
 
