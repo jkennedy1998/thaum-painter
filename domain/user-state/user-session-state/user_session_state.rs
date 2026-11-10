@@ -78,6 +78,8 @@ pub struct PersistedHandState {
     pub fill_3d: bool,
     #[serde(default)]
     pub pick_opposite_hand: bool,
+    #[serde(default)]
+    pub picker_detail: bool,
     /// The shared stroke/fill authoring-source pair (lasso + vector): which
     /// hand's live content each channel authors from. JSON values: "left"/
     /// "right" name the source hand, "none" skips the channel entirely, and
@@ -222,6 +224,7 @@ impl PersistedHandState {
             fill_connectivity: hand.fill_connectivity.id().to_string(),
             fill_3d: hand.fill_3d,
             pick_opposite_hand: hand.pick_opposite_hand,
+            picker_detail: hand.picker_detail,
             stroke_source: Some(hand_source_json(hand.stroke_source, own).to_string()),
             fill_source: Some(hand_source_json(hand.fill_source, own).to_string()),
             edit_channels: PersistedChannelMask::from_mask(hand.edit_channels),
@@ -239,6 +242,7 @@ impl PersistedHandState {
             FillConnectivity::from_id(&self.fill_connectivity).unwrap_or_default();
         hand.fill_3d = self.fill_3d;
         hand.pick_opposite_hand = self.pick_opposite_hand;
+        hand.picker_detail = self.picker_detail;
         hand.stroke_source = hand_source_runtime(self.stroke_source.as_deref(), own);
         hand.fill_source = hand_source_runtime(self.fill_source.as_deref(), own);
         hand.edit_channels = self.edit_channels.to_mask();

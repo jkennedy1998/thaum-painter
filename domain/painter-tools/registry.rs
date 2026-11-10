@@ -52,8 +52,9 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
         icon: 'Q',
         description: "select cells by drawing around them",
         // stroke/fill (J 2026-11-09): the shared per-hand authoring-source
-        // pair rides the lasso alongside its depth toggle.
-        property_row_ids: &["fill_3d", "stroke", "fill"],
+        // pair rides the lasso alongside its depth toggle; brush_size is the
+        // shared stroke-width row vector also reads (J 2026-11-10).
+        property_row_ids: &["fill_3d", "stroke", "fill", "brush_size"],
         select_action: Some("painter_select_lasso"),
         hotkey: Some("L"),
     },
@@ -111,11 +112,11 @@ pub const ALL_TOOLS: &[ToolDescriptor] = &[
         id: "picker",
         label: "Picker",
         icon: 'V',
-        description: "pick the content and color under the cursor",
+        description: "pick active-layer or visible-composite content under the cursor",
         // brush_size rides along (J 2026-09-12): the picker samples through
         // the hand's brush-tip footprint and blends multi-cell picks, so the
         // size row must stay live while the picker is up.
-        property_row_ids: &["picker_opposite_hand", "brush_size"],
+        property_row_ids: &["picker_opposite_hand", "picker_detail", "brush_size"],
         select_action: None,
         hotkey: None,
     },

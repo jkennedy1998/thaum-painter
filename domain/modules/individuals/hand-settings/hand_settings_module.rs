@@ -223,6 +223,16 @@ impl HandSettingsModule {
             picker_opp_columns.push(column);
         }
 
+        let mut picker_detail_columns = Vec::new();
+        for (id, label, value) in [("layer", "layer", false), ("view", "view", true)] {
+            let mut column = PropertyMatrixColumn::new(id, label);
+            column.left_value = left.picker_detail == value;
+            column.right_value = right.picker_detail == value;
+            column.left_enabled = Self::hand_declares_row(&state, PaintHand::Left, "picker_detail");
+            column.right_enabled = Self::hand_declares_row(&state, PaintHand::Right, "picker_detail");
+            picker_detail_columns.push(column);
+        }
+
         let mut detailer_mode_columns = Vec::new();
         for (id, label, mode) in [
             ("add", "add", DetailerMode::Additive),
@@ -342,6 +352,16 @@ impl HandSettingsModule {
                 label: "pick".into(),
                 columns: picker_opp_columns,
                 token_width: 4,
+            });
+        }
+        // Picker detail selects whether each hand samples its active layer
+        // or the resolved topmost visible composite.
+        if Self::tool_row_used(&state, "picker_detail") {
+            rows.push(PropertyRow::Matrix {
+                id: "picker_detail".into(),
+                label: "detail".into(),
+                columns: picker_detail_columns,
+                token_width: 6,
             });
         }
         // Text typing geometry: per-character and per-Enter 3D cursor steps,
@@ -603,6 +623,14 @@ impl HandSettingsModule {
                     _ => return,
                 };
                 state.set_pick_opposite_hand_for_hand(hand, pick_opposite_hand);
+            }
+            "picker_detail" => {
+                let picker_detail = match column_id.as_str() {
+                    "layer" => false,
+                    "view" => true,
+                    _ => return,
+                };
+                state.set_picker_detail_for_hand(hand, picker_detail);
             }
             "detailer_mode" => {
                 let mode = match column_id.as_str() {
@@ -1267,13 +1295,45 @@ mod tests {
         }
 
         // A hand whose tool does not declare the row stays dead on its side.
+        // Lasso now reads the shared row too (J 2026-11-10: stroke width is
+        // the shared brush size row), so Move exercises the "undeclared"
+        // case here instead.
         state
             .borrow_mut()
-            .set_tool_for_hand(PaintHand::Right, PaintTool::Lasso);
+            .set_tool_for_hand(PaintHand::Right, PaintTool::Move);
         for (left_enabled, right_enabled) in size_columns(&module) {
             assert!(left_enabled);
-            assert!(!right_enabled, "lasso does not declare brush_size");
+            assert!(!right_enabled, "move does not declare brush_size");
         }
+    }
+
+    #[test]
+    fn picker_detail_row_switches_each_picker_hand_between_layer_and_view() {
+        let state = tool_state();
+        state
+            .borrow_mut()
+            .set_tool_for_hand(PaintHand::Left, PaintTool::Picker);
+        let mut module =
+            HandSettingsModule::new("hands", rect(), state.clone(), selection(), number_edit());
+
+        let columns = module
+            .build_rows()
+            .into_iter()
+            .find_map(|row| match row {
+                PropertyRow::Matrix { id, columns, .. } if id == "picker_detail" => Some(columns),
+                _ => None,
+            })
+            .expect("picker exposes the detail row");
+        assert!(columns.iter().all(|column| column.left_enabled));
+        assert!(columns.iter().all(|column| !column.right_enabled));
+        assert!(columns.iter().any(|column| column.id == "layer" && column.left_value));
+
+        module.apply_property_hit(PropertyHit::Matrix {
+            row_id: "picker_detail".into(),
+            side: PropertyMatrixSide::Left,
+            column_id: "view".into(),
+        });
+        assert!(state.borrow().left_hand.picker_detail);
     }
 
     #[test]

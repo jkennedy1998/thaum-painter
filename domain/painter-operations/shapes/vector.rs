@@ -134,25 +134,44 @@ impl VectorSubpath {
         self.closed = false;
     }
 
-    /// Every cell the subpath's curve passes through, in draw order: each
-    /// segment between adjacent anchors samples as a straight 3D line when
-    /// both ends are hard corners, or as a cubic bezier through the handles
-    /// (tail's forward, head's backward). A closed subpath includes the
-    /// closing segment. These are the fill's boundary cells and the center
-    /// of the stroke band.
+    /// Every distinct cell the subpath's curve passes through, in draw
+    /// order. Construction guides and the stroke use this compact surface.
     pub fn sample(&self) -> Vec<CellPoint> {
-        let mut cells: Vec<CellPoint> = Vec::new();
-        let mut seen: BTreeSet<CellPoint> = BTreeSet::new();
+        let mut seen = BTreeSet::new();
+        self.sample_trace()
+            .into_iter()
+            .filter(|cell| seen.insert(*cell))
+            .collect()
+    }
+
+    /// The fill's cells: a planar subpath's boundary and interior, treating
+    /// the current point sequence as implicitly closed whenever fill is
+    /// active. This matches lasso: the user can see and author a fill before
+    /// explicitly clicking back to the first vector point. The traced path
+    /// preserves revisited curve cells, so fill boundaries cannot shortcut
+    /// across a bend or spill outside the visible stroke.
+    pub fn fill_cells(&self) -> Vec<CellPoint> {
+        let mut closed = self.clone();
+        closed.close();
+        let boundary = closed.sample_trace();
+        let Some(plane) = PlanarVectorPlane::from_cells(&boundary) else {
+            return Vec::new();
+        };
+        crate::lasso::rasterize_closed_polygon(&plane.vertices(&boundary))
+            .into_iter()
+            .map(|(first, second)| plane.cell(first, second))
+            .collect()
+    }
+
+    /// Full curve traversal retaining repeated cells. Re-visits are vital to
+    /// a fill boundary: removing them changes the topology of curved or
+    /// self-crossing paths and can join distant pieces of a stroke.
+    fn sample_trace(&self) -> Vec<CellPoint> {
         if self.points.len() == 1 {
             return vec![self.points[0].anchor];
         }
-        let mut push = |cell: CellPoint, cells: &mut Vec<CellPoint>, seen: &mut BTreeSet<CellPoint>| {
-            if seen.insert(cell) {
-                cells.push(cell);
-            }
-        };
-        for pair in self.point_pairs() {
-            let (from, to) = pair;
+        let mut cells = Vec::new();
+        for (from, to) in self.point_pairs() {
             let control_a = from
                 .forward_offset
                 .map(|offset| add(from.anchor, offset))
@@ -161,29 +180,14 @@ impl VectorSubpath {
                 .backward_offset
                 .map(|offset| add(to.anchor, offset))
                 .unwrap_or(to.anchor);
-            if control_a == from.anchor && control_b == to.anchor {
-                let segment = sample_line(from.anchor, to.anchor);
-                for cell in segment {
-                    push(cell, &mut cells, &mut seen);
-                }
+            let segment = if control_a == from.anchor && control_b == to.anchor {
+                sample_line(from.anchor, to.anchor)
             } else {
-                let segment = sample_bezier(from.anchor, control_a, control_b, to.anchor);
-                for cell in segment {
-                    push(cell, &mut cells, &mut seen);
-                }
-            }
+                sample_bezier(from.anchor, control_a, control_b, to.anchor)
+            };
+            append_watertight_trace(&mut cells, segment);
         }
         cells
-    }
-
-    /// The fill's cells: the closed subpath's boundary only — interiors are
-    /// never painted (J 2026-11-09: "fill does the boundary only"). An open
-    /// subpath fills nothing.
-    pub fn boundary_cells(&self) -> Vec<CellPoint> {
-        if !self.closed {
-            return Vec::new();
-        }
-        self.sample()
     }
 
     /// The stroke's cells: a band of `size` cells wide centered on the
@@ -232,11 +236,86 @@ impl VectorSubpath {
     }
 }
 
+/// The one constant axis of an axis-aligned vector drawing plane. Camera
+/// drawing modes are axis aligned, so this keeps fill geometry independent
+/// of the camera after a construction session has begun.
+#[derive(Debug, Clone, Copy)]
+enum PlanarVectorPlane {
+    X(i32),
+    Y(i32),
+    Z(i32),
+}
+
+impl PlanarVectorPlane {
+    fn from_cells(cells: &[CellPoint]) -> Option<Self> {
+        let first = *cells.first()?;
+        if cells.iter().all(|cell| cell.x == first.x) {
+            Some(Self::X(first.x))
+        } else if cells.iter().all(|cell| cell.y == first.y) {
+            Some(Self::Y(first.y))
+        } else if cells.iter().all(|cell| cell.z == first.z) {
+            Some(Self::Z(first.z))
+        } else {
+            None
+        }
+    }
+
+    fn vertices(self, cells: &[CellPoint]) -> Vec<(i32, i32)> {
+        cells
+            .iter()
+            .map(|cell| match self {
+                Self::X(_) => (cell.y, cell.z),
+                Self::Y(_) => (cell.x, cell.z),
+                Self::Z(_) => (cell.x, cell.y),
+            })
+            .collect()
+    }
+
+    fn cell(self, first: i32, second: i32) -> CellPoint {
+        match self {
+            Self::X(x) => CellPoint { x, y: first, z: second },
+            Self::Y(y) => CellPoint { x: first, y, z: second },
+            Self::Z(z) => CellPoint { x: first, y: second, z },
+        }
+    }
+}
+
 fn add(point: CellPoint, delta: CellPoint) -> CellPoint {
     CellPoint {
         x: point.x + delta.x,
         y: point.y + delta.y,
         z: point.z + delta.z,
+    }
+}
+
+/// Extends a sample trace with axis-by-axis elbow cells. The fill rasterizer
+/// needs an unbroken boundary wall, and using this same trace for stroke
+/// keeps a fill edge from ever appearing beyond its visible vector stroke.
+fn append_watertight_trace(trace: &mut Vec<CellPoint>, segment: Vec<CellPoint>) {
+    for target in segment {
+        let Some(current) = trace.last().copied() else {
+            trace.push(target);
+            continue;
+        };
+        let mut next = current;
+        for axis in 0..3 {
+            let target_axis = match axis {
+                0 => target.x,
+                1 => target.y,
+                _ => target.z,
+            };
+            let next_axis = match axis {
+                0 => &mut next.x,
+                1 => &mut next.y,
+                _ => &mut next.z,
+            };
+            if *next_axis != target_axis {
+                *next_axis = target_axis;
+                if trace.last().copied() != Some(next) {
+                    trace.push(next);
+                }
+            }
+        }
     }
 }
 
@@ -397,7 +476,7 @@ mod tests {
         let subpath = VectorSubpath::new(vec![VectorPoint::hard_corner(cell(2, 3))], false);
         assert_eq!(subpath.sample(), vec![cell(2, 3)]);
         assert_eq!(subpath.connection_count(0), 0);
-        assert!(subpath.boundary_cells().is_empty(), "open fills nothing");
+        assert_eq!(subpath.fill_cells(), vec![cell(2, 3)], "fill closes a point like lasso");
         assert_eq!(subpath.stroke_cells(1), vec![cell(2, 3)]);
     }
 
@@ -431,16 +510,39 @@ mod tests {
         assert!(cells.contains(&cell(0, 0)));
         assert!(cells.contains(&cell(2, 0)));
         assert!(cells.contains(&cell(4, 0)));
-        assert_eq!(subpath.boundary_cells(), cells, "fill is the boundary only");
+        assert_eq!(subpath.fill_cells(), cells, "a two-point closed path has no interior");
     }
 
     #[test]
-    fn an_open_subpath_never_fills() {
+    fn a_closed_planar_subpath_fills_its_interior() {
         let subpath = VectorSubpath::new(
-            vec![VectorPoint::hard_corner(cell(0, 0)), VectorPoint::hard_corner(cell(4, 0))],
+            vec![
+                VectorPoint::hard_corner(cell(0, 0)),
+                VectorPoint::hard_corner(cell(4, 0)),
+                VectorPoint::hard_corner(cell(4, 4)),
+                VectorPoint::hard_corner(cell(0, 4)),
+            ],
+            true,
+        );
+        let cells = subpath.fill_cells();
+        assert!(cells.contains(&cell(0, 0)), "boundary is included");
+        assert!(cells.contains(&cell(2, 2)), "interior is included");
+    }
+
+    #[test]
+    fn an_open_subpath_implicitly_closes_for_fill_like_lasso() {
+        let subpath = VectorSubpath::new(
+            vec![
+                VectorPoint::hard_corner(cell(0, 0)),
+                VectorPoint::hard_corner(cell(4, 0)),
+                VectorPoint::hard_corner(cell(4, 4)),
+                VectorPoint::hard_corner(cell(0, 4)),
+            ],
             false,
         );
-        assert!(subpath.boundary_cells().is_empty());
+        let fill = subpath.fill_cells();
+        assert!(fill.contains(&cell(2, 2)), "open construction previews its fill");
+        assert!(fill.iter().all(|cell| (0..=4).contains(&cell.x) && (0..=4).contains(&cell.y)));
         assert!(!subpath.stroke_cells(1).is_empty(), "stroke still draws");
     }
 

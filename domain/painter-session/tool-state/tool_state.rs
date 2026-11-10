@@ -210,6 +210,10 @@ pub struct HandState {
     /// channels to the opposite hand instead of itself. Per-hand toggle,
     /// independent per J.
     pub pick_opposite_hand: bool,
+    /// Picker property: sample the resolved visible layer composite instead
+    /// of only the active layer. This makes a pick reflect the topmost
+    /// in-view authored cell regardless of the editing layer.
+    pub picker_detail: bool,
     /// Detailer add/erase choice, independently selected for each hand.
     pub detailer_mode: DetailerMode,
     /// The shared stroke/fill authoring-source pair (J 2026-11-09): whose
@@ -241,6 +245,7 @@ impl Default for HandState {
             fill_connectivity: FillConnectivity::Adjacent,
             fill_3d: false,
             pick_opposite_hand: false,
+            picker_detail: false,
             detailer_mode: DetailerMode::Additive,
             detailer_multi_weight: false,
             stroke_source: None,
@@ -430,6 +435,11 @@ impl ToolState {
         self.active_hand = hand;
     }
 
+    pub fn set_picker_detail_for_hand(&mut self, hand: PaintHand, picker_detail: bool) {
+        self.hand_state_mut(hand).picker_detail = picker_detail;
+        self.active_hand = hand;
+    }
+
     pub fn set_detailer_mode_for_hand(&mut self, hand: PaintHand, mode: DetailerMode) {
         self.hand_state_mut(hand).detailer_mode = mode;
         self.active_hand = hand;
@@ -461,7 +471,10 @@ impl ToolState {
     /// neighbors count as the same region, here it decides which hand
     /// channels the click actually changes).
     /// With `pick_opposite_hand` on, the sample lands on the opposite
-    /// hand's state. Never paints and never touches the selection surface.
+    /// hand's state. The caller selects either the active-layer canvas or
+    /// the visible-layer composite based on `picker_detail`; this function
+    /// intentionally treats both as the same sampling surface. It never
+    /// paints or touches the selection surface.
     ///
     /// Empty-cell rule (J 2026-09-12): picking an empty cell (absent or
     /// authored blank, per the unified empty-cell read seam) sets the
@@ -827,6 +840,11 @@ impl ToolState {
     /// through the channel mask. The clear character resolves to an authored
     /// blank, which `write_cell` removes; a color-only fill recolors glyphs
     /// in place only.
+    /// Commits the hand's lasso bound: fill paints the enclosed region with
+    /// `fill_source`'s content first, then stroke paints a `brush_size`-wide
+    /// band centered on the path with `stroke_source`'s content — stroke
+    /// wins the centerline the same way vector's commit does (J 2026-11-09).
+    /// A `None` source skips its channel entirely.
     pub fn apply_lasso_for_hand(
         &mut self,
         canvas: &mut Canvas,
@@ -835,21 +853,29 @@ impl ToolState {
         hand: PaintHand,
         orientation: CameraViewOrientation,
     ) {
-        let points = self.lasso_edit_points(canvas, selection, path, hand, orientation);
-        for point in points {
-            let painted = self.resolved_painted_cell(canvas.get(&point), hand);
-            brush::write_cell(canvas, point, painted);
+        if let Some(source) = self.hand_state(hand).fill_source {
+            for point in self.lasso_fill_edit_points(canvas, selection, path, hand, orientation) {
+                let painted = self.resolved_painted_cell(canvas.get(&point), source);
+                brush::write_cell(canvas, point, painted);
+            }
+        }
+        if let Some(source) = self.hand_state(hand).stroke_source {
+            for point in self.lasso_stroke_edit_points(canvas, selection, path, hand, orientation) {
+                let painted = self.resolved_painted_cell(canvas.get(&point), source);
+                brush::write_cell(canvas, point, painted);
+            }
         }
     }
 
-    /// The image-edit half of the lasso: exactly the cells `apply_lasso_for_hand`
-    /// will paint for the hand's bound — the enclosed region rasterized through
-    /// the pure lasso operation, filtered by the current selection, and gated by
-    /// the hand's edit channels. The in-progress preview consumes this same seam
-    /// so the flashing area is exactly what release will edit. With the hand's
-    /// 3d toggle on, the region repeats on every depth layer of the canvas's
-    /// content span (J 2026-10-10).
-    pub fn lasso_edit_points(
+    /// The fill half of the lasso: exactly the cells `apply_lasso_for_hand`'s
+    /// fill channel will paint for the hand's bound — the enclosed region
+    /// rasterized through the pure lasso operation, filtered by the current
+    /// selection, and gated by the fill source hand's edit channels. The
+    /// in-progress preview consumes this same seam so the flashing area is
+    /// exactly what release will edit. With the hand's 3d toggle on, the
+    /// region repeats on every depth layer of the canvas's content span
+    /// (J 2026-10-10).
+    pub fn lasso_fill_edit_points(
         &self,
         canvas: &Canvas,
         selection: &PainterSelection,
@@ -857,10 +883,49 @@ impl ToolState {
         hand: PaintHand,
         orientation: CameraViewOrientation,
     ) -> Vec<CellPoint> {
-        if !self.hand_state(hand).edit_channels.any_enabled() {
+        let Some(source) = self.hand_state(hand).fill_source else {
+            return Vec::new();
+        };
+        if !self.hand_state(source).edit_channels.any_enabled() {
             return Vec::new();
         }
         let points = self.lasso_region_points(canvas, path, hand, orientation);
+        self.filter_lasso_edit_points(selection, points, hand)
+    }
+
+    /// The stroke half of the lasso: exactly the cells `apply_lasso_for_hand`'s
+    /// stroke channel will paint — a `brush_size`-wide band centered on the
+    /// path, closed the same way the enclosed fill treats the bound,
+    /// filtered by the current selection and gated by the stroke source
+    /// hand's edit channels.
+    pub fn lasso_stroke_edit_points(
+        &self,
+        canvas: &Canvas,
+        selection: &PainterSelection,
+        path: &[CellPoint],
+        hand: PaintHand,
+        orientation: CameraViewOrientation,
+    ) -> Vec<CellPoint> {
+        let Some(source) = self.hand_state(hand).stroke_source else {
+            return Vec::new();
+        };
+        if !self.hand_state(source).edit_channels.any_enabled() {
+            return Vec::new();
+        }
+        let size = self.hand_state(hand).brush_size;
+        let points = crate::lasso::lasso_stroke_points(path, orientation, size);
+        self.filter_lasso_edit_points(selection, points, hand)
+    }
+
+    /// Filters raw lasso-rasterized points through the current selection,
+    /// through depth or plane-bounded by the acting hand's 3d toggle — the
+    /// filtering step shared by the fill and stroke channels.
+    fn filter_lasso_edit_points(
+        &self,
+        selection: &PainterSelection,
+        points: Vec<CellPoint>,
+        hand: PaintHand,
+    ) -> Vec<CellPoint> {
         if self.acts_through_depth_for_hand(hand) {
             selection.filter_edit_points_through_depth(points)
         } else {
@@ -908,14 +973,32 @@ impl ToolState {
         hand: PaintHand,
         orientation: CameraViewOrientation,
     ) -> Vec<crate::lasso_stroke::LassoPreviewCell> {
-        self.lasso_edit_points(canvas, selection, path, hand, orientation)
-            .into_iter()
-            .map(|point| crate::lasso_stroke::LassoPreviewCell {
-                point,
-                current: canvas.get(&point).cloned(),
-                upcoming: self.resolved_painted_cell(canvas.get(&point), hand),
-            })
-            .collect()
+        let mut previews = Vec::new();
+        if let Some(source) = self.hand_state(hand).fill_source {
+            previews.extend(
+                self.lasso_fill_edit_points(canvas, selection, path, hand, orientation)
+                    .into_iter()
+                    .map(|point| crate::lasso_stroke::LassoPreviewCell {
+                        point,
+                        current: canvas.get(&point).cloned(),
+                        upcoming: self.resolved_painted_cell(canvas.get(&point), source),
+                    }),
+            );
+        }
+        // Stroke previews after fill, so an overlapping cell shows the
+        // stroke's upcoming content — matching commit's "stroke wins".
+        if let Some(source) = self.hand_state(hand).stroke_source {
+            previews.extend(
+                self.lasso_stroke_edit_points(canvas, selection, path, hand, orientation)
+                    .into_iter()
+                    .map(|point| crate::lasso_stroke::LassoPreviewCell {
+                        point,
+                        current: canvas.get(&point).cloned(),
+                        upcoming: self.resolved_painted_cell(canvas.get(&point), source),
+                    }),
+            );
+        }
+        previews
     }
 
     /// The selection-surface half of the lasso: the enclosed cells of the
@@ -1193,7 +1276,7 @@ mod tests {
         );
         assert_eq!(
             PaintTool::Picker.property_row_ids(),
-            &["picker_opposite_hand", "brush_size"]
+            &["picker_opposite_hand", "picker_detail", "brush_size"]
         );
     }
 
@@ -2248,8 +2331,13 @@ mod tests {
         let mut canvas = Canvas::new();
         let path = [point(0, 0), point(2, 0), point(2, 2), point(0, 2)];
 
-        let points =
-            tool_state.lasso_edit_points(&canvas, &selection, &path, PaintHand::Left, flat_view());
+        let points = tool_state.lasso_fill_edit_points(
+            &canvas,
+            &selection,
+            &path,
+            PaintHand::Left,
+            flat_view(),
+        );
         assert_eq!(points.len(), 9);
         assert!(points.contains(&point(1, 1)));
 
@@ -2259,7 +2347,7 @@ mod tests {
             weight: false,
         };
         assert!(tool_state
-            .lasso_edit_points(&canvas, &selection, &path, PaintHand::Left, flat_view())
+            .lasso_fill_edit_points(&canvas, &selection, &path, PaintHand::Left, flat_view())
             .is_empty());
     }
 
@@ -2299,6 +2387,62 @@ mod tests {
             CellGraphic::Glyph('.')
         );
         assert!(canvas.get(&point(3, 3)).is_none());
+    }
+
+    #[test]
+    fn lasso_stroke_source_bands_the_path_and_wins_over_fill_on_the_centerline() {
+        let mut tool_state = ToolState::default();
+        tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Lasso);
+        tool_state.set_graphic_for_hand(PaintHand::Left, CellGraphic::Glyph('S'));
+        tool_state.set_graphic_for_hand(PaintHand::Right, CellGraphic::Glyph('F'));
+        tool_state.set_stroke_source_for_hand(PaintHand::Left, Some(PaintHand::Left));
+        tool_state.set_fill_source_for_hand(PaintHand::Left, Some(PaintHand::Right));
+        let mut canvas = Canvas::new();
+        let selection = selection();
+
+        tool_state.apply_lasso_for_hand(
+            &mut canvas,
+            &selection,
+            &[point(0, 0), point(4, 0), point(4, 4), point(0, 4)],
+            PaintHand::Left,
+            flat_view(),
+        );
+
+        // The path's own cells are the stroke's centerline: stroke wins
+        // there, so the left hand's content paints, not the fill's.
+        assert_eq!(
+            canvas.get(&point(0, 0)).unwrap().graphic,
+            CellGraphic::Glyph('S')
+        );
+        // A cell inside the enclosed region but off the path is fill-only.
+        assert_eq!(
+            canvas.get(&point(2, 2)).unwrap().graphic,
+            CellGraphic::Glyph('F')
+        );
+    }
+
+    #[test]
+    fn lasso_none_source_skips_its_channel() {
+        let mut tool_state = ToolState::default();
+        tool_state.set_tool_for_hand(PaintHand::Left, PaintTool::Lasso);
+        tool_state.set_graphic_for_hand(PaintHand::Left, CellGraphic::Glyph('S'));
+        tool_state.set_stroke_source_for_hand(PaintHand::Left, Some(PaintHand::Left));
+        tool_state.set_fill_source_for_hand(PaintHand::Left, None);
+        let mut canvas = Canvas::new();
+        let selection = selection();
+
+        tool_state.apply_lasso_for_hand(
+            &mut canvas,
+            &selection,
+            &[point(0, 0), point(4, 0), point(4, 4), point(0, 4)],
+            PaintHand::Left,
+            flat_view(),
+        );
+
+        // Stroke painted the path; fill was skipped, so the interior stays
+        // untouched.
+        assert!(canvas.get(&point(0, 0)).is_some());
+        assert!(canvas.get(&point(2, 2)).is_none(), "fill skipped, interior empty");
     }
 
     #[test]

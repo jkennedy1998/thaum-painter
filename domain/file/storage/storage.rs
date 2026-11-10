@@ -2510,8 +2510,10 @@ impl SharedDocumentRuntime {
     }
 
     /// Flattens every visible layer's RESOLVED canvas for the breath into one canvas, in document
-    /// layer order (later layers win on overlap). Interpolating raster empties resolve their
-    /// blend (see `resolved_canvas_for_layer`), not the raw block canvas.
+    /// render order (later layers win on overlap). Each canvas is shifted by
+    /// its active move offset so positions match the visible viewport rather
+    /// than its local editing surface. Interpolating raster empties resolve
+    /// their blend (see `resolved_canvas_for_layer`), not the raw block canvas.
     pub fn composited_canvas_in_layer_order(
         &self,
         current_breath: u32,
@@ -2522,8 +2524,16 @@ impl SharedDocumentRuntime {
             if let Some(layer_canvas) =
                 self.resolved_canvas_for_layer(&layer.layer_id, current_breath, graphic_fade)
             {
+                let move_offset = self.move_offset_for_layer(&layer.layer_id, current_breath);
                 for (position, painted_cell) in &layer_canvas {
-                    canvas.insert(*position, painted_cell.clone());
+                    canvas.insert(
+                        CellPoint {
+                            x: position.x + move_offset.x,
+                            y: position.y + move_offset.y,
+                            z: position.z + move_offset.z,
+                        },
+                        painted_cell.clone(),
+                    );
                 }
             }
         }
@@ -3609,13 +3619,17 @@ mod tests {
             "layer-2",
             "u1",
             "2",
-            vec![SharedCellPatch::new(point(0, 0), None, Some(&cell('B')))],
+            vec![SharedCellPatch::new(point(2, 0), None, Some(&cell('B')))],
             Some("block-1".to_string()),
         ));
+        assert!(runtime.add_move_offset("layer-1", 0, WorldPoint { x: 2, y: 0, z: 0 }));
 
         let composited = runtime.composited_canvas_in_layer_order(0, None);
 
-        assert_eq!(composited.get(&point(0, 0)), Some(&cell('B')));
+        // Both authored cells resolve under the same visible pixel; later
+        // layers win and the lower cell's move is honored.
+        assert_eq!(composited.get(&point(2, 0)), Some(&cell('B')));
+        assert!(composited.get(&point(0, 0)).is_none());
     }
 
     #[test]

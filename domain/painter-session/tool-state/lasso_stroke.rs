@@ -50,7 +50,7 @@ pub fn build_lasso_path_cell_group(stroke: &LassoStroke) -> CellGroup {
     for position in &stroke.path {
         group.insert(Cell {
             position: *position,
-            graphic: CellGraphic::Glyph('◌'),
+            graphic: CellGraphic::Glyph('•'),
             color: CellColor::Flat([0.55, 0.75, 1.0, 1.0]),
             weight: CellWeight::from_index_clamped(3),
             ..Cell::default()

@@ -12,10 +12,11 @@ use std::collections::BTreeSet;
 
 use thaum_renderer_domain::{
     Cell, CellColor, CellFacing, CellGraphic, CellGroup, CellPoint, CellWeight, WorldPoint,
-    CELL_SHADER_VIVID_FLASH,
+    CELL_SHADER_VIVID_FLASH, CELL_SHADER_VIVID_FLASH_ALT,
 };
 
 use crate::brush::{self, Canvas, PaintedCell};
+use crate::lasso_stroke::LassoPreviewCell;
 use crate::tool_state::{PaintHand, ToolState};
 use crate::vector::{VectorPoint, VectorSubpath};
 
@@ -522,14 +523,14 @@ impl VectorConstruction {
     }
 
     /// Every cell the whole session's committed geometry covers: stroke
-    /// bands and fill boundaries from every subpath, unioned.
+    /// bands and filled interiors from every subpath, unioned.
     pub fn covered_cells(&self, stroke_size: i32) -> BTreeSet<CellPoint> {
         let mut cells: BTreeSet<CellPoint> = BTreeSet::new();
         for subpath in &self.subpaths {
             for cell in subpath.stroke_cells(stroke_size) {
                 cells.insert(cell);
             }
-            for cell in subpath.boundary_cells() {
+            for cell in subpath.fill_cells() {
                 cells.insert(cell);
             }
         }
@@ -547,15 +548,16 @@ pub fn build_vector_preview_cell_groups(
     vivid: CellColor,
 ) -> Vec<CellGroup> {
     let mut group = CellGroup::new(WorldPoint { x: 0, y: 0, z: 0 });
-    // The drawn line preview first — dots and handles overwrite curve cells
-    // where they share one.
+    // The drawn line preview first — use a high-contrast, atlas-guaranteed
+    // glyph so an open construction is unmistakable before it commits. Dots
+    // and handles overwrite curve cells where they share one.
     for subpath in construction.subpaths() {
         for position in subpath.sample() {
             group.insert(Cell {
                 position,
-                graphic: CellGraphic::Glyph('◌'),
-                color: CellColor::Flat([0.55, 0.75, 1.0, 1.0]),
-                weight: CellWeight::from_index_clamped(3),
+                graphic: CellGraphic::Glyph('#'),
+                color: vivid,
+                weight: CellWeight::from_index_clamped(4),
                 ..Cell::default()
             });
         }
@@ -569,7 +571,7 @@ pub fn build_vector_preview_cell_groups(
                 });
             group.insert(Cell {
                 position: point.anchor,
-                graphic: CellGraphic::Glyph('●'),
+                graphic: CellGraphic::Glyph('O'),
                 color: vivid,
                 weight: CellWeight::from_index_clamped(if selected { 4 } else { 1 }),
                 shader_stack: if selected {
@@ -585,6 +587,9 @@ pub fn build_vector_preview_cell_groups(
             }
             // The selected point's handles only: nonzero magnitude, distinct
             // cell from the anchor — the same rule the handle hit-test uses.
+            // Vivid, and flashing the opposite phase of the anchor's own
+            // flash (J 2026-11-10: "alternate their weights"), so the point
+            // and its handles visibly take turns standing out.
             for handle in [point.forward_handle(), point.backward_handle()] {
                 let Some(handle) = handle else { continue };
                 if handle == point.anchor {
@@ -592,9 +597,11 @@ pub fn build_vector_preview_cell_groups(
                 }
                 group.insert(Cell {
                     position: handle,
-                    graphic: CellGraphic::Glyph('◌'),
+                    graphic: CellGraphic::Glyph('o'),
                     color: vivid,
                     weight: CellWeight::from_index_clamped(2),
+                    shader_stack: vec![CELL_SHADER_VIVID_FLASH_ALT],
+                    facing: CellFacing::PosZ,
                     ..Cell::default()
                 });
             }
@@ -605,11 +612,34 @@ pub fn build_vector_preview_cell_groups(
 
 /// Commits one vector construction session for its hand: every subpath's
 /// stroke band paints with the acting hand's `stroke_source` content (under
-/// it), every closed subpath's boundary paints with `fill_source` content —
-/// and stroke wins the centerline: stroke cells paint after fill cells
+/// it), every planar subpath's implicitly closed interior paints with
+/// `fill_source` content — and stroke wins the centerline: stroke cells paint after fill cells
 /// (J 2026-11-09: "stroke wins"). A `None` source skips its channel
 /// entirely; a locked edit mask authors nothing. Returns the touched cells
 /// so the caller can stage the same canvas through its document seam.
+/// Computes the exact two-phase canvas cells a vector Enter/tool-switch
+/// commit would author. The prospective canvas runs the same fill-then-stroke
+/// implementation as commit so channel masks, clear glyphs, and overlap all
+/// match the final document write.
+pub fn vector_preview_cells(
+    tool_state: &ToolState,
+    canvas: &Canvas,
+    construction: &VectorConstruction,
+) -> Vec<LassoPreviewCell> {
+    let mut prospective = canvas.clone();
+    let touched = commit_vector_construction(tool_state, &mut prospective, construction);
+    touched
+        .into_iter()
+        .filter_map(|point| {
+            Some(LassoPreviewCell {
+                point,
+                current: canvas.get(&point).cloned(),
+                upcoming: prospective.get(&point).cloned()?,
+            })
+        })
+        .collect()
+}
+
 pub fn commit_vector_construction(
     tool_state: &ToolState,
     canvas: &mut Canvas,
@@ -637,7 +667,7 @@ pub fn commit_vector_construction(
         if !tool_state.hand_state(source).edit_channels.any_enabled() {
             continue;
         }
-        for cell in subpath.boundary_cells() {
+        for cell in subpath.fill_cells() {
             write(canvas, cell, source, &mut touched, &mut seen);
         }
     }
@@ -846,23 +876,37 @@ mod tests {
         let mut construction = VectorConstruction::new(PaintHand::Left);
         construction.place_from_selection(cell(0, 0), None);
         construction.place_from_selection(cell(4, 0), None);
+        construction.place_from_selection(cell(4, 4), None);
+        construction.place_from_selection(cell(0, 4), None);
         assert!(construction.try_close_subpath(0, cell(0, 0)));
 
         let mut canvas = painted_canvas();
+        let previews = vector_preview_cells(&tool_state, &canvas, &construction);
+        assert_eq!(
+            previews
+                .iter()
+                .find(|preview| preview.point == cell(2, 2))
+                .map(|preview| preview.upcoming.graphic.clone()),
+            Some(CellGraphic::Glyph('F')),
+            "the preview exposes the same fill cell Enter will commit"
+        );
         let touched = commit_vector_construction(&tool_state, &mut canvas, &construction);
-        // The centerline is stroke's content (stroke wins over fill's
-        // boundary ring), and the band runs one cell each side.
-        for x in 0..=4 {
-            let painted = canvas.get(&cell(x, 0)).unwrap();
-            assert_eq!(painted.graphic, CellGraphic::Glyph('S'), "centerline at {x}");
-            let above = canvas.get(&cell(x, 1)).unwrap();
-            assert_eq!(above.graphic, CellGraphic::Glyph('S'), "band at {x}");
-        }
-        // Fill ran under the stroke but every fill cell lies inside the
-        // stroke band, so no 'F' survives anywhere.
-        assert!(touched.iter().all(|cell| {
-            canvas.get(cell).unwrap().graphic == CellGraphic::Glyph('S')
-        }));
+        // The centerline is stroke's content (stroke wins on the boundary)
+        // and its size-three band extends one cell inward.
+        assert_eq!(
+            canvas.get(&cell(2, 0)).unwrap().graphic,
+            CellGraphic::Glyph('S')
+        );
+        assert_eq!(
+            canvas.get(&cell(2, 1)).unwrap().graphic,
+            CellGraphic::Glyph('S')
+        );
+        // The closed shape's actual interior takes the fill source.
+        assert_eq!(
+            canvas.get(&cell(2, 2)).unwrap().graphic,
+            CellGraphic::Glyph('F')
+        );
+        assert!(touched.contains(&cell(2, 2)));
     }
 
     #[test]
@@ -883,5 +927,27 @@ mod tests {
         // Stroke painted the closed outline; nothing else was authored.
         assert!(canvas.get(&cell(2, 0)).is_some());
         assert!(canvas.get(&cell(2, 1)).is_none(), "fill skipped, interior empty");
+    }
+
+    #[test]
+    fn preview_renders_the_curve_trail_and_the_selected_points_handles() {
+        let mut construction = VectorConstruction::new(PaintHand::Left);
+        construction.place_from_selection(cell(0, 0), None);
+        construction.place_from_selection(cell(4, 0), Some(cell(1, 0)));
+        let vivid = CellColor::Flat([1.0, 1.0, 0.0, 1.0]);
+        let groups = build_vector_preview_cell_groups(&construction, vivid);
+        let cells = &groups[0].cells;
+        // The sampled curve uses a high-contrast glyph so the construction
+        // is unmistakably visible before its eventual commit.
+        let trail = cells.get(&cell(2, 0)).expect("a trail cell between the points");
+        assert_eq!(trail.graphic, CellGraphic::Glyph('#'));
+        assert_eq!(trail.color, vivid);
+        // The selected (newest) point's forward handle also draws real ink.
+        let handle = cells.get(&cell(5, 0)).expect("the forward handle cell");
+        assert_eq!(handle.graphic, CellGraphic::Glyph('o'));
+        assert_eq!(handle.shader_stack, vec![CELL_SHADER_VIVID_FLASH_ALT]);
+        // The anchor itself uses the capital letter (J 2026-11-10).
+        let anchor = cells.get(&cell(4, 0)).expect("the anchor cell");
+        assert_eq!(anchor.graphic, CellGraphic::Glyph('O'));
     }
 }

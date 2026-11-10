@@ -15,6 +15,11 @@ use crate::painter_tools::{require_by_id, RegisteredTool, ToolDescriptor};
 /// keeps it out instead of swapping to an empty brush. Empties carry no
 /// color or weight, so those channels are untouched.
 ///
+/// Detail rule: the hand's `detail` row selects either its active-layer
+/// canvas or the resolved visible-layer composite (later visible layers win
+/// on overlap). In composite mode, the same footprint blend samples what is
+/// visually on top without changing the active editing layer.
+///
 /// Size rule: with a size-N footprint the sampled cells fold through the
 /// raster interpolation seam (`interp_raster::blend_cell_run`) at the
 /// halfway crossing, so a multi-character pick resolves to a character
@@ -47,7 +52,7 @@ mod tests {
         assert_eq!(descriptor.icon, 'V');
         assert_eq!(
             descriptor.property_row_ids,
-            &["picker_opposite_hand", "brush_size"]
+            &["picker_opposite_hand", "picker_detail", "brush_size"]
         );
         assert_eq!(descriptor.select_action, None);
         assert_eq!(descriptor.hotkey, None);

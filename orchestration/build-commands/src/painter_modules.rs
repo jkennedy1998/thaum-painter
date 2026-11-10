@@ -340,7 +340,7 @@ pub(crate) fn default_module_layout() -> Vec<PersistedModuleUiState> {
         at("painter_toolbox", -80, 14, -65, 24, false),
         at("painter_tool_presets", -64, 14, -42, 24, false),
         at("painter_session_panel", 38, -21, 62, -4, true),
-        at("painter_color_picker", 8, -1, 16, 13, false),
+        at("painter_color_picker", 8, -1, 16, 13, true),
         at("painter_color_block", 8, -10, 36, 2, false),
         at("painter_material_picker", 17, -1, 36, 13, true),
         at("painter_graphic_picker", 8, 3, 36, 24, false),
@@ -352,4 +352,19 @@ pub(crate) fn default_module_layout() -> Vec<PersistedModuleUiState> {
         at("painter_display_profile", 63, -6, 80, 2, false),
         at("painter_controls_panel", 8, 14, 36, 34, true),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_layout_starts_the_color_palette_closed() {
+        let palette = default_module_layout()
+            .into_iter()
+            .find(|state| state.module_id == "painter_color_picker")
+            .expect("the color palette belongs in the default layout");
+
+        assert!(palette.is_hidden);
+    }
 }

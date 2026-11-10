@@ -151,6 +151,16 @@ pub const HAND_FIELDS: &[HandFieldDescriptor] = &[
         },
     },
     HandFieldDescriptor {
+        key: "picker_detail",
+        label: "picker detail",
+        get: |hand| serde_json::to_value(hand.picker_detail).unwrap_or(Value::Null),
+        set: |hand, value| {
+            if let Some(detail) = value.as_bool() {
+                hand.picker_detail = detail;
+            }
+        },
+    },
+    HandFieldDescriptor {
         key: "edit_channels",
         label: "edit channels",
         get: |hand| serde_json::to_value(&hand.edit_channels).unwrap_or(Value::Null),

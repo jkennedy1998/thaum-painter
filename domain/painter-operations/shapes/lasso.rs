@@ -77,6 +77,84 @@ pub fn lasso_points_through_depth(
         .collect()
 }
 
+/// Rasterizes one closed lasso path into a `size`-wide band centered on the
+/// path itself, on the same view plane `lasso_points` fills — the stroke's
+/// cells (J 2026-11-09: "stroke should be on / centered on the vector
+/// line"), same size convention as the shared brush/stroke row (1..=5, size
+/// 1 is the path's own cells). The path is treated as implicitly closed,
+/// matching the fill's own closure. A degenerate path (fewer than two
+/// distinct points) bands just its own cell.
+pub fn lasso_stroke_points(path: &[CellPoint], orientation: CameraViewOrientation, size: i32) -> Vec<CellPoint> {
+    let mut vertices: Vec<CellPoint> = path.to_vec();
+    vertices.dedup();
+    if vertices.len() < 2 {
+        return vertices;
+    }
+    let anchor = vertices[0];
+    let anchor_world = WorldPoint {
+        x: anchor.x,
+        y: anchor.y,
+        z: anchor.z,
+    };
+    let view_vertices: Vec<(i32, i32)> = vertices
+        .iter()
+        .map(|vertex| {
+            let relative = project_world_relative_to_view(
+                orientation,
+                anchor_world,
+                WorldPoint {
+                    x: vertex.x,
+                    y: vertex.y,
+                    z: vertex.z,
+                },
+            );
+            (relative.right, relative.up)
+        })
+        .collect();
+    let centerline = lasso_view_boundary_cells(&view_vertices);
+    let band = dilate_view_cells(&centerline, size);
+    band.into_iter()
+        .map(|(right, up)| view_cell_to_world(orientation, &anchor_world, right, up, 0))
+        .collect()
+}
+
+/// The closed path's own boundary-wall cells in view space, without the
+/// flood-filled interior `rasterize_closed_polygon` also produces.
+fn lasso_view_boundary_cells(vertices: &[(i32, i32)]) -> BTreeSet<(i32, i32)> {
+    let mut cells: BTreeSet<(i32, i32)> = BTreeSet::new();
+    for index in 0..vertices.len() {
+        let a = &vertices[index];
+        let b = &vertices[(index + 1) % vertices.len()];
+        for point in edge_points(*a, *b) {
+            cells.insert(point);
+        }
+    }
+    cells
+}
+
+/// Expands a view-space cell set into a `size`-wide band (1..=5, the shared
+/// brush/stroke size convention — size 1 is the cells themselves).
+fn dilate_view_cells(cells: &BTreeSet<(i32, i32)>, size: i32) -> BTreeSet<(i32, i32)> {
+    let size = size.clamp(1, 5);
+    let left_radius = (size - 1) / 2;
+    let right_radius = size - 1 - left_radius;
+    let mut band: BTreeSet<(i32, i32)> = BTreeSet::new();
+    for &(cx, cy) in cells {
+        for dy in -left_radius..=right_radius {
+            for dx in -left_radius..=right_radius {
+                if size >= 4
+                    && (dx == -left_radius || dx == right_radius)
+                    && (dy == -left_radius || dy == right_radius)
+                {
+                    continue;
+                }
+                band.insert((cx + dx, cy + dy));
+            }
+        }
+    }
+    band
+}
+
 fn depth_coordinate_for_axis(axis: WorldAxis, point: WorldPoint) -> i32 {
     match axis {
         WorldAxis::X => point.x,
@@ -154,7 +232,7 @@ fn view_cell_to_world(
 /// a parity test, self-crossing freehand paths (pointer jitter, backtrack
 /// near the closure) cannot cancel regions — every cell inside the drawn
 /// loop fills.
-fn rasterize_closed_polygon(vertices: &[(i32, i32)]) -> BTreeSet<(i32, i32)> {
+pub(crate) fn rasterize_closed_polygon(vertices: &[(i32, i32)]) -> BTreeSet<(i32, i32)> {
     let mut cells: BTreeSet<(i32, i32)> = BTreeSet::new();
 
     // The bound itself is always included: every edge, including the

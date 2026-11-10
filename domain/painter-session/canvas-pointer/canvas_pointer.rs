@@ -62,7 +62,7 @@ use crate::{
     text_entry::TextEntryState,
     tool_state::{PaintHand, PaintTarget, ToolState},
     vector_construction::{
-        build_vector_preview_cell_groups, commit_vector_construction, HandleEnd,
+        build_vector_preview_cell_groups, commit_vector_construction, vector_preview_cells, HandleEnd,
         VectorConstruction, VectorSelection,
     },
 };
@@ -922,25 +922,45 @@ impl CanvasPointerStrokes {
         if drag_behavior(pressed_tool_id) == DragBehavior::ClickOnly {
             match pressed_tool_id {
                 // The picker samples the cells under the picking hand's
-                // brush-tip footprint into hand state: an empty pick sets the
-                // character to the blank (the picker doubles as the eraser),
-                // a multi-cell pick blends through the raster interpolation
-                // seam, and a footprint straddling clear fades toward the dot
-                // clear-transition glyph by the clear fraction (J 2026-09-12).
+                // brush-tip footprint into hand state. Its Detail row selects
+                // the active layer or the resolved visible-layer composite;
+                // the latter makes later visible layers win exactly as they
+                // do in the rendered view, without changing the edit layer.
                 "picker" => {
-                    let footprint = {
+                    let (footprint, picker_detail) = {
                         let tool_state = ctx.tool_state.borrow();
-                        brush::brush_points(
-                            position,
-                            tool_state.hand_state(hand).brush_size,
-                            orientation,
+                        let hand_state = tool_state.hand_state(hand);
+                        (
+                            brush::brush_points(position, hand_state.brush_size, orientation),
+                            hand_state.picker_detail,
                         )
                     };
+                    let composite = picker_detail.then(|| {
+                        ctx.document
+                            .composited_canvas_in_layer_order(current_breath, ctx.graphic_fade)
+                    });
+                    let (sampling_position, sampling_footprint) = if picker_detail {
+                        // Pointer positions arrive in the active layer's local
+                        // space, but the flattened canvas is in render/world
+                        // space so it can honor every visible layer's move.
+                        let active_move = ctx
+                            .document
+                            .move_offset_for_layer(ctx.active_layer_id, current_breath);
+                        let shift = |point: CellPoint| CellPoint {
+                            x: point.x + active_move.x,
+                            y: point.y + active_move.y,
+                            z: point.z + active_move.z,
+                        };
+                        (shift(position), footprint.iter().copied().map(shift).collect())
+                    } else {
+                        (position, footprint)
+                    };
+                    let sampling_canvas = composite.as_ref().unwrap_or(ctx.canvas);
                     ctx.tool_state.borrow_mut().pick_at_for_hand(
-                        ctx.canvas,
-                        position,
+                        sampling_canvas,
+                        sampling_position,
                         hand,
-                        &footprint,
+                        &sampling_footprint,
                         ctx.graphic_fade,
                     );
                 }
@@ -1826,13 +1846,21 @@ impl CanvasPointerStrokes {
             let previews = stroke.preview_cells(ctx.canvas);
             groups.extend(build_lasso_preview_cell_groups(&previews, vivid));
         }
-        // Open vector construction sessions: every subpath's sampled curve,
-        // every point as a vertex dot, the selected point's handles only.
+        // Open vector construction sessions render both construction guides
+        // and the exact fill/stroke cells Enter would author. The latter uses
+        // the shared two-phase preview renderer, matching lasso's current vs
+        // upcoming flash and the commit's source/channel semantics.
         for session in [&self.left_vector, &self.right_vector]
             .into_iter()
             .flatten()
         {
             groups.extend(build_vector_preview_cell_groups(&session.construction, vivid));
+            let previews = vector_preview_cells(
+                &ctx.tool_state.borrow(),
+                ctx.canvas,
+                &session.construction,
+            );
+            groups.extend(build_lasso_preview_cell_groups(&previews, vivid));
         }
         groups
     }
@@ -3852,6 +3880,33 @@ mod tests {
         });
         vector_release(&mut strokes, &mut session);
         assert!(strokes.vector_construction_open_for(PaintHand::Left));
+    }
+
+    #[test]
+    fn vector_overlay_previews_the_fill_cells_that_enter_will_commit() {
+        let mut session = vector_session();
+        {
+            let tool_state = session.tool_state.get_mut();
+            tool_state.set_graphic_for_hand(PaintHand::Left, CellGraphic::Glyph('F'));
+            tool_state.set_stroke_source_for_hand(PaintHand::Left, None);
+            tool_state.set_fill_source_for_hand(PaintHand::Left, Some(PaintHand::Left));
+        }
+        let mut strokes = CanvasPointerStrokes::new();
+        for position in [point(0, 0), point(4, 0), point(4, 4), point(0, 4)] {
+            vector_press(&mut strokes, &mut session, position);
+            vector_release(&mut strokes, &mut session);
+        }
+
+        let groups = strokes.overlay_cell_groups(
+            &mut session.ctx(),
+            flat_view(),
+            CellColor::Flat([1.0, 0.0, 0.0, 1.0]),
+        );
+        assert!(groups.iter().any(|group| {
+            group
+                .iter_cells()
+                .any(|cell| cell.position == point(2, 2) && cell.graphic == CellGraphic::Glyph('F'))
+        }), "open vector previews its upcoming implicitly closed interior fill");
     }
 
     #[test]
